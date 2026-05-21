@@ -70,7 +70,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-BOT_TOKEN = "8428604292:AAGcVhKlZbqCPkBWlL3jhosRVGKzJidCWzA"
+BOT_TOKEN = "8428604292:AAGwz0oIFfo8a_CoFlwazuShRcWDY949dJ4"
 OWNER_ID = 8702369452  # Replace with your Telegram user ID
 SECOND_APPROVER_ID = 7343683772 
 SUPPORT_GROUP_ID = -1003740536853  # Replace with your support group ID

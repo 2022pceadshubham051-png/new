@@ -70,7 +70,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-BOT_TOKEN = "8428604292:AAE0fZ9BqCDlOobXpy9rdmlDDKVQ-w7wxo8"
+BOT_TOKEN = "8428604292:AAGcVhKlZbqCPkBWlL3jhosRVGKzJidCWzA"
 OWNER_ID = 8702369452  # Replace with your Telegram user ID
 SECOND_APPROVER_ID = 7343683772 
 SUPPORT_GROUP_ID = -1003740536853  # Replace with your support group ID
@@ -9258,19 +9258,29 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         f"📦 Players remaining: <b>{len(auction.player_pool)}</b>"
     )
     
+    # Quick bid buttons (+3, +5, +10 above base price)
+    base = player["base_price"]
+    quick_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"⚡ +3  ({base+3})", callback_data=f"quickbid_{chat_id}_{base+3}"),
+        InlineKeyboardButton(f"⚡ +5  ({base+5})", callback_data=f"quickbid_{chat_id}_{base+5}"),
+        InlineKeyboardButton(f"⚡ +10 ({base+10})", callback_data=f"quickbid_{chat_id}_{base+10}"),
+    ]])
+
     try:
         await context.bot.send_animation(
             chat_id,
             animation=player_gif,
             caption=msg,
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=quick_kb
         )
     except:
         await context.bot.send_photo(
             chat_id,
             photo=MEDIA_ASSETS.get("auction_live"),
             caption=msg,
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=quick_kb
         )
     
     # Start timer
@@ -12448,62 +12458,25 @@ def _build_mid_match_caption(match) -> str:
         caption += f"🤝 <b>Partnership:</b> {match.current_partnership_runs} runs off {match.current_partnership_balls} balls"
     return caption
 
-# ── Font path resolution (works locally AND on server) ──────────────
-import os as _os
-_BASE_DIR = _os.path.dirname(_os.path.abspath(__file__))
-
-_FONT_BOLD_PATHS = [
-    # 1. Bundled in project fonts/ folder (recommended for server deploy)
-    _os.path.join(_BASE_DIR, "fonts", "DejaVuSans-Bold.ttf"),
-    # 2. Ubuntu/Debian system fonts
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-    "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
-    # 3. Windows system fonts (local dev)
-    "C:/Windows/Fonts/arialbd.ttf",
-    "C:/Windows/Fonts/verdanab.ttf",
-    # 4. macOS
-    "/Library/Fonts/Arial Bold.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
-]
-
-_FONT_REG_PATHS = [
-    # 1. Bundled in project fonts/ folder
-    _os.path.join(_BASE_DIR, "fonts", "DejaVuSans.ttf"),
-    # 2. Ubuntu/Debian system fonts
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-    "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-    # 3. Windows
-    "C:/Windows/Fonts/arial.ttf",
-    "C:/Windows/Fonts/verdana.ttf",
-    # 4. macOS
-    "/Library/Fonts/Arial.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
-]
-
-_font_cache: dict = {}
-
 def _get_font(bold: bool, size: int):
-    """Load a TrueType font at given size. Checks bundled fonts/ folder first,
-    then system paths. Caches results for performance."""
-    cache_key = (bold, size)
-    if cache_key in _font_cache:
-        return _font_cache[cache_key]
-    paths = _FONT_BOLD_PATHS if bold else _FONT_REG_PATHS
+    """Load a font, fallback gracefully."""
+    bold_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ]
+    reg_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    ]
+    paths = bold_paths if bold else reg_paths
     for p in paths:
         try:
-            font = ImageFont.truetype(p, size)
-            _font_cache[cache_key] = font
-            return font
+            return ImageFont.truetype(p, size)
         except Exception:
             pass
-    # Last resort: Pillow built-in (very small but never crashes)
-    font = ImageFont.load_default()
-    _font_cache[cache_key] = font
-    return font
+    return ImageFont.load_default()
 
 
 def _clean_display_name(name: str, max_len: int = 20) -> str:
@@ -13001,107 +12974,94 @@ def _draw_multi_gradient_bg(img, colors):
             draw.line([(0, sy+i),(W, sy+i)], fill=(r,g,b))
 
 def generate_leaderboard_image(title: str, rows: list, metric: str, offset: int = 0) -> Optional[BytesIO]:
-    """
-    🏆 Generate a stunning leaderboard image.
-    rows: list of tuples depending on metric
-    """
+    """🏆 Generate a readable leaderboard image (2x scaled for clarity)."""
     try:
-        W, H = 1000, min(120 + len(rows) * 72 + 60, 900)
+        SC = 2
+        ROW_H = 144
+        TITLE_BAR = 160
+        FOOTER_H = 72
+        W = 1000 * SC
+        H = min(TITLE_BAR + len(rows) * ROW_H + FOOTER_H, 900 * SC)
         img = Image.new("RGB", (W, H), (8, 10, 24))
         draw = ImageDraw.Draw(img)
 
-        # Background gradient
         for y in range(H):
             t = y / H
-            r = int(8 + t * 12)
-            g = int(10 + t * 15)
-            b = int(24 + t * 20)
-            draw.line([(0, y), (W, y)], fill=(r, g, b))
+            draw.line([(0, y), (W, y)], fill=(int(8 + t*12), int(10 + t*15), int(24 + t*20)))
 
-        fn_title = _get_font(True, 42)
-        fn_bold = _get_font(True, 32)
-        fn_reg = _get_font(False, 28)
-        fn_sm = _get_font(False, 24)
+        fn_title = _get_font(True, 84)
+        fn_bold  = _get_font(True, 64)
+        fn_reg   = _get_font(False, 56)
+        fn_sm    = _get_font(False, 48)
 
-        GOLD = (255, 200, 50)
+        GOLD   = (255, 200, 50)
         SILVER = (192, 192, 210)
         BRONZE = (205, 127, 50)
-        WHITE = (230, 240, 255)
-        GRAY = (140, 160, 200)
+        WHITE  = (230, 240, 255)
+        GRAY   = (140, 160, 200)
         ACCENT = (80, 160, 255)
 
-        # Title bar
-        draw.rectangle([(0, 0), (W, 80)], fill=(20, 25, 60))
-        # Gold accent line
-        draw.rectangle([(0, 78), (W, 82)], fill=GOLD)
-        
-        # Trophy emoji area
-        draw.text((24, 16), "🏆", font=fn_title, fill=GOLD)
-        
-        # Title text
+        draw.rectangle([(0, 0), (W, TITLE_BAR)], fill=(20, 25, 60))
+        draw.rectangle([(0, TITLE_BAR - 8), (W, TITLE_BAR)], fill=GOLD)
+        draw.text((48, 32), "🏆", font=fn_title, fill=GOLD)
         title_clean = title.replace("→", "-").replace("🏃", "").replace("⚾", "").replace("🏆", "").replace("🎯","").replace("🚀","").replace("🌟","").strip()
-        draw.text((80, 20), title_clean, font=fn_bold, fill=WHITE)
+        draw.text((160, 40), title_clean, font=fn_bold, fill=WHITE)
 
         medals_colors = [GOLD, SILVER, BRONZE]
-        medal_labels = ["#1", "#2", "#3"]
 
-        y = 100
+        y = TITLE_BAR
         for i, row in enumerate(rows):
             rank = offset + i + 1
-            
-            # Row background alternating
             row_color = (18, 22, 48) if i % 2 == 0 else (22, 28, 58)
-            draw.rectangle([(10, y), (W - 10, y + 66)], fill=row_color)
-            
+            draw.rectangle([(20, y), (W - 20, y + ROW_H - 4)], fill=row_color)
+
             # Rank badge
             if rank <= 3:
-                badge_color = medals_colors[rank - 1]
-                draw.ellipse([(18, y + 8), (58, y + 58)], fill=badge_color)
-                draw.text((28 if rank < 10 else 22, y + 18), f"#{rank}", font=fn_bold, fill=(10, 10, 20))
+                draw.ellipse([(36, y + 16), (136, y + 116)], fill=medals_colors[rank - 1])
+                draw.text((56 if rank < 10 else 44, y + 36), f"#{rank}", font=fn_bold, fill=(10, 10, 20))
             else:
-                draw.ellipse([(18, y + 8), (58, y + 58)], fill=(40, 50, 90))
+                draw.ellipse([(36, y + 16), (136, y + 116)], fill=(40, 50, 90))
                 txt = f"#{rank}"
-                draw.text((22 if rank >= 10 else 28, y + 18), txt, font=fn_sm, fill=GRAY)
+                draw.text((44 if rank >= 10 else 56, y + 40), txt, font=fn_sm, fill=GRAY)
 
-            # Name
+            # Name + stat
             if metric == "runs":
                 uid, name, val1, val2 = row
                 avg = round(val1 / max(val2, 1), 1)
-                name_str = (name or "Player")[:18]
-                draw.text((75, y + 10), name_str, font=fn_bold, fill=WHITE)
-                draw.text((75, y + 38), f"{val1} runs  •  avg {avg}", font=fn_sm, fill=ACCENT)
+                name_str = (name or "Player")[:22]
+                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
+                draw.text((150, y + 76), f"{val1} runs  •  avg {avg}", font=fn_sm, fill=ACCENT)
             elif metric == "wickets":
                 uid, name, val = row
-                name_str = (name or "Player")[:18]
-                draw.text((75, y + 10), name_str, font=fn_bold, fill=WHITE)
-                draw.text((75, y + 38), f"{val} wickets", font=fn_sm, fill=ACCENT)
+                name_str = (name or "Player")[:22]
+                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
+                draw.text((150, y + 76), f"{val} wickets", font=fn_sm, fill=ACCENT)
             elif metric == "wins":
                 uid, name, tw, tp = row
-                name_str = (name or "Player")[:18]
-                draw.text((75, y + 10), name_str, font=fn_bold, fill=WHITE)
-                draw.text((75, y + 38), f"{tw} wins  /  {tp} played", font=fn_sm, fill=ACCENT)
+                name_str = (name or "Player")[:22]
+                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
+                draw.text((150, y + 76), f"{tw} wins  /  {tp} played", font=fn_sm, fill=ACCENT)
             elif metric == "winrate":
                 uid, name, tw, tp = row
                 wr = round(tw / max(tp, 1) * 100, 1)
-                name_str = (name or "Player")[:18]
-                draw.text((75, y + 10), name_str, font=fn_bold, fill=WHITE)
-                draw.text((75, y + 38), f"{wr}%  ({tw}/{tp})", font=fn_sm, fill=ACCENT)
+                name_str = (name or "Player")[:22]
+                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
+                draw.text((150, y + 76), f"{wr}%  ({tw}/{tp})", font=fn_sm, fill=ACCENT)
             elif metric == "sixes":
                 uid, name, val = row
-                name_str = (name or "Player")[:18]
-                draw.text((75, y + 10), name_str, font=fn_bold, fill=WHITE)
-                draw.text((75, y + 38), f"{val} sixes 🚀", font=fn_sm, fill=ACCENT)
+                name_str = (name or "Player")[:22]
+                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
+                draw.text((150, y + 76), f"{val} sixes", font=fn_sm, fill=ACCENT)
             elif metric == "mom":
                 uid, name, val = row
-                name_str = (name or "Player")[:18]
-                draw.text((75, y + 10), name_str, font=fn_bold, fill=WHITE)
-                draw.text((75, y + 38), f"{val} MOM awards 🌟", font=fn_sm, fill=ACCENT)
-            
-            y += 72
+                name_str = (name or "Player")[:22]
+                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
+                draw.text((150, y + 76), f"{val} MOM awards", font=fn_sm, fill=ACCENT)
 
-        # Footer
-        draw.rectangle([(0, H - 36), (W, H)], fill=(15, 18, 40))
-        draw.text((20, H - 28), "CRICOVERSE  •  Global Leaderboard", font=fn_sm, fill=GRAY)
+            y += ROW_H
+
+        draw.rectangle([(0, H - FOOTER_H), (W, H)], fill=(15, 18, 40))
+        draw.text((40, H - FOOTER_H + 12), "CRICOVERSE  •  Global Leaderboard", font=fn_sm, fill=GRAY)
 
         bio = BytesIO()
         img.save(bio, "PNG", optimize=True)
@@ -13256,7 +13216,8 @@ def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
         top_sixes = sorted(all_sixes.values(), key=lambda x: -x["total"])[:5]
         top_fours = sorted(all_fours.values(), key=lambda x: -x["total"])[:5]
 
-        W, H = 1100, 820
+        SC = 2
+        W, H = 1100 * SC, 820 * SC
         img = Image.new("RGB", (W, H), (8, 12, 28))
         draw = ImageDraw.Draw(img)
 
@@ -13264,11 +13225,11 @@ def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
             t = y / H
             draw.line([(0, y), (W, y)], fill=(int(8 + t*8), int(12 + t*12), int(28 + t*18)))
 
-        fn_title = _get_font(True, 44)
-        fn_hdr = _get_font(True, 32)
-        fn_bold = _get_font(True, 26)
-        fn_reg = _get_font(False, 24)
-        fn_sm = _get_font(False, 20)
+        fn_title = _get_font(True, 44 * SC)
+        fn_hdr = _get_font(True, 32 * SC)
+        fn_bold = _get_font(True, 26 * SC)
+        fn_reg = _get_font(False, 24 * SC)
+        fn_sm = _get_font(False, 20 * SC)
 
         WHITE = (230, 240, 255)
         GOLD = (255, 200, 50)
@@ -13277,9 +13238,9 @@ def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
         GREEN = (80, 220, 120)
 
         # Header
-        draw.rectangle([(0, 0), (W, 90)], fill=(16, 22, 60))
-        draw.rectangle([(0, 88), (W, 92)], fill=GOLD)
-        draw.text((20, 22), "🏆 TOURNAMENT LEADERBOARD", font=fn_title, fill=GOLD)
+        draw.rectangle([(0, 0), (W, 90 * SC)], fill=(16, 22, 60))
+        draw.rectangle([(0, 88 * SC), (W, 92 * SC)], fill=GOLD)
+        draw.text((20 * SC, 22 * SC), "🏆 TOURNAMENT LEADERBOARD", font=fn_title, fill=GOLD)
 
         sections = [
             ("🏃 TOP RUN SCORERS", top_runs, "runs"),
@@ -13290,15 +13251,15 @@ def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
 
         medal_colors = [GOLD, (192, 192, 210), (205, 127, 50), (140, 180, 255), (180, 255, 180)]
         
-        y = 100
+        y = 100 * SC
         half_w = W // 2
         for sec_idx, (sec_title, sec_rows, unit) in enumerate(sections):
-            sx = (sec_idx % 2) * half_w + 10
-            sy = y + (sec_idx // 2) * 310
+            sx = (sec_idx % 2) * half_w + 10 * SC
+            sy = y + (sec_idx // 2) * 310 * SC
 
             # Section header
-            draw.rectangle([(sx, sy), (sx + half_w - 20, sy + 46)], fill=(22, 30, 72))
-            draw.text((sx + 12, sy + 8), sec_title, font=fn_hdr, fill=ACCENT)
+            draw.rectangle([(sx, sy), (sx + half_w - 20 * SC, sy + 46 * SC)], fill=(22, 30, 72))
+            draw.text((sx + 12 * SC, sy + 8 * SC), sec_title, font=fn_hdr, fill=ACCENT)
 
             row_y = sy + 52
             if not sec_rows:
@@ -13313,8 +13274,8 @@ def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
                     row_y += 50
 
         # Footer
-        draw.rectangle([(0, H - 36), (W, H)], fill=(14, 18, 44))
-        draw.text((20, H - 28), "CRICOVERSE TOURNAMENT STATS", font=fn_sm, fill=GRAY)
+        draw.rectangle([(0, H - 36 * SC), (W, H)], fill=(14, 18, 44))
+        draw.text((20 * SC, H - 28 * SC), "CRICOVERSE TOURNAMENT STATS", font=fn_sm, fill=GRAY)
 
         bio = BytesIO()
         img.save(bio, "PNG", optimize=True)
@@ -14091,7 +14052,13 @@ _SUBHEADLINES = [
 ]
 
 # Helper function to mock fonts if actual TTF files aren't provided
-# _get_font defined above (see _FONT_BOLD_PATHS / _FONT_REG_PATHS)
+def _get_font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
+    try:
+        # Replace these with actual paths to vintage/serif fonts (e.g., Times New Roman, Playfair Display)
+        font_path = "timesbd.ttf" if bold else "times.ttf"
+        return ImageFont.truetype(font_path, size)
+    except IOError:
+        return ImageFont.load_default()
 
 def add_vintage_texture(img: Image.Image) -> Image.Image:
     """Applies an ultimate level newspaper texture: grain, scanlines, and vignette."""
@@ -16839,7 +16806,7 @@ async def removey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await mid_game_remove_logic(update, context, "Y")
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """➕ Smart add: editing phase -> uses editing_team auto; live match -> /add x @p1 @p2"""
+    """➕ Smart add: editing phase -> uses editing_team; live match -> reply or /add @user1 @user2 then team picker"""
     chat = update.effective_chat
     user = update.effective_user
     if chat.id not in active_matches:
@@ -16847,36 +16814,181 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     match = active_matches[chat.id]
 
-    # ── EDITING PHASE: /add @p1 @p2 @p3 → team from editing_team ──
+    # ── EDITING PHASE ──
     if match.phase == GamePhase.TEAM_EDIT:
         await add_player_command(update, context)
         return
 
-    # ── LIVE MATCH: /add x @p1 @p2 @p3 ──
-    if match.phase == GamePhase.MATCH_IN_PROGRESS:
-        if not context.args:
-            await update.message.reply_text(
-                "ℹ️ <b>Usage (live match):</b>\n"
-                "<code>/add x @player1 @player2</code> → Add to Team X\n"
-                "<code>/add y @player1 @player2</code> → Add to Team Y\n\n"
-                "<b>Usage (editing phase):</b>\n"
-                "Click <b>Edit Team X / Y</b> button, then:\n"
-                "<code>/add @player1 @player2 @player3</code>",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        team_letter = context.args[0].upper()
-        if team_letter not in ("X", "Y"):
-            await update.message.reply_text("⚠️ Specify team: <code>/add x</code> or <code>/add y</code>", parse_mode=ParseMode.HTML)
-            return
-        context.args = context.args[1:]
-        await mid_game_add_logic(update, context, team_letter)
+    # ── LIVE MATCH ──
+    if match.phase != GamePhase.MATCH_IN_PROGRESS:
+        await update.message.reply_text("⚠️ Cannot add players in current match phase.", parse_mode=ParseMode.HTML)
         return
 
-    await update.message.reply_text("⚠️ Cannot add players in current match phase.", parse_mode=ParseMode.HTML)
+    if user.id != match.host_id:
+        await update.message.reply_text("🚧 <b>HOST ONLY!</b> Only the host can add players mid-game.", parse_mode=ParseMode.HTML)
+        return
+
+    # Collect target users: reply + args together (mass support)
+    targets = []
+
+    # 1. Reply target
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        ru = update.message.reply_to_message.from_user
+        if not ru.is_bot:
+            targets.append((ru.id, ru.username or "", ru.first_name or str(ru.id)))
+
+    # 2. Args targets (@username or user_id)
+    for arg in (context.args or []):
+        if arg.startswith("@"):
+            uname = arg[1:].lower()
+            found = False
+            for uid, data in user_data.items():
+                if data.get("username", "").lower() == uname:
+                    targets.append((uid, data.get("username", ""), data.get("first_name", uname)))
+                    found = True
+                    break
+            if not found:
+                try:
+                    chat_obj = await context.bot.get_chat(arg)
+                    targets.append((chat_obj.id, chat_obj.username or "", chat_obj.first_name or arg))
+                except Exception:
+                    pass
+        elif arg.lstrip("-").isdigit():
+            uid_int = int(arg)
+            try:
+                chat_obj = await context.bot.get_chat(uid_int)
+                targets.append((chat_obj.id, chat_obj.username or "", chat_obj.first_name or str(uid_int)))
+            except Exception:
+                targets.append((uid_int, "", str(uid_int)))
+
+    # Deduplicate
+    seen = set()
+    unique_targets = []
+    for t in targets:
+        if t[0] not in seen:
+            seen.add(t[0])
+            unique_targets.append(t)
+    targets = unique_targets
+
+    if not targets:
+        await update.message.reply_text(
+            "ℹ️ <b>ADD PLAYER (Live Match)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>Reply to a message:</b>  reply + <code>/add</code>\n"
+            "<b>By username (mass):</b>  <code>/add @user1 @user2 ...</code>\n"
+            "<b>By user ID (mass):</b>   <code>/add 12345 67890 ...</code>\n\n"
+            "Bot will then ask which team to add them to.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Filter out already-in-team players
+    valid_targets = []
+    already_in = []
+    for (uid, uname, fname) in targets:
+        if match.team_x.get_player(uid) or match.team_y.get_player(uid):
+            already_in.append(fname)
+        else:
+            valid_targets.append((uid, uname, fname))
+
+    warning = ""
+    if already_in:
+        warning = f"\n⚠️ Already in a team: {', '.join(already_in)}"
+
+    if not valid_targets:
+        await update.message.reply_text(f"⚠️ All mentioned players are already in a team!{warning}", parse_mode=ParseMode.HTML)
+        return
+
+    # Store pending in bot_data
+    pending_key = f"addpending_{chat.id}_{user.id}"
+    context.bot_data[pending_key] = valid_targets  # list of (uid, uname, fname)
+
+    uid_str = ",".join(str(t[0]) for t in valid_targets)[:200]
+    names_display = ", ".join(f"<b>{html.escape(t[2])}</b>" for t in valid_targets)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"🔵 {match.team_x.name}", callback_data=f"addpick_X_{chat.id}_{user.id}"),
+        InlineKeyboardButton(f"🔴 {match.team_y.name}", callback_data=f"addpick_Y_{chat.id}_{user.id}"),
+    ]])
+
+    await update.message.reply_text(
+        f"➕ <b>ADD PLAYER(S) — CHOOSE TEAM</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 Player(s): {names_display}{warning}\n\n"
+        f"👇 Which team should they join?",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
+
+
+async def addpick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle team picker for /add command"""
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    parts = query.data.split("_")
+    # addpick_X_chatid_userid
+    if len(parts) < 4:
+        await query.answer("❌ Invalid data.", show_alert=True)
+        return
+    team_letter = parts[1]
+    try:
+        chat_id = int(parts[2])
+        host_id = int(parts[3])
+    except (ValueError, IndexError):
+        await query.answer("❌ Invalid data.", show_alert=True)
+        return
+
+    if user.id != host_id:
+        await query.answer("🚫 Only the host can pick the team!", show_alert=True)
+        return
+
+    if chat_id not in active_matches:
+        await query.message.edit_text("❌ No active match.", parse_mode=ParseMode.HTML)
+        return
+    match = active_matches[chat_id]
+    team = match.team_x if team_letter == "X" else match.team_y
+
+    pending_key = f"addpending_{chat_id}_{host_id}"
+    targets = context.bot_data.pop(pending_key, [])
+
+    if not targets:
+        await query.message.edit_text("⚠️ Session expired. Please use /add again.", parse_mode=ParseMode.HTML)
+        return
+
+    added = []
+    skipped = []
+
+    for (uid, uname, fname) in targets:
+        if match.team_x.get_player(uid) or match.team_y.get_player(uid):
+            skipped.append(fname)
+            continue
+        if uid not in user_data:
+            user_data[uid] = {
+                "user_id": uid, "username": uname, "first_name": fname,
+                "started_at": datetime.now().isoformat(), "total_matches": 0
+            }
+            init_player_stats(uid)
+            save_data()
+        new_player = Player(uid, uname, fname)
+        team.add_player(new_player)
+        added.append(fname)
+
+    added_str = ", ".join(f"<b>{html.escape(n)}</b>" for n in added) if added else "None"
+    skip_str = (f"\n⚠️ Already in team (skipped): {', '.join(skipped)}" if skipped else "")
+
+    await query.message.edit_text(
+        f"✅ <b>ADDED → TEAM {team_letter} ({html.escape(team.name)})</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 Added: {added_str}{skip_str}\n"
+        f"📊 Team size: <b>{len(team.players)}</b>\n\n"
+        f"<i>Added mid-game by Host</i>",
+        parse_mode=ParseMode.HTML
+    )
+
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """➖ Smart remove: editing phase -> uses editing_team auto; live match -> /remove x @p1 @p2"""
+    """➖ Smart remove: editing phase -> remove_player_command; live match -> reply or /remove @user [mass]"""
     chat = update.effective_chat
     user = update.effective_user
     if chat.id not in active_matches:
@@ -16884,33 +16996,99 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     match = active_matches[chat.id]
 
-    # ── EDITING PHASE: /remove @p1 @p2 → team from editing_team ──
+    # ── EDITING PHASE ──
     if match.phase == GamePhase.TEAM_EDIT:
         await remove_player_command(update, context)
         return
 
-    # ── LIVE MATCH: /remove x @p1 @p2 ──
-    if match.phase == GamePhase.MATCH_IN_PROGRESS:
-        if not context.args:
-            await update.message.reply_text(
-                "ℹ️ <b>Usage (live match):</b>\n"
-                "<code>/remove x @player1 @player2</code> → Remove from Team X\n"
-                "<code>/remove y @player1 @player2</code> → Remove from Team Y\n\n"
-                "<b>Usage (editing phase):</b>\n"
-                "Click <b>Edit Team X / Y</b> button, then:\n"
-                "<code>/remove @player1 @player2 @player3</code>",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        team_letter = context.args[0].upper()
-        if team_letter not in ("X", "Y"):
-            await update.message.reply_text("⚠️ Specify team: <code>/remove x</code> or <code>/remove y</code>", parse_mode=ParseMode.HTML)
-            return
-        context.args = context.args[1:]
-        await mid_game_remove_logic(update, context, team_letter)
+    # ── LIVE MATCH ──
+    if match.phase != GamePhase.MATCH_IN_PROGRESS:
+        await update.message.reply_text("⚠️ Cannot remove players in current match phase.", parse_mode=ParseMode.HTML)
         return
 
-    await update.message.reply_text("⚠️ Cannot remove players in current match phase.", parse_mode=ParseMode.HTML)
+    if user.id != match.host_id:
+        await update.message.reply_text("🚧 <b>HOST ONLY!</b> Only the host can remove players mid-game.", parse_mode=ParseMode.HTML)
+        return
+
+    # Collect target user IDs: reply + args (mass support)
+    target_ids = []
+
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        ru = update.message.reply_to_message.from_user
+        if not ru.is_bot:
+            target_ids.append(ru.id)
+
+    for arg in (context.args or []):
+        if arg.startswith("@"):
+            uname = arg[1:].lower()
+            for uid, data in user_data.items():
+                if data.get("username", "").lower() == uname:
+                    target_ids.append(uid)
+                    break
+        elif arg.lstrip("-").isdigit():
+            target_ids.append(int(arg))
+
+    target_ids = list(dict.fromkeys(target_ids))  # deduplicate
+
+    if not target_ids:
+        await update.message.reply_text(
+            "ℹ️ <b>REMOVE PLAYER (Live Match)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>Reply to a message:</b>  reply + <code>/remove</code>\n"
+            "<b>By username (mass):</b>  <code>/remove @user1 @user2 ...</code>\n"
+            "<b>By user ID (mass):</b>   <code>/remove 12345 67890 ...</code>\n\n"
+            "Bot auto-detects which team the player is in.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    removed = []
+    not_found = []
+    blocked = []
+
+    for target_id in target_ids:
+        # Auto-detect team
+        team = None
+        team_letter = None
+        if match.team_x.get_player(target_id):
+            team = match.team_x
+            team_letter = "X"
+        elif match.team_y.get_player(target_id):
+            team = match.team_y
+            team_letter = "Y"
+
+        if not team:
+            not_found.append(str(target_id))
+            continue
+
+        player = team.get_player(target_id)
+
+        # Prevent removing active players
+        if team == match.current_batting_team:
+            striker_id = team.players[team.current_batsman_idx].user_id if team.current_batsman_idx is not None else None
+            ns_id = team.players[team.current_non_striker_idx].user_id if team.current_non_striker_idx is not None else None
+            if target_id in (striker_id, ns_id):
+                blocked.append(f"{player.first_name} (currently batting)")
+                continue
+        if team == match.current_bowling_team:
+            bowler_id = team.players[team.current_bowler_idx].user_id if team.current_bowler_idx is not None else None
+            if target_id == bowler_id:
+                blocked.append(f"{player.first_name} (currently bowling)")
+                continue
+
+        team.remove_player(target_id)
+        removed.append(f"{player.first_name} (Team {team_letter})")
+
+    lines_out = ["✅ <b>REMOVE PLAYER RESULT</b>\n━━━━━━━━━━━━━━━━━━━━━━━"]
+    if removed:
+        lines_out.append(f"❎ Removed: {', '.join(removed)}")
+    if blocked:
+        lines_out.append(f"🚧 Blocked (active): {', '.join(blocked)}")
+    if not_found:
+        lines_out.append(f"⚠️ Not in any team: {', '.join(not_found)}")
+
+    await update.message.reply_text("\n".join(lines_out), parse_mode=ParseMode.HTML)
+
 
 async def mid_game_add_logic(update: Update, context: ContextTypes.DEFAULT_TYPE, team_name: str):
     """🤝 Unified Add Logic (Reply / Username / ID) → Host Only"""
@@ -17450,19 +17628,131 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⌨️ <code>/bid [higher amount]</code> to outbid!"
         )
         
+        # Quick bid buttons relative to current bid amount
+        next_3 = amount + 3
+        next_5 = amount + 5
+        next_10 = amount + 10
+        quick_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}"),
+            InlineKeyboardButton(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}"),
+            InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}"),
+        ]])
+
         try:
             await update.message.reply_animation(
                 animation=bid_gif,
                 caption=msg,
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.HTML,
+                reply_markup=quick_kb
             )
         except:
             # Fallback to photo if GIF fails
             await update.message.reply_photo(
                 photo=MEDIA_ASSETS.get("new_bid"),
                 caption=msg,
-                parse_mode=ParseMode.HTML
+                parse_mode=ParseMode.HTML,
+                reply_markup=quick_kb
             )
+
+
+async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """⚡ Handle quick bid buttons (+3, +5, +10) in auction"""
+    query = update.callback_query
+    user = query.from_user
+    parts = query.data.split("_")  # quickbid_chatid_amount
+    if len(parts) < 3:
+        await query.answer("❌ Invalid data.", show_alert=True)
+        return
+    try:
+        chat_id = int(parts[1])
+        amount = int(parts[2])
+    except (ValueError, IndexError):
+        await query.answer("❌ Invalid data.", show_alert=True)
+        return
+
+    if chat_id not in active_auctions:
+        await query.answer("❌ No active auction!", show_alert=True)
+        return
+
+    async with auction_locks[chat_id]:
+        auction = active_auctions[chat_id]
+        if auction.phase != AuctionPhase.AUCTION_LIVE:
+            await query.answer("⏳ Bidding not open right now!", show_alert=True)
+            return
+
+        # Find team for this user
+        team = next((t for t in auction.teams.values() if t.bidder_id == user.id), None)
+        team_name = next((n for n, t in auction.teams.items() if t.bidder_id == user.id), None)
+
+        if not team:
+            # Check assisted bidders
+            if hasattr(auction, 'assisted_bidders'):
+                for t_name, bidder_id in auction.assisted_bidders.items():
+                    if bidder_id == user.id and auction.assist_mode.get(t_name):
+                        team_name = t_name
+                        team = auction.teams[t_name]
+                        break
+            if not team:
+                await query.answer("❌ You are not a team bidder!", show_alert=True)
+                return
+
+        if amount <= auction.current_highest_bid:
+            await query.answer(f"🚫 Bid must be > {auction.current_highest_bid}!", show_alert=True)
+            return
+
+        # Same-team overbid check
+        if auction.current_highest_bidder == team_name:
+            last_bid_teams = getattr(auction, 'last_bid_teams', [])
+            if last_bid_teams and last_bid_teams[-1] == team_name:
+                await query.answer(f"🚫 You're already highest bidder at {auction.current_highest_bid}!", show_alert=True)
+                return
+
+        if amount > team.purse_remaining:
+            await query.answer(f"💰 Insufficient purse! You have {team.purse_remaining}", show_alert=True)
+            return
+
+        # Place bid
+        auction.current_highest_bid = amount
+        auction.current_highest_bidder = team_name
+        if not hasattr(auction, 'last_bid_teams'):
+            auction.last_bid_teams = []
+        auction.last_bid_teams.append(team_name)
+        if len(auction.last_bid_teams) > 10:
+            auction.last_bid_teams = auction.last_bid_teams[-10:]
+
+        if auction.bid_timer_task:
+            auction.bid_timer_task.cancel()
+        auction.bid_end_time = time.time() + 30
+        auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
+
+        p_name = auction.current_player_name
+        p_tag = f"<a href='tg://user?id={auction.current_player_id}'>{p_name}</a>"
+        bidder_tag = f"<a href='tg://user?id={user.id}'>{html.escape(user.first_name)}</a>"
+
+        next_3 = amount + 3
+        next_5 = amount + 5
+        next_10 = amount + 10
+        quick_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}"),
+            InlineKeyboardButton(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}"),
+            InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}"),
+        ]])
+
+        msg = (
+            f"⚡ <b>QUICK BID</b> → {team_name}\n\n"
+            f"👤 {p_tag}\n"
+            f"💰 <b>{amount} coins</b>  ·  Bidder: {bidder_tag}\n"
+            f"💼 Purse after bid: <b>{team.purse_remaining - amount}</b>\n"
+            f"⏱ Timer reset: 30s"
+        )
+
+        try:
+            await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML, reply_markup=quick_kb)
+        except Exception as e:
+            logger.error(f"quickbid send error: {e}")
+
+        await query.answer(f"✅ Bid placed: {amount} coins!", show_alert=False)
+
 
 async def _update_auction_history_message(context, chat_id: int, auction):
     """Edit or send the running auction history log message."""
@@ -23674,20 +23964,27 @@ def _clear_queue(group_id: int, kind: str):
     _selection_queues[group_id][kind].clear()
 
 async def qbatting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Queue a batsman for next wicket: /qbatting [serial]  (captain only, max 3)"""
+    """Queue a batsman for next wicket: /qbatting [serial]  (captain or host, max 3)"""
     chat = update.effective_chat
     user = update.effective_user
     if chat.type == "private":
         return
     if chat.id not in active_matches:
+        await update.message.reply_text("🚫 No active match in this group!", parse_mode=ParseMode.HTML)
         return
     match = active_matches[chat.id]
     if match.phase != GamePhase.MATCH_IN_PROGRESS:
+        await update.message.reply_text("⏳ Match is not in progress yet!", parse_mode=ParseMode.HTML)
         return
     bat_team = match.current_batting_team
-    # Only batting captain
-    if user.id != bat_team.captain_id:
-        m = await update.message.reply_text("🚫 Only the batting captain can queue batsmen!", parse_mode=ParseMode.HTML)
+    if bat_team is None:
+        await update.message.reply_text("⚠️ Batting team not set yet. Wait for toss!", parse_mode=ParseMode.HTML)
+        return
+    # Allow batting captain OR host
+    is_captain = bool(bat_team.captain_id and user.id == bat_team.captain_id)
+    is_host = (user.id == match.host_id)
+    if not is_captain and not is_host:
+        m = await update.message.reply_text("🚫 Only the batting captain or host can queue batsmen!", parse_mode=ParseMode.HTML)
         asyncio.create_task(_auto_delete(context, chat.id, m.message_id, 5))
         return
     if not context.args:
@@ -23770,9 +24067,11 @@ async def qbatting_confirm_callback(update: Update, context: ContextTypes.DEFAUL
         match = active_matches[group_id]
         bat_team = match.current_batting_team
 
-        # Only batting captain can confirm
-        if user.id != bat_team.captain_id:
-            await query.answer("🚫 Only the batting captain can confirm!", show_alert=True)
+        # Batting captain or host can confirm
+        is_captain = bool(bat_team.captain_id and user.id == bat_team.captain_id)
+        is_host = (user.id == match.host_id)
+        if not is_captain and not is_host:
+            await query.answer("🚫 Only the batting captain or host can confirm!", show_alert=True)
             return
 
         player = bat_team.get_player(player_uid)
@@ -24929,10 +25228,6 @@ def main():
     application.add_handler(CommandHandler("purse", wallet_command))  # Alias
     application.add_handler(CommandHandler("unsold", unsold_command))
     application.add_handler(CommandHandler("startauction", startauction_command))
-    application.add_handler(CommandHandler("addx", addx_command))
-    application.add_handler(CommandHandler("removex", removex_command))
-    application.add_handler(CommandHandler("addy", addy_command))
-    application.add_handler(CommandHandler("removey", removey_command))
     
     # Auction controls
     application.add_handler(CommandHandler("endauction", endauction_command))
@@ -24958,8 +25253,6 @@ def main():
     application.add_handler(CommandHandler("changehost", changehost_command))
     application.add_handler(CommandHandler("changecap_x", changecap_x_command))
     application.add_handler(CommandHandler("changecap_y", changecap_y_command))
-    application.add_handler(CommandHandler("impact", impact_command))
-    application.add_handler(CommandHandler("impactstatus", impactstatus_command))
     
     application.add_handler(CommandHandler("bangroup", bangroup_command))
     application.add_handler(CommandHandler("unbangroup", unbangroup_command))
@@ -24979,6 +25272,8 @@ def main():
     application.add_handler(CallbackQueryHandler(qbatting_confirm_callback, pattern="^qbat_(confirm|cancel)_"))
     application.add_handler(CallbackQueryHandler(qbowling_confirm_callback, pattern="^qbowl_(confirm|cancel)_"))
 
+    application.add_handler(CallbackQueryHandler(addpick_callback, pattern="^addpick_"))
+    application.add_handler(CallbackQueryHandler(quickbid_callback, pattern="^quickbid_"))
     application.add_handler(CallbackQueryHandler(scorecard_refresh_callback, pattern="^scorecard_refresh_"))
     application.add_handler(CallbackQueryHandler(reaction_callback, pattern="^react_"))
     application.add_handler(CallbackQueryHandler(rematch_callback, pattern="^rematch_"))

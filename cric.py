@@ -9339,6 +9339,8 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
     auction.current_highest_bid = player["base_price"]
     auction.current_highest_bidder = None
     auction.last_bid_teams = []  # Reset bid history for new player
+    auction.bids_frozen = False
+    auction.pending_sold_confirmation = False
     
     # ✅ FIX: Set phase to AUCTION_LIVE
     auction.phase = AuctionPhase.AUCTION_LIVE
@@ -9404,7 +9406,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         f"┃ 👤 Player: {player_tag}\n"
         f"┃ 🪙 Base Price: {player['base_price']} Coins\n"
         f"┃ \n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"┃ 📊 TEAM CAREER STATS\n"
         f"┃ ━━━━━━━━━━━━━━━━━━━━\n"
         f"┃ └  Matches: {_m}  |  Wins: {_w} ({_win_rate}%)\n"
@@ -9418,13 +9420,13 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         f"┃ ├  Wickets: {_wk}  |  Economy: {_eco}\n"
         f"┃ └  Best Figure: {_best_fig}\n"
         f"┃ \n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"┃ 💰 CURRENT BID DETAILS\n"
         f"┃ ━━━━━━━━━━━━━━━━━━━━\n"
         f"┃ ├  💵 Current Bid: {player['base_price']} Coins\n"
         f"┃ ├  👑 Bid Leader: None\n"
-        f"┃ └  ⏳ Timer: 30 Seconds\n"
-        f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"┃ └  ⏳ Timer: 45 Seconds\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     )
     
     # Quick bid buttons (+3, +5, +10 above base price)
@@ -9453,7 +9455,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         )
     
     # Start timer
-    auction.bid_end_time = time.time() + 30
+    auction.bid_end_time = time.time() + 45
     auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
 # /soloplayers
@@ -15759,7 +15761,7 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"┃ 💎 PERSONAL BESTS\n"
         f"┃ ├ 🏏 Batting: {stats['highest']} Runs\n"
         f"┃ └ 🥎 Bowling: {stats['best_bowling']}\n"
-        f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👉 Tap a section below for deeper stats!"
     )
 
@@ -16549,46 +16551,15 @@ async def auc_confirm_sold_callback(update: Update, context: ContextTypes.DEFAUL
         await query.answer("🚫 Only the Auctioneer can confirm!", show_alert=True)
         return
 
-    if not auction.pending_sold_confirmation:
+    if not getattr(auction, 'pending_sold_confirmation', False):
         await query.answer("⚠️ Already processed.", show_alert=True)
         return
 
-    auction.pending_sold_confirmation = False  # signal the timer to skip auto-finalize
-    auction.bids_frozen = False
-    # Finalize sale
-    _bid = auction.current_highest_bid
-    _bidder = auction.current_highest_bidder
-    _pid = auction.current_player_id
-    _pname = auction.current_player_name
-    if _bidder and _bidder in auction.teams:
-        _team = auction.teams[_bidder]
-        _team.add_player(_pid, _pname, _bid)
-        auction.sold_players.append({"player_id": _pid, "player_name": _pname, "price": _bid, "team": _bidder})
-        auction.auction_history.append({"player_id": _pid, "player_name": _pname, "team": _bidder, "price": _bid, "sold": True})
-        player_tag = f"<a href='tg://user?id={_pid}'>{_pname}</a>"
-        msg = (
-            f"🔨 <b>SOLD!</b> (Auctioneer Confirmed) → {_bidder}\n\n"
-            f"👤 {player_tag}\n"
-            f"💰 Final Price: <b>{_bid} coins</b>\n"
-            f"💼 Purse Remaining: <b>{_team.purse_remaining}</b>  ·  Squad: <b>{len(_team.players)}</b>\n\n"
-            f"🎯 Next player coming up..."
-        )
-        try:
-            await query.message.edit_text(msg, parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
-        try:
-            await context.bot.send_animation(chat_id, random.choice(GIFS.get("auction_sold")), caption=msg, parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
-        await _update_auction_history_message(context, chat_id, auction)
-        auction.current_player_id = None
-        auction.current_player_name = ""
-        auction.current_highest_bid = 0
-        auction.current_highest_bidder = None
-        auction.bid_timer_task = None
-        await asyncio.sleep(2)
-        await bring_next_player(context, chat_id, auction)
+    # Trigger event-driven confirmation
+    auction.confirm_action = "confirm"
+    if hasattr(auction, 'sold_confirm_event'):
+        auction.sold_confirm_event.set()
+        
     await query.answer("✅ Player sold and confirmed!")
 
 async def auc_reject_sold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -16611,33 +16582,15 @@ async def auc_reject_sold_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer("🚫 Only the Auctioneer can reject!", show_alert=True)
         return
 
-    if not auction.pending_sold_confirmation:
+    if not getattr(auction, 'pending_sold_confirmation', False):
         await query.answer("⚠️ Already processed.", show_alert=True)
         return
 
-    auction.pending_sold_confirmation = False
-    auction.bids_frozen = False
-    # Put player back to front of pool for re-auction
-    _pid = auction.current_player_id
-    _pname = auction.current_player_name
-    _base = auction.current_base_price
-    auction.player_pool.insert(0, {"player_id": _pid, "player_name": _pname, "base_price": _base})
-    msg = (
-        f"❌ <b>SALE REJECTED</b> by Auctioneer!\n\n"
-        f"👤 <b>{_pname}</b> goes back to bidding.\n"
-        f"🎯 Next player coming up..."
-    )
-    try:
-        await query.message.edit_text(msg, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
-    auction.current_player_id = None
-    auction.current_player_name = ""
-    auction.current_highest_bid = 0
-    auction.current_highest_bidder = None
-    auction.bid_timer_task = None
-    await asyncio.sleep(2)
-    await bring_next_player(context, chat_id, auction)
+    # Trigger event-driven rejection
+    auction.confirm_action = "reject"
+    if hasattr(auction, 'sold_confirm_event'):
+        auction.sold_confirm_event.set()
+        
     await query.answer("❌ Sale rejected — player re-entering pool.")
 
 async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -16690,13 +16643,13 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     if not auction.bid_timer_task and auction.phase == AuctionPhase.AUCTION_LIVE:
-        auction.bid_end_time = time.time() + 30
+        auction.bid_end_time = time.time() + 45
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
         
         await update.message.reply_text(
             "▶️ <b>AUCTION RESUMED!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⏱ Timer: 30 seconds\n"
+            "⏱ Timer: 45 seconds\n"
             "💰 Bidding is now active!\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━",
             parse_mode=ParseMode.HTML
@@ -16733,14 +16686,14 @@ async def cancelbid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Reset bid timer
     if auction.bid_timer_task:
         auction.bid_timer_task.cancel()
-    auction.bid_end_time = time.time() + 30
+    auction.bid_end_time = time.time() + 45
     auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
     await update.message.reply_text(
         f"🔄 <b>LAST BID CANCELLED!</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"❌ <b>Cancelled Bid:</b> {old_bid}\n"
         f"💰 <b>Reset to Base:</b> {auction.current_base_price}\n"
-        f"⏱ <b>Timer Reset:</b> 30s\n\n"
+        f"⏱ <b>Timer Reset:</b> 45s\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode=ParseMode.HTML
     )
@@ -16858,7 +16811,7 @@ async def auction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   Use: <code>/startauction</code>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
         "💰 <b>Starting Purse:</b> 1000 per team\n"
-        "⏱ <b>Bid Timer:</b> 30 seconds\n"
+        "⏱ <b>Bid Timer:</b> 45 seconds\n"
         "━━━━━━━━━━━━━━━━━━━━━━━"
     )
     
@@ -17774,7 +17727,7 @@ async def auction_list_command(update: Update, context: ContextTypes.DEFAULT_TYP
         msg += f"┃ <i>No players sold yet.</i>\n"
 
     msg += f"┃ \n"
-    msg += f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"┃ ❌ UNSOLD PLAYERS ({unsold_count})\n"
     msg += f"┃ ━━━━━━━━━━━━━━━━━━━━\n"
     if auction.unsold_players:
@@ -17787,9 +17740,9 @@ async def auction_list_command(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         msg += f"┃ <i>No unsold players.</i>\n"
 
-    msg += f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"┃ ⏳ Remaining Pool: {len(auction.player_pool)}\n"
-    msg += f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
@@ -17852,13 +17805,13 @@ async def pauseauction_command(update: Update, context: ContextTypes.DEFAULT_TYP
         f"┃ ├  🔴 Unsold Players: {len(auction.unsold_players)}\n"
         f"┃ └  ⏳ Remaining Pool: {remaining_count}\n"
         f"┃ \n"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{sold_summary}"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{remaining_list}"
-        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"┃ ⚙️ Use: <code>/resumeauction</code> to continue the pool!\n"
-        f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -17882,12 +17835,12 @@ async def resumeauction_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     if not auction.bid_timer_task and auction.phase == AuctionPhase.AUCTION_LIVE:
-        auction.bid_end_time = time.time() + 30
+        auction.bid_end_time = time.time() + 45
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
         await update.message.reply_text(
             "▶️ <b>AUCTION RESUMED!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⏱ <b>Timer:</b> 30 seconds\n"
+            "⏱ <b>Timer:</b> 45 seconds\n"
             "💰 Bidding is now active!\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━",
             parse_mode=ParseMode.HTML
@@ -18022,6 +17975,11 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         return
+        
+    # Check outside the lock to reject silently during confirmation phase
+    auction = active_auctions[chat_id]
+    if getattr(auction, 'bids_frozen', False) or getattr(auction, 'pending_sold_confirmation', False):
+        return
     
     async with auction_locks[chat_id]:  # ✅ Fixed bracket notation
         auction = active_auctions[chat_id]
@@ -18034,13 +17992,6 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Block bids during auctioneer confirmation window
-        if getattr(auction, 'bids_frozen', False):
-            await update.message.reply_text(
-                "⏳ <b>BIDS FROZEN!</b>\n\nAwaiting auctioneer confirmation — please wait.",
-                parse_mode=ParseMode.HTML
-            )
-            return
         team = next((t for t in auction.teams.values() if t.bidder_id == user_id), None)
         team_name = next((n for n, t in auction.teams.items() if t.bidder_id == user_id), None)
         
@@ -18128,7 +18079,7 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             auction.bid_timer_task.cancel()
             auction.bid_timer_task = None
         
-        auction.bid_end_time = time.time() + 30
+        auction.bid_end_time = time.time() + 45
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
         
         # 🎬 Confirmation with GIF
@@ -18144,10 +18095,10 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"┃ ━━━━━━━━━━━━━━━━━━━━\n"
             f"┃ 👤 Player: {p_tag}\n"
             f"┃ 🪙 Bid Amount: {amount} Coins\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"┃ 👑 Bid Leader: {bidder_tag}\n"
             f"┃ 👥 Team: {team_name}\n"
-            f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
         
         # Quick bid buttons relative to current bid amount
@@ -18196,16 +18147,23 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ No active auction!", show_alert=True)
         return
 
+    # Check outside lock to reject silently during confirmation phase
+    auction = active_auctions[chat_id]
+    if getattr(auction, 'bids_frozen', False) or getattr(auction, 'pending_sold_confirmation', False):
+        await query.answer()  # Silent answer to stop loading spinner
+        return
+
     async with auction_locks[chat_id]:
         auction = active_auctions[chat_id]
         if auction.phase != AuctionPhase.AUCTION_LIVE:
             await query.answer("⏳ Bidding not open right now!", show_alert=True)
             return
         
-        # Block bids during auctioneer confirmation window
-        if getattr(auction, 'bids_frozen', False):
-            await query.answer("⏳ Awaiting auctioneer confirmation — bids frozen!", show_alert=True)
+        # Block bids during auctioneer confirmation window (double check inside lock)
+        if getattr(auction, 'bids_frozen', False) or getattr(auction, 'pending_sold_confirmation', False):
+            await query.answer()
             return
+            
         team = next((t for t in auction.teams.values() if t.bidder_id == user.id), None)
         team_name = next((n for n, t in auction.teams.items() if t.bidder_id == user.id), None)
 
@@ -18247,12 +18205,12 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if auction.bid_timer_task:
             auction.bid_timer_task.cancel()
-        auction.bid_end_time = time.time() + 30
+        auction.bid_end_time = time.time() + 45
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
         p_name = auction.current_player_name
         p_tag = f"<a href='tg://user?id={auction.current_player_id}'>{p_name}</a>"
-        bidder_tag = f"<a href='tg://user?id={user.id}'>{html.escape(user.first_name)}</a>"
+        bidder_tag = get_user_tag(user)
 
         next_3 = amount + 3
         next_5 = amount + 5
@@ -18263,18 +18221,40 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}"),
         ]])
 
+        # Premium Normal Bid layout applied to Quick Bid too
         msg = (
-            f"⚡ <b>QUICK BID</b> → {team_name}\n\n"
-            f"👤 {p_tag}\n"
-            f"💰 <b>{amount} coins</b>  ·  Bidder: {bidder_tag}\n"
-            f"💼 Purse after bid: <b>{team.purse_remaining - amount}</b>\n"
-            f"⏱ Timer reset: 30s"
+            f"╭━━ 🔨 CRICOVERSE LIVE BID ━━━━━━\n"
+            f"┃ 💰 NEW BID PLACED!\n"
+            f"┃ ━━━━━━━━━━━━━━━━━━━━\n"
+            f"┃ 👤 Player: {p_tag}\n"
+            f"┃ 🪙 Bid Amount: {amount} Coins\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┃ 👑 Bid Leader: {bidder_tag}\n"
+            f"┃ 👥 Team: {team_name}\n"
+            f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
 
+        bid_gif = GIFS.get("new_bid")
+
         try:
-            await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML, reply_markup=quick_kb)
-        except Exception as e:
-            logger.error(f"quickbid send error: {e}")
+            await context.bot.send_animation(
+                chat_id,
+                animation=bid_gif,
+                caption=msg,
+                parse_mode=ParseMode.HTML,
+                reply_markup=quick_kb
+            )
+        except Exception:
+            try:
+                await context.bot.send_photo(
+                    chat_id,
+                    photo=MEDIA_ASSETS.get("new_bid"),
+                    caption=msg,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=quick_kb
+                )
+            except Exception as e:
+                logger.error(f"quickbid send media error: {e}")
 
         await query.answer(f"✅ Bid placed: {amount} coins!", show_alert=False)
 
@@ -18323,7 +18303,7 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
     """⏳ Bid Timer with live countdown + history log"""
     try:
         # ── Live countdown: edit a message every 5 seconds ──
-        countdown_secs = 30
+        countdown_secs = 45
 
         def countdown_text(s):
             color = "🔴" if s <= 10 else ("🟡" if s <= 20 else "🟢")
@@ -18369,6 +18349,7 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                     pass  # message may have been deleted or edited externally
 
         # ── Resolve Bid ──
+        enter_confirm = False
         async with auction_locks[chat_id]:
             if auction.phase != AuctionPhase.AUCTION_LIVE:
                 return
@@ -18385,6 +18366,12 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 # ── SOLD — Ask auctioneer to confirm ──
                 auction.bids_frozen = True  # freeze bids during confirmation window
                 auction.pending_sold_confirmation = True
+                
+                # Setup event
+                auction.sold_confirm_event = asyncio.Event()
+                auction.confirm_action = None
+                enter_confirm = True
+
                 _pid  = auction.current_player_id
                 _pname = auction.current_player_name
                 _price = auction.current_highest_bid
@@ -18410,40 +18397,6 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                     conf_mid = conf_m.message_id
                 except Exception:
                     conf_mid = None
-
-                # Wait 10 seconds for auctioneer confirmation
-                await asyncio.sleep(10)
-
-                # Whether confirmed or not, if still pending → auto-finalize
-                if auction.pending_sold_confirmation:
-                    auction.pending_sold_confirmation = False
-                    # Delete confirmation message
-                    if conf_mid:
-                        try: await context.bot.delete_message(chat_id, conf_mid)
-                        except Exception: pass
-                    # Finalize the sale
-                    _team.add_player(_pid, _pname, _price)
-                    auction.sold_players.append({"player_id": _pid, "player_name": _pname, "price": _price, "team": _bidder})
-                    auction.auction_history.append({"player_id": _pid, "player_name": _pname, "team": _bidder, "price": _price, "sold": True})
-                    final_msg = (
-                        f"╭━━ 🔨 AUCTION: SOLD! ━🥎\n"
-                        f"┃ 👤 Player: {player_tag}\n"
-                        f"┃ 👥 Bought By: {_bidder}\n"
-                        f"┃ 🪙 Final Price: {_price} Coins\n"
-                        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"┃ 📊 BUYER WALLET STATUS\n"
-                        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"┃ ├  💰 Purse Remaining: {_team.purse_remaining} Coins\n"
-                        f"┃ └  📦 Current Squad Size: {len(_team.players)}\n"
-                        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"┃ ⏳ Next player coming up...\n"
-                        f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    )
-                    try:
-                        await context.bot.send_animation(chat_id, GIFS.get("auction_sold"), caption=final_msg, parse_mode=ParseMode.HTML)
-                    except Exception:
-                        await context.bot.send_message(chat_id, final_msg, parse_mode=ParseMode.HTML)
-                auction.bids_frozen = False
             else:
                 # ── UNSOLD ──
                 auction.unsold_players.append({
@@ -18465,28 +18418,113 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                     f"┃ 🔴 UNSOLD: {player_tag}\n"
                     f"┃ 🪙 Base Price: {auction.current_base_price} Coins\n"
                     f"┃ ❌ No bids were placed.\n"
-                    f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"┃ 📊 Total Unsold: {len(auction.unsold_players)}\n"
                     f"┃ ⏳ Next player coming up...\n"
-                    f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 )
                 try:
                     await context.bot.send_animation(chat_id, GIFS.get("auction_unsold"), caption=msg, parse_mode=ParseMode.HTML)
                 except Exception:
                     await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
 
-            # Update history log message
-            await _update_auction_history_message(context, chat_id, auction)
+                # Update history log message
+                await _update_auction_history_message(context, chat_id, auction)
 
-            # Reset state
-            auction.current_player_id = None
-            auction.current_player_name = ""
-            auction.current_highest_bid = 0
-            auction.current_highest_bidder = None
-            auction.bid_timer_task = None
+                # Reset state
+                auction.current_player_id = None
+                auction.current_player_name = ""
+                auction.current_highest_bid = 0
+                auction.current_highest_bidder = None
+                auction.bid_timer_task = None
 
-            await asyncio.sleep(2)
-            await bring_next_player(context, chat_id, auction)
+                await asyncio.sleep(2)
+                await bring_next_player(context, chat_id, auction)
+
+        if enter_confirm:
+            # Wait 10 seconds or until event is set (outside the lock)
+            try:
+                await asyncio.wait_for(auction.sold_confirm_event.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                auction.confirm_action = "timeout"
+
+            # Acquire lock to finalize state safely
+            async with auction_locks[chat_id]:
+                # If auction object is no longer active in active_auctions, exit
+                if chat_id not in active_auctions or active_auctions[chat_id] is not auction:
+                    return
+
+                action = auction.confirm_action or "timeout"
+                auction.pending_sold_confirmation = False
+                auction.bids_frozen = False
+
+                if action in ("confirm", "timeout"):
+                    # Finalize sale
+                    _team.add_player(_pid, _pname, _price)
+                    auction.sold_players.append({"player_id": _pid, "player_name": _pname, "price": _price, "team": _bidder})
+                    auction.auction_history.append({"player_id": _pid, "player_name": _pname, "team": _bidder, "price": _price, "sold": True})
+                    
+                    final_msg = (
+                        f"🔨 <b>SOLD!</b> ({'Auctioneer Confirmed' if action == 'confirm' else 'Auto-Confirmed'}) → {_bidder}\n\n"
+                        f"👤 {player_tag}\n"
+                        f"💰 Final Price: <b>{_price} coins</b>\n"
+                        f"💼 Purse Remaining: <b>{_team.purse_remaining}</b>  ·  Squad: <b>{len(_team.players)}</b>\n\n"
+                        f"🎯 Next player coming up..."
+                    )
+                    
+                    if conf_mid:
+                        try:
+                            await context.bot.edit_message_text(chat_id=chat_id, message_id=conf_mid, text=final_msg, parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+
+                    final_anim_msg = (
+                        f"╭━━ 🔨 AUCTION: SOLD! ━🥎\n"
+                        f"┃ 👤 Player: {player_tag}\n"
+                        f"┃ 👥 Bought By: {_bidder}\n"
+                        f"┃ 🪙 Final Price: {_price} Coins\n"
+                        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"┃ 📊 BUYER WALLET STATUS\n"
+                        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"┃ ├  💰 Purse Remaining: {_team.purse_remaining} Coins\n"
+                        f"┃ └  📦 Current Squad Size: {len(_team.players)}\n"
+                        f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"┃ ⏳ Next player coming up...\n"
+                        f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    )
+                    try:
+                        sold_gif = random.choice(GIFS.get("auction_sold")) if isinstance(GIFS.get("auction_sold"), list) else GIFS.get("auction_sold")
+                        await context.bot.send_animation(chat_id, sold_gif, caption=final_anim_msg, parse_mode=ParseMode.HTML)
+                    except Exception:
+                        await context.bot.send_message(chat_id, final_anim_msg, parse_mode=ParseMode.HTML)
+
+                elif action == "reject":
+                    # Put player back to front of pool for re-auction
+                    auction.player_pool.insert(0, {"player_id": _pid, "player_name": _pname, "base_price": _price})
+                    
+                    reject_msg = (
+                        f"❌ <b>SALE REJECTED</b> by Auctioneer!\n\n"
+                        f"👤 <b>{_pname}</b> goes back to bidding.\n"
+                        f"🎯 Next player coming up..."
+                    )
+                    if conf_mid:
+                        try:
+                            await context.bot.edit_message_text(chat_id=chat_id, message_id=conf_mid, text=reject_msg, parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+
+                # Update history log message
+                await _update_auction_history_message(context, chat_id, auction)
+
+                # Reset state
+                auction.current_player_id = None
+                auction.current_player_name = ""
+                auction.current_highest_bid = 0
+                auction.current_highest_bidder = None
+                auction.bid_timer_task = None
+
+                await asyncio.sleep(2)
+                await bring_next_player(context, chat_id, auction)
 
     except asyncio.CancelledError:
         # On cancel (new bid came in), delete stale countdown message
@@ -22169,9 +22207,9 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             "╭━━ 🛑 MATCH ENDED ━━━━━━━━━━━━━\n"
             "┃ ⚠️ Match was forcefully stopped!\n"
             "┃ ❌ Stats were NOT saved to the database.\n"
-            "┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "┃ 🎮 Use /game to start a new match!\n"
-            "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+            "╰━━━━━━━━━━━━━━━━━━━━━━━━━\n",
             parse_mode=ParseMode.HTML
         )
         return
@@ -25549,18 +25587,18 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"┃ 👥 <b>𝗧𝗲𝗮𝗺 𝗠𝗼𝗱𝗲</b>\n"
             f"┃ ↳ Captains, toss, innings & scorecards.\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"┃ 👤 <b>𝗦𝗼𝗹𝗼 𝗠𝗼𝗱𝗲</b>\n"
             f"┃ ↳ Free-for-all battle!\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"┃ 🤖 <b>𝗔𝗜 𝗠𝗼𝗱𝗲</b>\n"
             f"┃ ↳ Private challenge in your DMs.\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"┃ 🏆 <b>𝗧𝗼𝘂𝗿𝗻𝗮𝗺𝗲𝗻𝘁 / 𝗔𝘂𝗰𝘁𝗶𝗼𝗻</b>\n"
             f"┃ ↳ League tools for approved groups.\n"
-            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┣━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"┃ 👤 Requested by: {html.escape(user.first_name or 'Player')}\n"
-            f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"╰━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
 
         try:

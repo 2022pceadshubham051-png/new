@@ -23446,6 +23446,13 @@ async def tpower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def _build_reglist_pages(players, group_name):
     """Build paginated registered players pages. Returns list of page strings."""
+    PAGE_LIMIT = 3600
+    CONT_HEADER = (
+        f"📋 <b>REGISTERED PLAYERS</b> (cont.)\n"
+        f"🏆 <b>{html.escape(str(group_name))}</b>\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+    )
+
     price_groups = defaultdict(list)
     for user_id_p, username, full_name, base_price, registered_at in players:
         price_groups[base_price].append({
@@ -23467,16 +23474,27 @@ def _build_reglist_pages(players, group_name):
     )
     current_page = header
 
+    def _flush_page():
+        """Append current_page to pages and reset to continuation header."""
+        nonlocal current_page
+        pages.append(current_page.rstrip())
+        current_page = CONT_HEADER
+
     global_idx = 0
     for price in sorted_prices:
-        section = f"<b>💰 Base Price: {price} coins</b>\n"
-        section += f"{'─' * 20}\n"
+        price_header = f"<b>💰 Base Price: {price} coins</b>\n{'─' * 20}\n"
+
+        # Flush if even the price header alone won't fit
+        if len(current_page) + len(price_header) > PAGE_LIMIT:
+            _flush_page()
+
+        current_page += price_header
+
         for player in price_groups[price]:
             global_idx += 1
             fname = html.escape(str(player['full_name']))
             uname = html.escape(str(player['username']))
             uid = player['user_id']
-            # Format registered_at nicely if present
             reg_str = ""
             if player['registered_at']:
                 try:
@@ -23484,22 +23502,21 @@ def _build_reglist_pages(players, group_name):
                     reg_str = f"  🕐 {reg_dt.strftime('%d %b %Y')}"
                 except Exception:
                     pass
-            section += (
+            entry = (
                 f"{global_idx}. <b>{fname}</b>\n"
                 f"   👤 @{uname}{reg_str}\n"
                 f"   🔑 <code>{uid}</code>\n"
             )
-        section += "\n"
 
-        if len(current_page) + len(section) > 3600:
-            pages.append(current_page.rstrip())
-            current_page = (
-                f"📋 <b>REGISTERED PLAYERS</b> (cont.)\n"
-                f"🏆 <b>{html.escape(str(group_name))}</b>\n"
-                f"━━━━━━━━━━━━━━━\n\n"
-            ) + section
-        else:
-            current_page += section
+            # Flush if this player entry won't fit on current page
+            if len(current_page) + len(entry) > PAGE_LIMIT:
+                _flush_page()
+                # Re-add price header as continuation so context is clear
+                current_page += f"<b>💰 Base Price: {price} coins</b> (cont.)\n{'─' * 20}\n"
+
+            current_page += entry
+
+        current_page += "\n"  # spacing after each price group
 
     if current_page.strip():
         pages.append(current_page.rstrip())

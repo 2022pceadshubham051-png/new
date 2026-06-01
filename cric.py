@@ -12079,7 +12079,8 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
         panel_top = 170*SC
 
         max_players = max(len(match.team_x.players), len(match.team_y.players), 1)
-        row_h = 78 * SC
+        row_h = (78 if max_players <= 11 else 64 if max_players <= 14 else 56) * SC
+        row_inner_h = max(46 * SC, row_h - 8 * SC)
         panel_h = 72 * SC + max_players * row_h + 20 * SC
         H = max(800 * SC, panel_top + panel_h + 80 * SC)
         W = 1200 * SC
@@ -12102,6 +12103,8 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
         # Floodlights in the top corners
         _draw_stadium_lights(draw, 140 * SC, 130 * SC, SC)
         _draw_stadium_lights(draw, W - 140 * SC, 130 * SC, SC)
+        draw.arc([160*SC, H-330*SC, W-160*SC, H+180*SC], 200, 340, fill=(238, 246, 255, 85), width=3*SC)
+        draw.line([(W//2, 150*SC), (W//2, H-72*SC)], fill=(225, 205, 145, 70), width=3*SC)
 
         C_GOLD  = (255, 213, 60, 255)
         C_X     = (55, 185, 255, 255)    # Team X — Electric Blue
@@ -12114,9 +12117,9 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
 
         f_header = _get_font(True, 44 * SC)
         f_team   = _get_font(True, 36 * SC)
-        f_name   = _get_font(True, 28 * SC)
-        f_stat   = _get_font(False, 22 * SC)
-        f_sm     = _get_font(False, 20 * SC)
+        f_name   = _get_font(True, (28 if max_players <= 12 else 24) * SC)
+        f_stat   = _get_font(False, (22 if max_players <= 12 else 18) * SC)
+        f_sm     = _get_font(False, (20 if max_players <= 12 else 17) * SC)
 
         # ── Crossed Bats behind Header Title ──
         _draw_crossed_bats(draw, W // 2, 80 * SC, 0.45 * SC, SC)
@@ -12167,7 +12170,7 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
 
         def _draw_team_panel(team, color, x0):
             # Panel border (height depends on the team's actual player list)
-            team_panel_h = 72 * SC + len(team.players) * 78 * SC + 20 * SC
+            team_panel_h = 72 * SC + len(team.players) * row_h + 20 * SC
             draw.rounded_rectangle([x0, panel_top, x0 + col_w, panel_top + team_panel_h],
                                    radius=20*SC, fill=PANEL, outline=color, width=3*SC)
 
@@ -12188,7 +12191,7 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
             py = panel_top + 72*SC
             for i, player in enumerate(team.players):
                 row_fill = (22, 38, 72, 200) if i % 2 == 0 else (14, 24, 52, 200)
-                draw.rounded_rectangle([x0 + 6*SC, py, x0 + col_w - 6*SC, py + 70*SC],
+                draw.rounded_rectangle([x0 + 6*SC, py, x0 + col_w - 6*SC, py + row_inner_h],
                                        radius=12*SC, fill=row_fill)
 
                 # Number badge
@@ -12200,7 +12203,8 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
                 # Captain crown
                 cap_icon = " 👑" if player.user_id == team.captain_id else ""
                 status_icon = _status_icon(player, team)
-                name_str = f"{player.first_name[:18]}{cap_icon}"
+                name_limit = 18 if max_players <= 12 else 15
+                name_str = f"{player.first_name[:name_limit]}{cap_icon}"
                 draw.text((x0 + 62*SC, py + 10*SC), name_str, font=f_name, fill=C_WHITE)
 
                 # Stats line
@@ -12212,13 +12216,18 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
                     eco = round(player.runs_conceded / max(player.balls_bowled / 6, 0.1), 1)
                     stat_parts.append(f"⚾ {player.wickets}W/{player.runs_conceded}R Eco:{eco}")
                 stat_str = "  ·  ".join(stat_parts) if stat_parts else "Waiting to play…"
-                draw.text((x0 + 62*SC, py + 42*SC), stat_str, font=f_stat, fill=C_MUTED)
+                if draw.textlength(stat_str, font=f_stat) > col_w - 132*SC:
+                    stat_str = stat_str.replace(" SR:", " S:").replace(" Eco:", " E:")
+                    if draw.textlength(stat_str, font=f_stat) > col_w - 132*SC:
+                        stat_str = stat_str[:42] + "..."
+                stat_y = py + (42 if max_players <= 12 else 34) * SC
+                draw.text((x0 + 62*SC, stat_y), stat_str, font=f_stat, fill=C_MUTED)
 
                 # Status icon
                 si_bbox = draw.textbbox((0, 0), status_icon, font=f_name)
                 draw.text((x0 + col_w - 52*SC, py + 16*SC), status_icon, font=f_name, fill=C_WHITE)
 
-                py += 78*SC
+                py += row_h
 
         _draw_team_panel(match.team_x, C_X, col_left)
         _draw_team_panel(match.team_y, C_Y, col_right)
@@ -12284,11 +12293,11 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
         y_scores, y_wkts = build_bb(match.team_y.name)
         total_overs = getattr(match, "total_overs", 5)
         max_score = max(max(x_scores, default=0), max(y_scores, default=0), 10) + 15
-        n_balls   = max(len(x_scores), len(y_scores), 2) - 1
+        n_balls   = max(total_overs * 6, max(len(x_scores), len(y_scores), 2) - 1, 1)
 
-        for j in range(7):
-            val = int(j * max_score / 6)
-            gy  = PAD_T + CHART_H - int(j * CHART_H / 6)
+        for j in range(11):
+            val = int(j * max_score / 10)
+            gy  = PAD_T + CHART_H - int(j * CHART_H / 10)
             draw.line([(PAD_L, gy), (PAD_L + CHART_W, gy)], fill=C_GRID, width=1*SC)
             draw.text((PAD_L - 78*SC, gy - 14*SC), str(val), font=fn_reg, fill=C_GRAY)
 
@@ -12299,6 +12308,10 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
             gx = PAD_L + int(ball_idx / n_balls * CHART_W) if n_balls else PAD_L
             draw.line([(gx, PAD_T), (gx, PAD_T + CHART_H)], fill=C_GRID, width=2*SC)
             draw.text((gx - 12*SC, PAD_T + CHART_H + 22*SC), str(ov), font=fn_reg, fill=C_GRAY)
+            if ov < total_overs:
+                half_idx = ball_idx + 3
+                hx = PAD_L + int(half_idx / n_balls * CHART_W)
+                _draw_dashed_line(draw, (hx, PAD_T), (hx, PAD_T + CHART_H), fill=(18, 28, 55), width=1*SC, dash_length=6*SC)
 
         def to_px(idx, score):
             px = PAD_L + (idx / n_balls * CHART_W) if n_balls > 0 else PAD_L
@@ -12315,9 +12328,7 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
             for i in range(len(pts) - 1):
                 runs = (scores[i+1] - scores[i]) if i+1 < len(scores) else 0
                 is_w = wkts[i+1] if i+1 < len(wkts) else False
-                if runs == 6:
-                    seg = C_GOLD
-                elif runs == 4:
+                if runs == 4:
                     seg = C_ORG
                 elif runs == 0 and not is_w:
                     seg = (65, 80, 120)
@@ -12338,7 +12349,7 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
                     draw.ellipse([px-15*SC, py-15*SC, px+15*SC, py+15*SC], fill=(190,22,45), outline=C_GOLD, width=2*SC)
                     draw.text((px-8*SC, py-10*SC), "W", font=fn_sm, fill=C_WHITE)
                 elif runs == 6:
-                    draw.ellipse([px-10*SC, py-10*SC, px+10*SC, py+10*SC], fill=C_GOLD, outline=C_WHITE, width=1*SC)
+                    draw.ellipse([px-8*SC, py-8*SC, px+8*SC, py+8*SC], fill=color, outline=C_WHITE, width=1*SC)
                 elif runs == 4:
                     draw.ellipse([px-7*SC, py-7*SC, px+7*SC, py+7*SC], fill=C_ORG, outline=C_WHITE, width=1*SC)
                 elif runs == 0:
@@ -12366,7 +12377,7 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
         draw.rectangle([PAD_L+500*SC, leg_y+8*SC, PAD_L+530*SC, leg_y+40*SC], fill=C_Y)
         yl = "  " + match.team_y.name + "  " + str(y_scores[-1] if y_scores else 0) + "/" + str(ywc) + "  (" + str(len(y_scores)-1) + " balls)"
         draw.text((PAD_L+540*SC, leg_y+4*SC), yl, font=fn_bold, fill=C_Y)
-        draw.text((W-80*SC, leg_y+10*SC), "W=Wicket  6=Gold  4=Orange", font=fn_sm, fill=C_GRAY)
+        draw.text((W-80*SC, leg_y+10*SC), "W=Wicket  4=Orange  half-over grid shown", font=fn_sm, fill=C_GRAY)
 
         if getattr(match, "innings", 1) == 2 and getattr(match, "target", 0):
             bat = getattr(match, "current_batting_team", match.team_y)
@@ -12988,6 +12999,8 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         # Stadium light beams (subtle diagonal rays)
         for x in range(-H, W, 140 * SC):
             draw.line([(x, 0), (x + H, H)], fill=(25, 48, 32, 60), width=2 * SC)
+        _draw_stadium_lights(draw, 160*SC, 92*SC, SC)
+        _draw_stadium_lights(draw, W - 160*SC, 92*SC, SC)
 
         WHITE = (242, 248, 255, 255)
         MUTED = (148, 168, 205, 255)
@@ -13128,6 +13141,18 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         # ── Cricket pitch deco bottom ──
         py2 = sy + 2*(card_h + gap_y) + 24*SC
         draw.line([(68*SC, py2), (W-68*SC, py2)], fill=(42, 58, 108, 200), width=1*SC)
+        pitch_y = py2 + 38*SC
+        pitch = [
+            (W//2 - 118*SC, pitch_y),
+            (W//2 + 118*SC, pitch_y),
+            (W//2 + 176*SC, H - 42*SC),
+            (W//2 - 176*SC, H - 42*SC),
+        ]
+        draw.polygon(pitch, fill=(178, 155, 105, 135))
+        draw.line([(W//2 - 148*SC, H - 72*SC), (W//2 + 148*SC, H - 72*SC)], fill=(245, 248, 255, 170), width=2*SC)
+        for sx_stump in [W//2 - 15*SC, W//2, W//2 + 15*SC]:
+            draw.rounded_rectangle([sx_stump-3*SC, H-132*SC, sx_stump+3*SC, H-74*SC], radius=2*SC, fill=GOLD)
+        draw.rectangle([W//2 - 20*SC, H-136*SC, W//2 + 20*SC, H-132*SC], fill=GOLD)
 
         # Branding
         brand = "CRICOVERSE  *  LIVE HAND CRICKET ANALYTICS"
@@ -13421,6 +13446,49 @@ def _draw_multi_gradient_bg(img, colors):
             b = int(c1[2] + t*(c2[2]-c1[2]))
             draw.line([(0, sy+i),(W, sy+i)], fill=(r,g,b))
 
+def _draw_cricket_stage(draw, W: int, H: int, SC: int = 1, low_detail: bool = False):
+    """Shared stadium/pitch overlay so generated cards stay in one cricket theme."""
+    gold = (255, 213, 74)
+    white = (238, 246, 255)
+    turf_dark = (7, 38, 18)
+    turf_light = (16, 74, 31)
+    pitch = (184, 157, 105)
+    line = (230, 238, 244)
+
+    # Floodlight rigs and beams.
+    rig_w, rig_h = 90*SC, 22*SC
+    for cx in (130*SC, W - 130*SC):
+        cy = 78*SC
+        draw.rounded_rectangle([cx-rig_w, cy-rig_h, cx+rig_w, cy+rig_h], radius=10*SC,
+                               fill=(22, 31, 54), outline=(68, 86, 128), width=max(1, 2*SC))
+        for sx in (-54*SC, -18*SC, 18*SC, 54*SC):
+            draw.ellipse([cx+sx-10*SC, cy-10*SC, cx+sx+10*SC, cy+10*SC], fill=(255, 255, 238))
+            if not low_detail:
+                draw.polygon([(cx+sx, cy+10*SC), (cx+sx-170*SC, H), (cx+sx+170*SC, H)],
+                             fill=(24, 42, 62))
+
+    # Boundary arcs and turf strip.
+    arc_box = [90*SC, H-360*SC, W-90*SC, H+210*SC]
+    draw.arc(arc_box, 198, 342, fill=white, width=max(2, 4*SC))
+    draw.arc([arc_box[0]+70*SC, arc_box[1]+60*SC, arc_box[2]-70*SC, arc_box[3]-45*SC],
+             200, 340, fill=gold, width=max(1, 2*SC))
+    turf_y = H - 122*SC
+    if turf_y < H:
+        draw.rectangle([0, turf_y, W, H], fill=turf_dark)
+        for y in range(turf_y, H, max(10*SC, 1)):
+            stripe = turf_light if ((y - turf_y) // max(20*SC, 1)) % 2 == 0 else turf_dark
+            draw.line([(0, y), (W, y)], fill=stripe, width=max(5*SC, 1))
+
+    # Perspective cricket pitch and stumps.
+    cx = W // 2
+    top_y = max(H - 190*SC, int(H * 0.70))
+    bottom_y = H - 26*SC
+    draw.polygon([(cx-54*SC, top_y), (cx+54*SC, top_y), (cx+160*SC, bottom_y), (cx-160*SC, bottom_y)], fill=pitch)
+    draw.line([(cx-125*SC, H-72*SC), (cx+125*SC, H-72*SC)], fill=line, width=max(2, 3*SC))
+    for sx in (cx-13*SC, cx, cx+13*SC):
+        draw.rounded_rectangle([sx-3*SC, H-128*SC, sx+3*SC, H-74*SC], radius=max(1, 2*SC), fill=gold)
+    draw.rectangle([cx-18*SC, H-132*SC, cx+18*SC, H-128*SC], fill=gold)
+
 def generate_leaderboard_image(title: str, rows: list, metric: str, offset: int = 0) -> Optional[BytesIO]:
     """🏆 Generate a readable leaderboard image (2x scaled for clarity)."""
     try:
@@ -13436,6 +13504,7 @@ def generate_leaderboard_image(title: str, rows: list, metric: str, offset: int 
         for y in range(H):
             t = y / H
             draw.line([(0, y), (W, y)], fill=(int(8 + t*12), int(10 + t*15), int(24 + t*20)))
+        _draw_cricket_stage(draw, W, H, SC=2, low_detail=True)
 
         fn_title = _get_font(True, 84)
         fn_bold  = _get_font(True, 64)
@@ -13551,6 +13620,7 @@ def generate_points_table_image(group_id: int) -> Optional[BytesIO]:
             g = int(12 + 15 * ratio)
             b = int(32 + 25 * ratio)
             draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
+        _draw_cricket_stage(draw, W, H, SC=2, low_detail=True)
 
         # Colors & Fonts
         C_GOLD, C_WHITE = (255, 210, 50, 255), (240, 245, 255, 255)
@@ -13672,6 +13742,7 @@ def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
         for y in range(H):
             t = y / H
             draw.line([(0, y), (W, y)], fill=(int(8 + t*8), int(12 + t*12), int(28 + t*18)))
+        _draw_cricket_stage(draw, W, H, SC=2, low_detail=True)
 
         fn_title = _get_font(True, 44 * SC)
         fn_hdr = _get_font(True, 32 * SC)
@@ -13773,6 +13844,7 @@ def generate_momentum_image(match) -> Optional[BytesIO]:
         # Diagonal accent streaks
         for sx in range(-H, W, 400):
             draw.line([(sx, 0), (sx+H, H)], fill=(25, 35, 80), width=2)
+        _draw_cricket_stage(draw, W, H, SC=4, low_detail=True)
 
         # ── Enhanced Palette for Clear Visibility ──
         C_BG      = (4,   5,  14)
@@ -14123,6 +14195,7 @@ def generate_strikemap_image(match) -> Optional[BytesIO]:
             draw.line([(gx, 0), (gx, H)], fill=(18, 26, 55), width=1)
         for gy in range(0, H, 240):
             draw.line([(0, gy), (W, gy)], fill=(18, 26, 55), width=1)
+        _draw_cricket_stage(draw, W, H, SC=4, low_detail=True)
 
         # ── Ultimate Color Palette ──
         C_BG      = (4,   5,  14)
@@ -25432,6 +25505,7 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
 
         # Premium dark stadium gradient background
         _draw_multi_gradient_bg(img, [(7, 10, 24), (16, 26, 52), (8, 12, 26)])
+        _draw_cricket_stage(draw, W, H, SC=2, low_detail=True)
 
         # Subtle grid lines on black
         for x in range(-H, W, 150 * SC):
@@ -25527,6 +25601,13 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
             if live:
                 lx, ly = pts[-1]
                 draw.ellipse([lx-18*SC, ly-18*SC, lx+18*SC, ly+18*SC], fill=(20, 25, 45, 255), outline=C_GOLD, width=4*SC)
+            ex, ey = pts[-1]
+            score_tag = str(scores[-1])
+            tag_w = int(draw.textlength(score_tag, font=f_axis)) + 28*SC
+            tag_x1 = min(max(ex + 12*SC, PAD_L), PAD_L + CW - tag_w)
+            tag_y1 = max(PAD_T + 6*SC, min(ey - 20*SC, PAD_T + CH - 44*SC))
+            _cv_draw_panel(draw, [tag_x1, tag_y1, tag_x1 + tag_w, tag_y1 + 38*SC], 12*SC, (12, 18, 42, 230), color, 1*SC)
+            draw.text((tag_x1 + tag_w//2, tag_y1 + 7*SC), score_tag, font=f_axis, fill=C_WHITE, anchor="ma")
             for i, (x, y) in enumerate(pts[1:], 1):
                 is_w = wkts[i] if i < len(wkts) else False
                 if is_w:
@@ -25569,6 +25650,7 @@ def generate_over_bar_chart(match) -> Optional[BytesIO]:
         draw = ImageDraw.Draw(img)
         # Premium dark stadium gradient background
         _draw_multi_gradient_bg(img, [(6, 9, 22), (16, 25, 48), (8, 12, 24)])
+        _draw_cricket_stage(draw, W, H, SC=2, low_detail=True)
 
 
         C_X, C_Y = (53, 185, 255, 255), (255, 80, 132, 255)
@@ -25656,6 +25738,7 @@ def generate_mid_match_image(match) -> Optional[BytesIO]:
         img = Image.new("RGBA", (W, H), (6, 9, 24, 255))
         draw = ImageDraw.Draw(img)
         _draw_multi_gradient_bg(img, [(5, 8, 22), (12, 22, 54), (8, 11, 28)])
+        _draw_cricket_stage(draw, W, H, SC=2, low_detail=True)
         for x in range(-H, W, 170*SC):
             draw.line([(x, 0), (x+H, H)], fill=(26, 40, 92, 80), width=2*SC)
 
@@ -25789,8 +25872,11 @@ def generate_solo_top3_image(sorted_players) -> Optional[BytesIO]:
         C_WHITE, C_MUTED, C_GREEN = (244, 248, 255, 255), (150, 170, 208, 255), (60, 231, 150, 255)
         f_title, f_name, f_score, f_med = _get_font(True, 70*SC), _get_font(True, 44*SC), _get_font(True, 86*SC), _get_font(False, 30*SC)
 
-        draw.text((W//2, 68*SC), "SOLO BATTLE PODIUM", font=f_title, fill=C_GOLD, anchor="ma")
-        draw.text((W//2, 142*SC), "Top performers from the free-for-all", font=f_med, fill=C_MUTED, anchor="ma")
+        draw.arc([190*SC, H-520*SC, W-190*SC, H+120*SC], 198, 342, fill=(244, 249, 255, 110), width=5*SC)
+        draw.arc([260*SC, H-455*SC, W-260*SC, H+85*SC], 200, 340, fill=(255, 213, 74, 90), width=3*SC)
+
+        draw.text((W//2, 68*SC), "SOLO CRICKET VICTORY", font=f_title, fill=C_GOLD, anchor="ma")
+        draw.text((W//2, 142*SC), "Podium finish on the Cricoverse pitch", font=f_med, fill=C_MUTED, anchor="ma")
 
         slots = [
             (0, W//2, 240*SC, 610*SC, C_GOLD, "1"),
@@ -25843,6 +25929,14 @@ def generate_newspaper_image(match, winner: "Team", loser: "Team", top_scorer_na
             x, y = random.randrange(W), random.randrange(H)
             v = random.randint(185, 230)
             draw.point((x, y), fill=(v, v-8, v-25))
+        # Cricket-print watermark: pitch, boundary arc, and stumps behind the article.
+        draw.arc([95*SC, H-390*SC, W-95*SC, H+210*SC], 200, 340, fill=(205, 184, 128), width=4*SC)
+        cx = W // 2
+        draw.polygon([(cx-54*SC, H-300*SC), (cx+54*SC, H-300*SC), (cx+170*SC, H-62*SC), (cx-170*SC, H-62*SC)], fill=(222, 205, 156))
+        draw.line([(cx-132*SC, H-104*SC), (cx+132*SC, H-104*SC)], fill=(250, 245, 225), width=3*SC)
+        for sx in [cx-14*SC, cx, cx+14*SC]:
+            draw.rectangle([sx-3*SC, H-166*SC, sx+3*SC, H-106*SC], fill=(142, 101, 35))
+        draw.rectangle([cx-19*SC, H-170*SC, cx+19*SC, H-166*SC], fill=(142, 101, 35))
 
         INK, RED, GOLD, MUTED = (24, 20, 14), (170, 28, 32), (132, 93, 24), (98, 91, 80)
         f_mast = _get_font(True, 62*SC, serif=True)

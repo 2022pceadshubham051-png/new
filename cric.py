@@ -11999,27 +11999,109 @@ _IMG4K_W, _IMG4K_H = 3840, 2160   # true 4K
 
 
 # ─────────────────────────────────────────────────────────────────
+#  CRICKET VISUAL DRAWING HELPERS
+# ─────────────────────────────────────────────────────────────────
+def _draw_rotated_rect(draw, cx, cy, w, h, angle, fill, outline=None, width=1):
+    import math
+    rad = math.radians(angle)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    half_w = w / 2
+    half_h = h / 2
+    corners = [
+        (-half_w, -half_h),
+        (half_w, -half_h),
+        (half_w, half_h),
+        (-half_w, half_h)
+    ]
+    rotated = []
+    for dx, dy in corners:
+        rx = cx + dx * cos_a - dy * sin_a
+        ry = cy + dx * sin_a + dy * cos_a
+        rotated.append((rx, ry))
+    draw.polygon(rotated, fill=fill, outline=outline, width=width)
+
+def _draw_cricket_bat(draw, cx, cy, angle, scale_val, SC=2):
+    blade_w = 12 * scale_val
+    blade_h = 75 * scale_val
+    handle_w = 4 * scale_val
+    handle_h = 35 * scale_val
+    wood_color = (195, 142, 92, 255)
+    grip_color = (240, 60, 60, 255)
+    
+    # Draw blade
+    _draw_rotated_rect(draw, cx, cy + 25 * scale_val, blade_w, blade_h, angle, fill=wood_color, outline=(70, 45, 25, 255), width=int(1*SC))
+    # Draw handle
+    _draw_rotated_rect(draw, cx, cy - 30 * scale_val, handle_w, handle_h, angle, fill=grip_color, outline=(70, 45, 25, 255), width=int(1*SC))
+
+def _draw_crossed_bats(draw, cx, cy, scale_val, SC=2):
+    _draw_cricket_bat(draw, cx, cy, -35, scale_val, SC)
+    _draw_cricket_bat(draw, cx, cy, 35, scale_val, SC)
+
+def _draw_stadium_lights(draw, cx, cy, SC=2):
+    # Draw bracket
+    draw.rounded_rectangle([cx - 90*SC, cy - 25*SC, cx + 90*SC, cy + 25*SC], radius=12*SC, fill=(28, 38, 54, 255), outline=(50, 64, 96, 255), width=2*SC)
+    # Draw 4 glowing LEDs
+    for sx in [-60*SC, -20*SC, 20*SC, 60*SC]:
+        draw.ellipse([cx + sx - 12*SC, cy - 12*SC, cx + sx + 12*SC, cy + 12*SC], fill=(255, 255, 255, 255))
+        draw.ellipse([cx + sx - 18*SC, cy - 18*SC, cx + sx + 18*SC, cy + 18*SC], fill=None, outline=(255, 253, 220, 80), width=3*SC)
+
+def _draw_dashed_line(draw, p1, p2, fill, width=1, dash_length=8):
+    import math
+    x1, y1 = p1
+    x2, y2 = p2
+    dx = x2 - x1
+    dy = y2 - y1
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return
+    dx /= length
+    dy /= length
+    curr = 0
+    while curr < length:
+        end = min(curr + dash_length, length)
+        draw.line([(x1 + dx * curr, y1 + dy * curr), (x1 + dx * end, y1 + dy * end)], fill=fill, width=width)
+        curr += dash_length * 2
+
+
+# ─────────────────────────────────────────────────────────────────
 #  WORM GRAPH (Score Progression with Wicket Fall)  BLACK BG
 # ─────────────────────────────────────────────────────────────────
 def generate_players_squad_image(match) -> Optional[BytesIO]:
     """
-    🏏 Cricket-theme Squad Card  —  shows both team rosters on a dark stadium canvas.
+    🏏 Cricket-theme Squad Card  —  shows both team rosters on a dark stadium canvas with dynamic sizing.
     """
     try:
         SC = 2
-        W, H = 1200 * SC, 800 * SC
+        col_left  = 40*SC
+        col_right = (1200 * SC) // 2 + 20*SC
+        col_w     = (1200 * SC) // 2 - 60*SC
+        panel_top = 170*SC
+
+        max_players = max(len(match.team_x.players), len(match.team_y.players), 1)
+        row_h = 78 * SC
+        panel_h = 72 * SC + max_players * row_h + 20 * SC
+        H = max(800 * SC, panel_top + panel_h + 80 * SC)
+        W = 1200 * SC
+
         img = Image.new("RGBA", (W, H), (5, 8, 20, 255))
         draw = ImageDraw.Draw(img)
 
-        # ── Background Gradient ──
+        # ── Background Gradient (Sky to Grass Turf) ──
         for y in range(H):
             t = y / H
-            r = int(5 + 12 * t); g = int(8 + 18 * t); b = int(20 + 30 * t)
+            r = int(8 + 4 * t)
+            g = int(12 + 33 * t)
+            b = int(26 - 4 * t)
             draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-        # Subtle diagonal lines (stadium lights effect)
+        # Stadium light beams (subtle diagonal rays)
         for x in range(-H, W, 140 * SC):
-            draw.line([(x, 0), (x + H, H)], fill=(22, 35, 75, 60), width=2 * SC)
+            draw.line([(x, 0), (x + H, H)], fill=(25, 48, 32, 60), width=2 * SC)
+
+        # Floodlights in the top corners
+        _draw_stadium_lights(draw, 140 * SC, 130 * SC, SC)
+        _draw_stadium_lights(draw, W - 140 * SC, 130 * SC, SC)
 
         C_GOLD  = (255, 213, 60, 255)
         C_X     = (55, 185, 255, 255)    # Team X — Electric Blue
@@ -12028,7 +12110,7 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
         C_MUTED = (148, 168, 205, 255)
         C_GREEN = (60, 228, 148, 255)
         C_RED   = (240, 62, 82, 255)
-        PANEL   = (14, 22, 52, 220)
+        PANEL   = (12, 32, 22, 220)       # Emerald green/dark panel accent
 
         f_header = _get_font(True, 44 * SC)
         f_team   = _get_font(True, 36 * SC)
@@ -12036,9 +12118,12 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
         f_stat   = _get_font(False, 22 * SC)
         f_sm     = _get_font(False, 20 * SC)
 
+        # ── Crossed Bats behind Header Title ──
+        _draw_crossed_bats(draw, W // 2, 80 * SC, 0.45 * SC, SC)
+
         # ── Header Banner ──
         draw.rounded_rectangle([40*SC, 30*SC, W-40*SC, 130*SC], radius=24*SC,
-                                fill=(16, 24, 56, 240), outline=C_GOLD, width=3*SC)
+                                fill=(16, 24, 56, 220), outline=C_GOLD, width=3*SC)
         title = "🏏  PLAYING SQUADS  🏏"
         bbox = draw.textbbox((0, 0), title, font=f_header)
         tw = bbox[2] - bbox[0]
@@ -12064,12 +12149,6 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
             sx = max(50*SC, (W - (bbox3[2] - bbox3[0])) // 2)
             draw.text((sx, 140*SC), score_txt, font=f_sm, fill=C_WHITE)
 
-        # ── Two-Column Team Panels ──
-        col_left  = 40*SC
-        col_right = W // 2 + 20*SC
-        col_w     = W // 2 - 60*SC
-        panel_top = 170*SC
-
         def _status_icon(player, team):
             if player.is_out:
                 return "❌"
@@ -12087,10 +12166,9 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
             return "🟢"
 
         def _draw_team_panel(team, color, x0):
-            # Panel border
-            panel_h = 40*SC + len(team.players) * 80*SC + 30*SC
-            panel_h = min(panel_h, H - panel_top - 40*SC)
-            draw.rounded_rectangle([x0, panel_top, x0 + col_w, panel_top + panel_h],
+            # Panel border (height depends on the team's actual player list)
+            team_panel_h = 72 * SC + len(team.players) * 78 * SC + 20 * SC
+            draw.rounded_rectangle([x0, panel_top, x0 + col_w, panel_top + team_panel_h],
                                    radius=20*SC, fill=PANEL, outline=color, width=3*SC)
 
             # Team header strip
@@ -12109,9 +12187,7 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
             # Player rows
             py = panel_top + 72*SC
             for i, player in enumerate(team.players):
-                if py + 75*SC > H - 30*SC:
-                    break
-                row_fill = (20, 32, 66, 200) if i % 2 == 0 else (14, 22, 50, 200)
+                row_fill = (22, 38, 72, 200) if i % 2 == 0 else (14, 24, 52, 200)
                 draw.rounded_rectangle([x0 + 6*SC, py, x0 + col_w - 6*SC, py + 70*SC],
                                        radius=12*SC, fill=row_fill)
 
@@ -12154,7 +12230,7 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
         fb = draw.textbbox((0, 0), brand, font=f_sm)
         draw.text(((W - (fb[2]-fb[0])) // 2, footer_y), brand, font=f_sm, fill=C_MUTED)
 
-        final = img.convert("RGB").resize((1200, 800), Image.Resampling.LANCZOS)
+        final = img.convert("RGB").resize((1200, int(H / SC)), Image.Resampling.LANCZOS)
         bio = BytesIO()
         final.save(bio, "PNG", optimize=True)
         bio.seek(0)
@@ -12898,19 +12974,20 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
     try:
         SC = 2
         W, H = 1200 * SC, 740 * SC
-        img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+        img = Image.new("RGBA", (W, H), (5, 8, 20, 255))
         draw = ImageDraw.Draw(img)
 
-        # Diagonal pitch texture
-        for x in range(-H, W, 130*SC):
-            draw.line([(x, 0), (x+H, H)], fill=(12, 20, 48, 60), width=2*SC)
+        # ── Background Gradient (Sky to Turf Green) ──
+        for y in range(H):
+            t = y / H
+            r = int(8 + 4 * t)
+            g = int(12 + 33 * t)
+            b = int(26 - 4 * t)
+            draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-        # Subtle centre glow
-        for gr in range(50, 0, -3):
-            gc = int(gr * 0.8)
-            draw.ellipse([W//2 - gr*25*SC, H//2 - gr*16*SC,
-                          W//2 + gr*25*SC, H//2 + gr*16*SC],
-                          fill=(0, gc//5, gc//3, 255))
+        # Stadium light beams (subtle diagonal rays)
+        for x in range(-H, W, 140 * SC):
+            draw.line([(x, 0), (x + H, H)], fill=(25, 48, 32, 60), width=2 * SC)
 
         WHITE = (242, 248, 255, 255)
         MUTED = (148, 168, 205, 255)
@@ -12918,7 +12995,7 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         BLUE  = (60, 190, 255, 255)
         GREEN = (57, 230, 148, 255)
         RED   = (245, 75, 100, 255)
-        PANEL = (14, 22, 52, 230)
+        PANEL = (12, 32, 22, 230)        # Emerald green themed panels
 
         f_title = _get_font(True, 42*SC)
         f_name  = _get_font(True, 62*SC)
@@ -12930,18 +13007,47 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         # ── Outer card frame ──
         draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, H-30*SC],
                                 radius=28*SC, fill=PANEL,
-                                outline=(55, 78, 145, 255), width=3*SC)
+                                outline=(60, 180, 110, 255), width=3*SC)
+
+        # ── Crossed Bats behind Header ──
+        _draw_crossed_bats(draw, W // 2, 70*SC, 0.4*SC, SC)
 
         # ── Header strip ──
         draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, 108*SC],
-                                radius=28*SC, fill=(16, 24, 58, 240),
+                                radius=28*SC, fill=(16, 24, 58, 220),
                                 outline=GOLD, width=2*SC)
 
-        # Cricket bat icon in header
+        # Cricket title in header
         header_txt = "CRICOVERSE  |  PLAYER CARD  |  " + mode.upper()
         hb = draw.textbbox((0,0), header_txt, font=f_mode)
         hw = hb[2] - hb[0]
         draw.text(((W - hw)//2, 52*SC), header_txt, font=f_mode, fill=GOLD)
+
+        # ── 3D Cricket Ball Watermark in Top-Right ──
+        def draw_cricket_ball(draw, cx, cy, r):
+            draw.ellipse([cx - r - 4*SC, cy - r - 4*SC, cx + r + 4*SC, cy + r + 4*SC], fill=(10, 18, 14, 255))
+            for ir in range(r, 0, -2*SC):
+                pct = ir / r
+                rc = int(140 + 90 * (1.0 - pct))
+                gc = int(20 + 35 * (1.0 - pct))
+                bc = int(25 + 30 * (1.0 - pct))
+                draw.ellipse([cx - ir, cy - ir, cx + ir, cy + ir], fill=(rc, gc, bc, 255))
+            draw.ellipse([cx - int(r*0.6), cy - int(r*0.6), cx - int(r*0.3), cy - int(r*0.3)], fill=(255, 120, 120, 180))
+            draw.ellipse([cx - int(r*0.55), cy - int(r*0.55), cx - int(r*0.4), cy - int(r*0.4)], fill=(255, 255, 255, 230))
+            import math
+            seam_pts = []
+            for t_val in range(-55, 56, 4):
+                angle_rad = math.radians(t_val)
+                sx = cx + int(r * math.sin(angle_rad) * 0.6)
+                sy = cy + int(r * math.cos(angle_rad) * 0.9) - 10*SC
+                seam_pts.append((sx, sy))
+            for p_idx in range(len(seam_pts) - 1):
+                if p_idx % 2 == 0:
+                    draw.line([seam_pts[p_idx], seam_pts[p_idx+1]], fill=(255, 255, 255, 220), width=4*SC)
+                else:
+                    draw.line([seam_pts[p_idx], seam_pts[p_idx+1]], fill=(180, 180, 180, 180), width=2*SC)
+
+        draw_cricket_ball(draw, W - 220*SC, 250*SC, 95*SC)
 
         # ── Avatar circle ──
         initials = "".join(part[:1] for part in (name or "Player").split()[:2])
@@ -25371,19 +25477,44 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
             draw.text((x1+22*SC, 80*SC), _cv_safe_name(team.name, 14), font=f_axis, fill=color)
             draw.text((x1+22*SC, 105*SC), f"{team.score}/{team.wickets} ({format_overs(team.balls)})", font=f_bold, fill=C_WHITE)
 
-        for j in range(6):
-            val = int(j * max_score / 5)
-            y = PAD_T + CH - int(j * CH / 5)
-            draw.line([(PAD_L, y), (PAD_L+CW, y)], fill=C_GRID, width=1*SC)
-            draw.text((PAD_L-72*SC, y-13*SC), str(val), font=f_axis, fill=C_MUTED)
+        # Y-axis & Horizontal grid lines (10 subdivisions)
+        for j in range(11):
+            val = int(j * max_score / 10)
+            y = PAD_T + CH - int(j * CH / 10)
+            if j % 2 == 0:
+                draw.line([(PAD_L, y), (PAD_L+CW, y)], fill=C_GRID, width=1*SC)
+            else:
+                _draw_dashed_line(draw, (PAD_L, y), (PAD_L+CW, y), fill=(48, 65, 112, 80), width=1*SC, dash_length=6*SC)
+            draw.text((PAD_L-20*SC, y-10*SC), str(val), font=f_axis, fill=C_MUTED, anchor="rm")
+
+        # X-axis & Vertical grid lines
         for ov in range(0, getattr(match, "total_overs", 5) + 1):
             ball = ov * 6
             x = PAD_L + int(ball / max_balls * CW)
+            # Solid line for full over
             draw.line([(x, PAD_T), (x, PAD_T+CH)], fill=(36, 50, 92, 150), width=1*SC)
-            draw.text((x-10*SC, PAD_T+CH+24*SC), str(ov), font=f_axis, fill=C_MUTED)
+            draw.text((x, PAD_T+CH+24*SC), str(ov), font=f_axis, fill=C_MUTED, anchor="ma")
+            
+            # Dotted line for half over
+            if ov < getattr(match, "total_overs", 5):
+                half_ball = ball + 3
+                hx = PAD_L + int(half_ball / max_balls * CW)
+                _draw_dashed_line(draw, (hx, PAD_T), (hx, PAD_T+CH), fill=(36, 50, 92, 60), width=1*SC, dash_length=4*SC)
 
         def px(ball, score):
             return (PAD_L + int(ball / max_balls * CW), PAD_T + CH - int(score / max_score * CH))
+
+        # Translucent Area Under-Curve Fills
+        def draw_area_fill(scores, color):
+            pts = [px(i, s) for i, s in enumerate(scores)]
+            if len(pts) < 2:
+                return
+            polygon = [pts[0]] + pts + [(pts[-1][0], PAD_T + CH), (pts[0][0], PAD_T + CH)]
+            fill_color = (*color[:3], 24)  # ~9% opacity
+            draw.polygon(polygon, fill=fill_color)
+
+        draw_area_fill(xs, C_X)
+        draw_area_fill(ys, C_Y)
 
         def draw_series(scores, wkts, color, live):
             pts = [px(i, s) for i, s in enumerate(scores)]
@@ -25397,14 +25528,12 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
                 lx, ly = pts[-1]
                 draw.ellipse([lx-18*SC, ly-18*SC, lx+18*SC, ly+18*SC], fill=(20, 25, 45, 255), outline=C_GOLD, width=4*SC)
             for i, (x, y) in enumerate(pts[1:], 1):
-                run = scores[i] - scores[i-1]
                 is_w = wkts[i] if i < len(wkts) else False
                 if is_w:
                     draw.ellipse([x-15*SC, y-15*SC, x+15*SC, y+15*SC], fill=(220, 38, 64, 255), outline=C_WHITE, width=2*SC)
                     draw.text((x, y-12*SC), "W", font=f_axis, fill=C_WHITE, anchor="ma")
-                elif run in (4, 6):
-                    fill = C_GOLD if run == 6 else (255, 157, 57, 255)
-                    draw.ellipse([x-9*SC, y-9*SC, x+9*SC, y+9*SC], fill=fill, outline=C_WHITE, width=1*SC)
+                else:
+                    draw.ellipse([x-3*SC, y-3*SC, x+3*SC, y+3*SC], fill=color)
 
         draw_series(xs, xw, C_X, getattr(match, "current_batting_team", None) == match.team_x)
         draw_series(ys, yw, C_Y, getattr(match, "current_batting_team", None) == match.team_y)
@@ -25599,37 +25728,88 @@ def generate_mid_match_image(match) -> Optional[BytesIO]:
 
 
 def generate_solo_top3_image(sorted_players) -> Optional[BytesIO]:
-    """Cleaner solo podium card with champion spotlight and compact stats."""
+    """Cleaner solo podium card with champion spotlight and compact stats in cricket stadium theme."""
     try:
+        import math
         if not sorted_players:
             return None
         SC = 2
         W, H = 1920*SC, 1080*SC
         img = Image.new("RGBA", (W, H), (7, 10, 27, 255))
         draw = ImageDraw.Draw(img)
-        _draw_multi_gradient_bg(img, [(7,10,27), (16,24,56), (9,12,30)])
+
+        # 1. Sky night gradient background
+        for y in range(H):
+            t = y / H
+            # Dark navy sky gradient
+            r = int(5 + 10 * t)
+            g = int(8 + 14 * t)
+            b = int(22 + 18 * t)
+            draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
+
+        # Victory Rays radiating from the pitch area
+        cx_bg, cy_bg = W // 2, H - 200*SC
+        for angle in range(0, 360, 10):
+            rad = math.radians(angle)
+            ex, ey = cx_bg + int(2000*SC*math.cos(rad)), cy_bg + int(2000*SC*math.sin(rad))
+            draw.line([(cx_bg, cy_bg), (ex, ey)], fill=(32, 45, 96, 50), width=3*SC)
+
+        # Stadium lights at top-left and top-right
+        _draw_stadium_lights(draw, 220*SC, 180*SC, SC)
+        _draw_stadium_lights(draw, W - 220*SC, 180*SC, SC)
+
+        # 2. Stadium Grass Turf at the bottom
+        for y in range(H - 420*SC, H):
+            t = (y - (H - 420*SC)) / (420*SC)
+            # Lawn green gradient
+            rg = int(8 + 10 * t)
+            gg = int(26 + 36 * t)
+            bg = int(14 + 12 * t)
+            draw.line([(0, y), (W, y)], fill=(rg, gg, bg, 255))
+
+        # 3. Beige Cricket Pitch in Perspective
+        pitch_pts = [
+            (W//2 - 90*SC, H - 420*SC),  # Top left
+            (W//2 + 90*SC, H - 420*SC),  # Top right
+            (W//2 + 280*SC, H),          # Bottom right
+            (W//2 - 280*SC, H)           # Bottom left
+        ]
+        draw.polygon(pitch_pts, fill=(195, 175, 135, 255))
+
+        # Crease Line
+        draw.line([(W//2 - 220*SC, H - 60*SC), (W//2 + 220*SC, H - 60*SC)], fill=(255, 255, 255, 200), width=3*SC)
+        
+        # Golden Wickets (3 stumps & bails)
+        stump_color = (255, 213, 60, 255)
+        for sx in [W//2 - 18*SC, W//2, W//2 + 18*SC]:
+            draw.rectangle([sx - 3*SC, H - 140*SC, sx + 3*SC, H - 60*SC], fill=stump_color)
+        draw.rectangle([W//2 - 22*SC, H - 144*SC, W//2 + 22*SC, H - 140*SC], fill=stump_color)
+
         C_GOLD, C_SILVER, C_BRONZE = (255, 213, 74, 255), (202, 212, 228, 255), (219, 145, 70, 255)
         C_WHITE, C_MUTED, C_GREEN = (244, 248, 255, 255), (150, 170, 208, 255), (60, 231, 150, 255)
         f_title, f_name, f_score, f_med = _get_font(True, 70*SC), _get_font(True, 44*SC), _get_font(True, 86*SC), _get_font(False, 30*SC)
 
         draw.text((W//2, 68*SC), "SOLO BATTLE PODIUM", font=f_title, fill=C_GOLD, anchor="ma")
         draw.text((W//2, 142*SC), "Top performers from the free-for-all", font=f_med, fill=C_MUTED, anchor="ma")
-        for angle in range(0, 360, 15):
-            ex = W//2 + int(1300*SC*math.cos(math.radians(angle)))
-            ey = 620*SC + int(1300*SC*math.sin(math.radians(angle)))
-            draw.line([(W//2, 620*SC), (ex, ey)], fill=(35, 49, 96, 70), width=2*SC)
 
         slots = [
             (0, W//2, 240*SC, 610*SC, C_GOLD, "1"),
             (1, W//2-520*SC, 360*SC, 500*SC, C_SILVER, "2"),
             (2, W//2+520*SC, 395*SC, 465*SC, C_BRONZE, "3"),
         ]
+
+        # Draw podiums (from rank 3 to 1 so 1st is on top if overlap)
         for rank, cx, y, h, color, label in sorted(slots, reverse=True):
             if rank >= len(sorted_players):
                 continue
             p = sorted_players[rank]
             w = 430*SC if rank else 500*SC
-            _cv_draw_panel(draw, [cx-w//2, y, cx+w//2, y+h], 34*SC, (14, 22, 52, 235), color, 4*SC)
+            
+            # Crossed bats behind the rank circle
+            _draw_crossed_bats(draw, cx, y, 0.9 * SC, SC)
+
+            # Panel card
+            _cv_draw_panel(draw, [cx-w//2, y, cx+w//2, y+h], 34*SC, (12, 26, 44, 235), color, 4*SC)
             draw.ellipse([cx-74*SC, y-74*SC, cx+74*SC, y+74*SC], fill=(17, 24, 50, 255), outline=color, width=6*SC)
             draw.text((cx, y-49*SC), label, font=f_score, fill=color, anchor="ma")
             draw.text((cx, y+110*SC), _cv_safe_name(getattr(p, "first_name", "PLAYER"), 16), font=f_name, fill=C_WHITE, anchor="ma")

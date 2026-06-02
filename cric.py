@@ -16338,6 +16338,71 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         return None
 
 
+def fetch_overall_stats(user_id: int) -> dict:
+    """Fetch overall player statistics from user_stats and calculate derived values."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            SELECT 
+                matches_played, matches_won, total_runs, highest_score,
+                total_balls_faced, total_wickets, total_sixes, total_fours,
+                total_dots, best_bowling_wickets, best_bowling_runs,
+                total_ducks, total_fifties, total_hundreds,
+                five_wicket_hauls, player_of_match_count
+            FROM user_stats
+            WHERE user_id = ?
+        """, (user_id,))
+        row = c.fetchone()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error fetching overall stats: {e}")
+        row = None
+
+    if not row:
+        return {
+            "matches": 0, "wins": 0, "losses": 0, "win_rate": 0.0,
+            "runs": 0, "highest": 0, "balls": 0, "wickets": 0,
+            "sixes": 0, "fours": 0, "dots": 0, "best_bowling": "0/0",
+            "best_bowling_wickets": 0, "best_bowling_runs": 0,
+            "ducks": 0, "fifties": 0, "hundreds": 0, "fifers": 0,
+            "mom": 0, "average": 0.0, "strike_rate": 0.0, "form": []
+        }
+
+    matches, won, runs, hs, balls, wickets, sixes, fours, dots, bb_w, bb_r, ducks, fifties, hundreds, fifers, mom_count = row
+    avg = round(runs / max(matches - ducks, 1), 2)
+    sr = round((runs / balls * 100), 2) if balls > 0 else 0.0
+    win_rate = round((won / matches * 100), 1) if matches > 0 else 0.0
+    best_bowl = f"{bb_w}/{bb_r}" if bb_w else "N/A"
+    
+    _form = player_stats.get(user_id, {}).get("last_5_results", [])
+    
+    return {
+        "matches": matches,
+        "wins": won,
+        "losses": max(matches - won, 0),
+        "win_rate": win_rate,
+        "runs": runs,
+        "highest": hs,
+        "balls": balls,
+        "wickets": wickets,
+        "sixes": sixes,
+        "fours": fours,
+        "dots": dots,
+        "best_bowling": best_bowl,
+        "best_bowling_wickets": bb_w,
+        "best_bowling_runs": bb_r,
+        "ducks": ducks,
+        "fifties": fifties,
+        "hundreds": hundreds,
+        "fifers": fifers,
+        "mom": mom_count,
+        "average": avg,
+        "strike_rate": sr,
+        "form": _form
+    }
+
+
 async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Modern /mystats entry point: generated profile card plus clean mode tabs."""
     query = update.callback_query
@@ -16368,7 +16433,7 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    stats = fetch_overall_stats_snapshot(user_id)
+    stats = fetch_overall_stats(user_id)
     # Build recent form string
     _form = player_stats.get(user_id, {}).get("last_5_results", [])
     form_str = " ➔ ".join(_form[-3:]) if _form else "N/A"

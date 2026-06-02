@@ -1909,10 +1909,6 @@ def generate_mini_scorecard(match: Match) -> str:
     bat_team = match.current_batting_team
     bowl_team = match.current_bowling_team
     
-    # Calculate Run Rate using batting team's own ball count
-    overs_played = bat_team.balls / 6 if bat_team.balls > 0 else 0.1
-    current_rr = round(bat_team.score / overs_played, 2)
-    
     # Get Current Batsmen
     striker = None
     non_striker = None
@@ -1929,69 +1925,89 @@ def generate_mini_scorecard(match: Match) -> str:
         last_bowler_idx = bowl_team.bowler_history[-1]
         last_bowler = bowl_team.players[last_bowler_idx]
     
-    # ── Build Message ──
-    # Striker CSR (cumulative strike rate)
+    # Striker stats
     csr = round((striker.runs / striker.balls_faced) * 100, 2) if striker and striker.balls_faced > 0 else 0.0
-    striker_name = striker.first_name if striker else "—"
     striker_runs = striker.runs if striker else 0
     striker_balls = striker.balls_faced if striker else 0
 
-    # Current over deliveries
-    cur_over_balls = []
-    if hasattr(match, 'current_over_log'):
-        cur_over_balls = match.current_over_log[-6:]
-    over_str = ", ".join(str(b) for b in cur_over_balls) if cur_over_balls else "—"
-
-    bowler_name = last_bowler.first_name if last_bowler else "—"
-
-    # Team A / Team B for 2nd innings display
-    bat_overs = format_overs(bat_team.balls)
-    bat_rr = round(bat_team.score / max(bat_team.balls / 6, 0.1), 2) if bat_team.balls > 0 else 0.0
-    bowl_overs = format_overs(bowl_team.balls)
-    bowl_rr = round(bowl_team.score / max(bowl_team.balls / 6, 0.1), 2) if bowl_team.balls > 0 else 0.0
+    # Calculate current over deliveries dynamically from ball_by_ball_log
+    team_balls = [
+        b for b in match.ball_by_ball_log
+        if b.get("batting_team") == bat_team.name
+    ]
+    cur_over_parts = []
+    legal_count = 0
+    target_legal = bat_team.balls % 6
+    if target_legal == 0 and bat_team.balls > 0:
+        target_legal = 6
+    
+    for b in reversed(team_balls):
+        is_legal = not (b.get('wide') or b.get('noball'))
+        if b.get('wicket') or b.get('is_wicket'):
+            cur_over_parts.insert(0, 'W')
+        elif b.get('noball'):
+            cur_over_parts.insert(0, 'NB')
+        elif b.get('wide'):
+            cur_over_parts.insert(0, 'WD')
+        else:
+            cur_over_parts.insert(0, str(b.get('runs', 0)))
+            
+        if is_legal:
+            legal_count += 1
+            if legal_count == target_legal:
+                break
+    over_str = ", ".join(cur_over_parts) if cur_over_parts else "-"
 
     # Build player tags (clickable mentions)
-    striker_tag = f'<a href=\"tg://user?id={striker.user_id}\">{html.escape(striker.first_name)}</a>' if striker else "—"
-    non_striker_tag = f'<a href=\"tg://user?id={non_striker.user_id}\">{html.escape(non_striker.first_name)}</a>' if non_striker else "—"
-    bowler_tag = f'<a href=\"tg://user?id={last_bowler.user_id}\">{html.escape(last_bowler.first_name)}</a>' if last_bowler else "—"
+    striker_tag = f'<a href="tg://user?id={striker.user_id}">{html.escape(striker.first_name)}</a>' if striker else "—"
+    non_striker_tag = f'<a href="tg://user?id={non_striker.user_id}">{html.escape(non_striker.first_name)}</a>' if non_striker else "—"
+    bowler_tag = f'<a href="tg://user?id={last_bowler.user_id}">{html.escape(last_bowler.first_name)}</a>' if last_bowler else "—"
     ns_csr = round((non_striker.runs / non_striker.balls_faced) * 100, 2) if non_striker and non_striker.balls_faced > 0 else 0.0
     ns_runs = non_striker.runs if non_striker else 0
     ns_balls = non_striker.balls_faced if non_striker else 0
 
-    msg  = f"🏏 <b>𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚</b>\n"
-    msg += f"┌───────────────────\n"
-    msg += f"├ 👤 {striker_tag} ➔ {striker_runs} ({striker_balls})\n"
-    msg += f"├ 📈 <b>𝗖𝗦𝗥:</b> {csr:.2f}\n"
+    tx = match.team_x
+    ty = match.team_y
+    tx_overs = format_overs(tx.balls)
+    tx_rr = round(tx.score / max(tx.balls / 6, 0.1), 2) if tx.balls > 0 else 0.0
+    ty_overs = format_overs(ty.balls)
+    ty_rr = round(ty.score / max(ty.balls / 6, 0.1), 2) if ty.balls > 0 else 0.0
+
+    msg = f"🏏 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n"
+    msg += f"┌─────────────────── \n"
+    msg += f"├ 👤 {striker_tag} ➔ {striker_runs} ({striker_balls}) \n"
+    msg += f"├ 📈 𝗖𝗦𝗥: {csr:.2f} \n"
+    msg += f"├ \n"
     if non_striker:
-        msg += f"├ 👤 {non_striker_tag} ➔ {ns_runs} ({ns_balls})\n"
-        msg += f"├ 📈 <b>𝗖𝗦𝗥:</b> {ns_csr:.2f}\n"
-    msg += f"└───────────────────\n"
-    msg += f"🥎 <b>𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚</b>\n"
-    msg += f"┌───────────────────\n"
-    msg += f"├ 👤 {bowler_tag}\n"
-    msg += f"├ 📊 <b>𝗧𝗵𝗶𝘀 𝗢𝘃𝗲𝗿:</b> [{over_str}]\n"
-    msg += f"└───────────────────\n"
-    msg += f"🏆 <b>𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗</b>\n"
-    msg += f"┌───────────────────\n"
-    msg += f"├ 🔹 <b>𝗧𝗘𝗔𝗠 {html.escape(bat_team.name)}:</b> {bat_team.score}/{bat_team.wickets} ({bat_overs} ov)\n"
-    msg += f"├ ↳ <b>𝗖𝗥𝗥:</b> {bat_rr}\n"
-    msg += f"├\n"
-    msg += f"├ 🔸 <b>𝗧𝗘𝗔𝗠 {html.escape(bowl_team.name)}:</b> {bowl_team.score}/{bowl_team.wickets} ({bowl_overs} ov)\n"
-    msg += f"├ ↳ <b>𝗖𝗥𝗥:</b> {bowl_rr}\n"
+        msg += f"├ 👤 {non_striker_tag} ➔ {ns_runs} ({ns_balls}) \n"
+        msg += f"├ 📈 𝗖𝗦𝗥: {ns_csr:.2f} \n"
+    else:
+        msg += f"├ 👤 - ➔ 0 (0) \n"
+        msg += f"├ 📈 𝗖𝗦𝗥: 0.00 \n"
+    msg += f"└─────────────────── \n"
+    
+    msg += f"🥎 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 \n"
+    msg += f"┌─────────────────── \n"
+    msg += f"├ 👤 {bowler_tag} \n"
+    msg += f"├ 📊 𝗧𝗵𝗶𝘀 𝗢𝘃𝗲𝗿: {over_str} \n"
+    msg += f"└─────────────────── \n"
+    
+    msg += f" 🏆 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗\n"
+    msg += f"┌─────────────────── \n"
+    msg += f"├ 🔹 𝗧𝗘𝗔𝗠 {html.escape(tx.name)}: {tx.score}/{tx.wickets} ({tx_overs} ov) \n"
+    msg += f"├ ↳ 𝗖𝗥𝗥: {tx_rr:.2f} \n"
+    msg += f"├ \n"
+    msg += f"├ 🔸 𝗧𝗘𝗔𝗠 {html.escape(ty.name)}: {ty.score}/{ty.wickets} ({ty_overs} ov) \n"
+    msg += f"├ ↳ 𝗖𝗥𝗥: {ty_rr:.2f} \n"
     msg += f"└───────────────────\n"
 
     if match.innings == 2:
         runs_needed = match.target - bat_team.score
         balls_left = (match.total_overs * 6) - bat_team.balls
         rrr = round((runs_needed / balls_left) * 6, 2) if balls_left > 0 else 0
-        overs_left = f"{balls_left // 6}.{balls_left % 6}"
-        msg += f"🎯 <b>𝗧𝗔𝗥𝗚𝗘𝗧 𝗗𝗘𝗧𝗔𝗜𝗟𝗦</b>\n"
-        msg += f"⚡ <b>𝗧𝗮𝗿𝗴𝗲𝘁:</b> {match.target} Runs\n"
-        msg += f"📉 <b>𝗥𝗲𝗺𝗮𝗶𝗻𝗶𝗻𝗴:</b> {balls_left} Balls ({overs_left} ov)\n"
-        msg += f"🔥 <b>𝗥𝗥𝗥:</b> {rrr}"
+        msg += f"\n🎯 Need <b>{runs_needed}</b> off <b>{balls_left}</b> balls (RRR {rrr})"
 
     return msg
-
 def format_overs(balls: int) -> str:
     """
     ✅ FIXED: Format balls to overs correctly
@@ -7222,16 +7238,16 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
         runs_needed = match.target - bat_team.score
         balls_left = (match.total_overs * 6) - bat_team.balls  # ✅ USE BATTING TEAM'S BALLS
         rrr = round((runs_needed / balls_left) * 6, 2) if balls_left > 0 else 0
-        equation = f"\n🎯 <b>Target:</b> Need <b>{runs_needed}</b> off <b>{balls_left}</b> balls (RRR: {rrr})"
+        equation = f"\n🎯 Need <b>{runs_needed}</b> off <b>{balls_left}</b> balls (RRR {rrr})"
 
     # --- 🏟️ GROUP DISPLAY ---
     overs_str = format_overs(bat_team.balls)
     crr_str = f"{crr:.2f}"
 
     text = (
-        f"╭━━  <b>LIVE</b> ━━━━━━\n"
-        f"┃  Over: {overs_str}  |   RR: {crr_str}\n"
-        f"┃  {bowler_tag} is charging in to bowl...\n"
+        f"╭━━ 🔴 LIVE ━━━━━━\n"
+        f"┃ 🔹 Over: {overs_str}  |  🔹 RR: {crr_str}\n"
+        f"┃ 🥎 {bowler_tag} is charging in to bowl...\n"
         f"╰━━━━━━━━━━━━━━━━"
     )
     if equation:
@@ -7831,9 +7847,9 @@ async def request_batsman_number(context: ContextTypes.DEFAULT_TYPE, group_id: i
     
     sr_live = round((batsman.runs / batsman.balls_faced) * 100, 1) if batsman.balls_faced > 0 else 0.0
     text = (
-        f"╭━━  <b>LIVE</b> ━━━\n"
-        f"┃  {batsman_tag}  ➜ {batsman.runs} ({batsman.balls_faced}) |  SR: {sr_live}\n"
-        f"┃ {html.escape(batsman.first_name)} , play your shot\n"
+        f"╭━━ 🔴 LIVE ━━━\n"
+        f"┃ 📊 {batsman_tag} ➜ {batsman.runs} ({batsman.balls_faced}) | ⚡ SR: {sr_live}\n"
+        f"┃🏏 {html.escape(batsman.first_name)}, play your shot\n"
         f"╰━━━━━━━━━━━━━━━━"
     )
     
@@ -8280,101 +8296,53 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         
         # Build message
         # Build dynamic runs message
-        run_emoji = {0: "⚫", 1: "🏃", 2: "🏃‍♂️", 3: "⚡", 4: "🔥", 5: "💥", 6: "🚀"}.get(runs, "🏃")
-        run_label = "SIX! 🚀" if runs == 6 else "FOUR! 🔥" if runs == 4 else f"+{runs} Runs!" if runs > 0 else "Dot ball."
+        run_emoji = {0: "⚫", 1: "🏃", 2: "🏃‍♂️", 3: "⚡", 4: "🚀", 5: "💥", 6: "🚀"}.get(runs, "🏃")
+        run_labels = {
+            0: "Dot Ball !",
+            1: "Single !",
+            2: "Double !",
+            3: "Three !",
+            4: "Four !",
+            5: "Five !",
+            6: "Six !"
+        }
+        run_label_clean = run_labels.get(runs, f"+{runs} Runs !")
+        
+        # Header line: ╭━━ 🚀 Four ! ━━━━━━━ 🚀
+        header_text = f"╭━━ {run_emoji} {run_label_clean} ━━━━━━━ {run_emoji}"
+        
         freehit_prefix = ""
         if match.is_free_hit:
             freehit_prefix = "⚡ <b>FREE HIT!</b>\n"
             match.is_free_hit = False
         
-        chase_info = ""
+        chase_line = ""
         if match.innings == 2:
             rn = match.target - bat_team.score
-            bl = (match.total_overs * 6) - bat_team.balls  # ✅ FIX: use bat_team.balls (not bowl_team)
+            bl = (match.total_overs * 6) - bat_team.balls
             rrr = round((rn / bl) * 6, 2) if bl > 0 else 0
             if rn > 0:
-                chase_info = f"\n🎯 Need <b>{rn}</b> off <b>{bl}</b> balls (RRR {rrr})"
+                chase_line = f"\n🎯 Need <b>{rn}</b> off <b>{bl}</b> balls (RRR {rrr})"
         
         msg = f"{freehit_prefix}"
-        run_header = f"{run_emoji} {run_label}"
-
-        # --- Chase info line (2nd innings) ---
-        chase_line = ""
-        if chase_info:
-            # format: Need X off Y balls (RRR Z)
-            chase_line = f"\nNeed <b>{rn}</b> off <b>{bl}</b> balls (RRR {rrr})\n"
-
-        # --- 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 panel ---
-        batting_panel = "\n 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n┌───────────────────\n"
-        if bat_team.current_batsman_idx is not None:
-            batter = bat_team.players[bat_team.current_batsman_idx]
-            b_sr = round((batter.runs / max(batter.balls_faced, 1)) * 100, 2)
-            batting_panel += f"├  Striker ➔ {batter.runs} ({batter.balls_faced})\n"
-            batting_panel += f"├  𝗖𝗦𝗥: {b_sr:.2f}\n"
-            batting_panel += f"├ \n"
-        if bat_team.current_non_striker_idx is not None:
-            ns = bat_team.players[bat_team.current_non_striker_idx]
-            ns_sr = round((ns.runs / max(ns.balls_faced, 1)) * 100, 2)
-            batting_panel += f"├  Non -Striker ➔ {ns.runs} ({ns.balls_faced})\n"
-            batting_panel += f"├  𝗖𝗦𝗥: {ns_sr:.2f}\n"
-        batting_panel += "└───────────────────"
-
-        # --- 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 panel ---
-        bowling_panel = "\n 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 \n┌───────────────────\n"
-        if bowl_team.current_bowler_idx is not None:
-            bwlr = bowl_team.players[bowl_team.current_bowler_idx]
-            this_over_balls = [b for b in match.ball_by_ball_log[-6:] if b.get('bowler') == bwlr.first_name]
-            over_parts = []
-            for b in this_over_balls:
-                if b.get('wicket') or b.get('is_wicket'):
-                    over_parts.append('W')
-                elif b.get('noball'):
-                    over_parts.append('NB')
-                elif b.get('wide'):
-                    over_parts.append('WD')
-                else:
-                    over_parts.append(str(b.get('runs', 0)))
-            over_summary = ", ".join(over_parts) if over_parts else "-"
-            bowling_panel += f"├  {html.escape(bwlr.first_name)}\n"
-            bowling_panel += f"├  𝗧𝗵𝗶𝘀 𝗢𝘃𝗲𝗿: {over_summary}\n"
-        bowling_panel += "└───────────────────"
-
-        # --- 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗 panel ---
-        tx = match.team_x
-        ty = match.team_y
-        tx_crr = round(tx.score / (tx.balls / 6), 2) if tx.balls > 0 else 0.0
-        ty_crr = round(ty.score / (ty.balls / 6), 2) if ty.balls > 0 else 0.0
-        scoreboard_panel = (
-            f"\n 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗\n┌───────────────────\n"
-            f"├  𝗧𝗘𝗔𝗠 {html.escape(tx.name)}: {tx.score}/{tx.wickets} ({format_overs(tx.balls)} ov)\n"
-            f"├ ↳ 𝗖𝗥𝗥: {tx_crr:.2f}\n"
-            f"├ \n"
-            f"├  𝗧𝗘𝗔𝗠 {html.escape(ty.name)}: {ty.score}/{ty.wickets} ({format_overs(ty.balls)} ov)\n"
-            f"├ ↳ 𝗖𝗥𝗥: {ty_crr:.2f}\n"
-            f"└───────────────────"
-        )
-
-        # ── Score line (Four! / Six! / +N Runs!) ──
-        bat_line = f"┃  Score: {bat_team.score}/{bat_team.wickets}"
-        comm_line = f"┃  {commentary}"
+        
+        bat_line = f"┃ 🏏 Score: {bat_team.score}/{bat_team.wickets}"
+        comm_line = f"┃ 🏟️ {commentary}"
         score_box = (
-            f"╭━━  {run_label} ━━━━━━━ \n"
+            f"{header_text}\n"
             f"{bat_line}\n"
-            f"{comm_line} \n"
+            f"{comm_line}\n"
             f"╰━━━━━━━━━━━━━━━━"
         )
-
+        
         if magic_ball_result and magic_ball_result.get("magic_type"):
             magic_msg = magic_ball_result.get("message", "")
             if magic_msg:
                 score_box += f"\n🔮 {magic_msg}"
-
+                
         msg += score_box
         if chase_line:
             msg += chase_line
-        msg += batting_panel
-        msg += bowling_panel
-        msg += scoreboard_panel
         
         # React buttons for boundaries
         _bnd_react = None
@@ -9228,81 +9196,7 @@ async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int,
 
     # ── Build END OF OVER summary using new styled format ──
     mini_card = generate_mini_scorecard(match)
-    wkts_txt = f", {_last_wkts}W" if _last_wkts else ""
-
-    # Chase info for over-complete
-    _chase_line = ""
-    if match.innings == 2 and match.target > 0:
-        _needed = match.target - bat_team.score
-        _bl = (match.total_overs * 6) - bat_team.balls
-        _rrr = round(_needed / (_bl / 6), 2) if _bl > 0 else 0
-        _bl_str = f"{_bl}"
-        _rrr_str = f"{_rrr:.2f}"
-        _chase_line = f"\nNeed <b>{_needed}</b> off <b>{_bl_str}</b> balls (RRR {_rrr_str})\n"
-
-    # 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 panel
-    ov_batting_panel = "\n 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n┌───────────────────\n"
-    if new_striker:
-        s_sr = round((new_striker.runs / max(new_striker.balls_faced, 1)) * 100, 2)
-        ov_batting_panel += f"├  Striker ➔ {new_striker.runs} ({new_striker.balls_faced})\n"
-        ov_batting_panel += f"├  𝗖𝗦𝗥: {s_sr:.2f}\n"
-        ov_batting_panel += "├ \n"
-    if new_non_striker:
-        ns_sr = round((new_non_striker.runs / max(new_non_striker.balls_faced, 1)) * 100, 2)
-        ov_batting_panel += f"├  Non -Striker ➔ {new_non_striker.runs} ({new_non_striker.balls_faced})\n"
-        ov_batting_panel += f"├  𝗖𝗦𝗥: {ns_sr:.2f}\n"
-    ov_batting_panel += "└───────────────────"
-
-    # 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 panel
-    ov_bowling_panel = "\n 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 \n┌───────────────────\n"
-    _this_over_balls_oc = [
-        b for b in match.ball_by_ball_log
-        if b.get("batting_team") == bat_team.name
-    ][-6:]
-    _over_parts_oc = []
-    for b in _this_over_balls_oc:
-        if b.get('wicket') or b.get('is_wicket'):
-            _over_parts_oc.append('W')
-        elif b.get('noball'):
-            _over_parts_oc.append('NB')
-        elif b.get('wide'):
-            _over_parts_oc.append('WD')
-        else:
-            _over_parts_oc.append(str(b.get('runs', 0)))
-    _over_summary_oc = ", ".join(_over_parts_oc) if _over_parts_oc else "-"
-    ov_bowling_panel += f"├  {html.escape(bowler.first_name)}\n"
-    ov_bowling_panel += f"├  𝗧𝗵𝗶𝘀 𝗢𝘃𝗲𝗿: {_over_summary_oc}\n"
-    ov_bowling_panel += "└───────────────────"
-
-    # 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗 panel
-    _tx = match.team_x
-    _ty = match.team_y
-    _tx_crr = round(_tx.score / (_tx.balls / 6), 2) if _tx.balls > 0 else 0.0
-    _ty_crr = round(_ty.score / (_ty.balls / 6), 2) if _ty.balls > 0 else 0.0
-    ov_scoreboard_panel = (
-        f"\n 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗\n┌───────────────────\n"
-        f"├  𝗧𝗘𝗔𝗠 {html.escape(_tx.name)}: {_tx.score}/{_tx.wickets} ({format_overs(_tx.balls)} ov)\n"
-        f"├ ↳ 𝗖𝗥𝗥: {_tx_crr:.2f}\n"
-        f"├ \n"
-        f"├  𝗧𝗘𝗔𝗠 {html.escape(_ty.name)}: {_ty.score}/{_ty.wickets} ({format_overs(_ty.balls)} ov)\n"
-        f"├ ↳ 𝗖𝗥𝗥: {_ty_crr:.2f}\n"
-        f"└───────────────────"
-    )
-
-    over_header = (
-        f"🏁 <b>END OF OVER {format_overs(bat_team.balls)}</b>\n"
-        f"⚾ <b>Bowler:</b> {html.escape(bowler.first_name)}  ·  <b>{_last_runs} runs{wkts_txt}</b>  ·  Econ: <b>{_over_econ}</b>\n"
-        f"📊 <b>Score:</b> {bat_team.score}/{bat_team.wickets}  ┊  RR: {_rr}{_part_txt}\n"
-        f"✨ {_best_ball_txt}\n"
-    )
-    if _hist:
-        over_header += f"📈 Last 5 overs: {_hist}\n"
-    over_header += _chase_line
-    over_header += ov_batting_panel
-    over_header += ov_bowling_panel
-    over_header += ov_scoreboard_panel
-    over_header += "\n\n"
-    combined_caption = over_header + mini_card
+    combined_caption = mini_card
 
     # ✅ Send combined over-summary + mini scorecard with chart
     chart_sent2 = False
@@ -12532,35 +12426,35 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
         # ── 1. DEEP-NIGHT TURF GRADIENT BACKGROUND ──
         for y in range(H_px):
             t = y / H_px
-            r = int(8  + (18 - 8)  * t)
-            g = int(24 + (52 - 24) * t)
-            b = int(14 + (26 - 14) * t)
+            r = int(10 + (22 - 10) * t)
+            g = int(10 + (22 - 10) * t)
+            b = int(18 + (34 - 18) * t)
             draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-        # Mowed stripe overlay
+        # Mowed stripe overlay (Sleek dark theme stripes)
         stripe_w = 55 * SC
         for x in range(0, W, stripe_w):
             if (x // stripe_w) % 2 == 0:
-                draw.rectangle([x, 0, x + stripe_w, H_px], fill=(255, 255, 255, 6))
+                draw.rectangle([x, 0, x + stripe_w, H_px], fill=(255, 255, 255, 4))
 
-        # Stadium floodlight glow blobs
+        # Stadium floodlight glow blobs (Dark theme glow)
         glow = Image.new("RGBA", (W, H_px), (0, 0, 0, 0))
         gd   = ImageDraw.Draw(glow)
-        gd.ellipse([-200*SC, -200*SC, 500*SC, 500*SC], fill=(0, 230, 120, 22))
-        gd.ellipse([W-400*SC, -200*SC, W+200*SC, 400*SC], fill=(255, 215, 0, 16))
-        gd.ellipse([W//2-300*SC, H_px-300*SC, W//2+300*SC, H_px+100*SC], fill=(0, 180, 255, 14))
+        gd.ellipse([-200*SC, -200*SC, 500*SC, 500*SC], fill=(0, 150, 255, 18))
+        gd.ellipse([W-400*SC, -200*SC, W+200*SC, 400*SC], fill=(130, 0, 255, 14))
+        gd.ellipse([W//2-300*SC, H_px-300*SC, W//2+300*SC, H_px+100*SC], fill=(0, 200, 255, 10))
         glow = glow.filter(ImageFilter.GaussianBlur(100 * SC // 3))
         img.paste(glow, (0, 0), glow)
 
         # ── PALETTE ──
         GOLD    = (255, 215,   0, 255)
         WHITE   = (245, 250, 255, 255)
-        MUTED   = (140, 175, 155, 255)
+        MUTED   = (140, 155, 175, 255)
         C_X     = ( 64, 196, 255, 255)   # Cyan  – Team X
         C_Y     = (255,  96, 144, 255)   # Pink  – Team Y
         LIVE_R  = (255,  60,  60, 255)
-        PANEL   = ( 10,  30,  18, 200)
-        BORDER  = (255, 255, 255,  40)
+        PANEL   = ( 15,  18,  28, 210)
+        BORDER  = (255, 255, 255,  35)
         GREEN_S = ( 50, 220,  90, 255)   # On-strike
         GREY_NS = (160, 160, 160, 255)   # Non-striker / bowler
 
@@ -12581,13 +12475,13 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
 
         # ── 2. HEADER PANEL ──
         draw.rounded_rectangle([30*SC, 20*SC, W-30*SC, HEADER_H - 10*SC],
-                                radius=28*SC, fill=(8, 22, 14, 230),
+                                radius=28*SC, fill=(12, 14, 24, 230),
                                 outline=GOLD, width=2*SC)
         # Glowing accent strip under header
         for i in range(4 * SC):
             a = int(255 * (1 - i / (4*SC)))
             draw.line([(30*SC, HEADER_H - 10*SC + i), (W-30*SC, HEADER_H - 10*SC + i)],
-                      fill=(0, 230, 120, a))
+                      fill=(0, 150, 255, a))
 
         # Title
         _cx("🏏  P L A Y I N G  S Q U A D S  🏏", f_hero, GOLD, 32*SC)
@@ -12716,7 +12610,7 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
                 badge_x  = av_x + av_size - 22*SC
                 badge_y  = av_y + av_size - 22*SC
                 draw.ellipse([badge_x, badge_y, badge_x + 22*SC, badge_y + 22*SC],
-                             fill=(10, 20, 12, 230), outline=color, width=1*SC)
+                             fill=(15, 18, 28, 230), outline=color, width=1*SC)
                 num_str = str(i + 1)
                 nb = draw.textbbox((0, 0), num_str, font=f_xs)
                 draw.text((badge_x + (22*SC - (nb[2]-nb[0]))//2,
@@ -12756,7 +12650,10 @@ def generate_players_squad_image(match) -> Optional[BytesIO]:
 
         # ── 8. FINALIZE ──
         final_h = H_px // SC
-        final = img.convert("RGB").resize((1200, final_h), Image.Resampling.LANCZOS)
+        # Alpha blend onto a solid dark background to preserve transparencies
+        bg = Image.new("RGB", (W, H_px), (10, 10, 18))
+        bg.paste(img, (0, 0), img)
+        final = bg.resize((1200, final_h), Image.Resampling.LANCZOS)
         bio = BytesIO()
         final.save(bio, "PNG", optimize=True)
         bio.seek(0)
@@ -22672,9 +22569,12 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if match.current_solo_bat_idx < len(match.solo_players):
                         batter = match.solo_players[match.current_solo_bat_idx]
                         sr = round((batter.runs / max(batter.balls_faced, 1)) * 100, 1)
+                        batter_tag = f'<a href=\"tg://user?id={batter.user_id}\">{batter.first_name}</a>'
                         notification_msg = (
-                            f"📊 <b>{batter.first_name}:</b> {batter.runs} ({batter.balls_faced}) | ⚡ SR: {sr}\n"
-                            f'🏏 <b><a href=\"tg://user?id={batter.user_id}\">{batter.first_name}</a></b>, play your shot!\n'
+                            f"╭━━ 🔴 LIVE ━━━\n"
+                            f"┃ 📊 {batter_tag} ➜ {batter.runs} ({batter.balls_faced}) | ⚡ SR: {sr}\n"
+                            f"┃🏏 {html.escape(batter.first_name)}, play your shot\n"
+                            f"╰━━━━━━━━━━━━━━━━"
                         )
                         try:
                             await context.bot.send_animation(gid, "https://t.me/kyanaamrkhe/7", caption=notification_msg, parse_mode=ParseMode.HTML)
@@ -22798,8 +22698,10 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             striker_tag = f'<a href=\"tg://user?id={striker.user_id}\">{striker.first_name}</a>'
                             
                             notification_msg = (
-                                f"📊 <b>{striker.first_name} ➜ </b> {striker.runs} ({striker.balls_faced}) | ⚡ SR: {sr}\n"
-                                f"🏏 <b>{striker_tag}</b>, play your shot"
+                                f"╭━━ 🔴 LIVE ━━━\n"
+                                f"┃ 📊 {striker_tag} ➜ {striker.runs} ({striker.balls_faced}) | ⚡ SR: {sr}\n"
+                                f"┃🏏 {html.escape(striker.first_name)}, play your shot\n"
+                                f"╰━━━━━━━━━━━━━━━━"
                             )
 
                             try:

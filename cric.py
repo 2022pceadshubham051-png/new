@@ -16146,42 +16146,57 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Optional[bytes] = None, mode: str = "overall") -> Optional[BytesIO]:
     """
-    Cricket-theme player profile card — ULTIMATE PREMIUM design.
-    Features: Obsidian black carbon-stripe background, intense Gold glow DP ring, 
-    neon accents, crossed bats watermark, and dark smoked glass stats tiles.
+    Cricket-theme player profile card — GOD-LEVEL ULTIMATE PREMIUM design.
+    Features: Obsidian space gradient with radial stadium blooms, glowing neon rings around DP,
+    carbon-fiber pinstripes, frosted glass capsule badges, and modern glassmorphism grid tiles.
     """
     try:
-        from PIL import Image, ImageDraw
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter
         import math
         
-        # ── 0. ULTRA-HD SCALING ──
         # SC=3 generates a massive 3600x2220 canvas for extreme crispness, downscaled at the end
         SC = 3 
         W, H = 1200 * SC, 740 * SC
         img = Image.new("RGBA", (W, H))
         draw = ImageDraw.Draw(img)
 
-        # ── 1. PREMIUM OBSIDIAN BACKGROUND (Carbon-Stripe Texture) ──
-        BG_COLOR = (12, 14, 18, 255)
-        STRIPE_COLOR = (22, 26, 33, 255)
-        draw.rectangle([0, 0, W, H], fill=BG_COLOR)
-        
-        # Draw sleek diagonal carbon pinstripes
-        stripe_gap = 40 * SC
+        # ── 1. PREMIUM GRADIENT & NEON STADIUM BLOOM BACKGROUND ──
+        # Radial/Vertical gradient
+        for y in range(H):
+            ratio = y / H
+            # Dark navy-indigo at top, pure black at bottom
+            r = int(10 + (2 - 10) * ratio)
+            g = int(14 + (4 - 14) * ratio)
+            b = int(24 + (8 - 24) * ratio)
+            draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
+
+        # Carbon fiber pinstripes (subtle opacity)
+        stripe_gap = 45 * SC
         for d in range(-H, W + H, stripe_gap):
-            draw.line([(d, 0), (d + H, H)], fill=STRIPE_COLOR, width=3 * SC)
+            draw.line([(d, 0), (d + H, H)], fill=(255, 255, 255, 5), width=2 * SC)
+
+        # Stadium lighting glow blooms (spotlights)
+        glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow_layer)
+        # Spotlight 1 (Cyan top-left behind avatar)
+        glow_draw.ellipse([-300*SC, -300*SC, 600*SC, 600*SC], fill=(0, 229, 255, 35))
+        # Spotlight 2 (Gold top-right corner)
+        glow_draw.ellipse([W - 300*SC, -300*SC, W + 300*SC, 300*SC], fill=(255, 215, 0, 20))
+        # Spotlight 3 (Neon Green bottom-right)
+        glow_draw.ellipse([W - 500*SC, H - 500*SC, W + 400*SC, H + 400*SC], fill=(57, 255, 20, 20))
+        
+        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(120 * SC // 3))
+        img.paste(glow_layer, (0, 0), glow_layer)
 
         # ── COLOR PALETTE (Neon & Gold on Black) ──
         WHITE = (255, 255, 255, 255)
         MUTED = (140, 150, 165, 255)     # Sleeker silver-gray
         GOLD  = (255, 215, 0, 255)       # Pure Gold
-        BLUE  = (0, 212, 255, 255)       # Neon Cyan
-        GREEN = (0, 255, 128, 255)       # Neon Emerald
-        RED   = (255, 48, 80, 255)       # Crimson/Pink
-        PANEL = (20, 24, 30, 200)        # Dark Smoked Glass
-        BORDER = (255, 255, 255, 25)     # Very subtle silver frost
+        BLUE  = (0, 229, 255, 255)       # Neon Cyber Cyan
+        GREEN = (57, 255, 20, 255)       # Neon Emerald Green
+        RED   = (255, 60, 90, 255)       # Neon Coral Red
 
-        # Fonts (Assumes _get_font is defined in your file)
+        # Fonts
         f_title = _get_font(True, 42*SC)
         f_name  = _get_font(True, 62*SC)
         f_label = _get_font(False, 22*SC)
@@ -16189,70 +16204,59 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         f_small = _get_font(False, 21*SC)
         f_mode  = _get_font(True, 26*SC)
 
-        # ── 2. OUTER CARD FRAME (Dark glass panel with glowing gold border) ──
+        # ── 2. OUTER CARD FRAME (Translucent panel with frosted border) ──
         # Outer soft glow shadow for the main panel
-        for r in range(10, 0, -1):
-            alpha = int(40 * (r / 10))
+        for r in range(12, 0, -1):
+            alpha = int(35 * (r / 12))
             draw.rounded_rectangle(
                 [36*SC - r*SC, 30*SC - r*SC, W - 36*SC + r*SC, H - 30*SC + r*SC],
-                radius=32*SC, fill=(0, 0, 0, alpha)
+                radius=34*SC, fill=(0, 0, 0, alpha)
             )
             
         draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, H-30*SC],
-                                radius=28*SC, fill=PANEL,
-                                outline=(255, 215, 0, 100), width=3*SC) # Semi-transparent gold rim
+                                radius=30*SC, fill=(12, 16, 28, 200),
+                                outline=(255, 255, 255, 20), width=1*SC)
 
         # ── 3. CROSSED BATS WATERMARK (Subtle Gold behind details) ──
-        def _draw_crossed_bats_watermark(cx, cy, size, alpha):
-            w_color = (255, 215, 0, alpha)
-            hw = int(4 * SC)
-            bw = int(12 * SC)
-            # Bat 1
-            draw.line([(cx - size//2, cy - size//2), (cx - size//8, cy - size//8)], fill=w_color, width=hw)
-            draw.line([(cx - size//8, cy - size//8), (cx + size//2, cy + size//2)], fill=w_color, width=bw)
-            draw.rectangle([cx + size//2 - bw//2, cy + size//2 - bw//2, cx + size//2 + bw//2, cy + size//2 + bw//2], fill=w_color)
-            # Bat 2
-            draw.line([(cx + size//2, cy - size//2), (cx + size//8, cy - size//8)], fill=w_color, width=hw)
-            draw.line([(cx + size//8, cy - size//8), (cx - size//2, cy + size//2)], fill=w_color, width=bw)
-            draw.rectangle([cx - size//2 - bw//2, cy + size//2 - bw//2, cx - size//2 + bw//2, cy + size//2 + bw//2], fill=w_color)
+        _draw_crossed_bats_watermark(W - 240*SC, 240*SC, 240*SC, 10)
 
-        _draw_crossed_bats_watermark(W - 240*SC, 240*SC, 240*SC, 15) # Made slightly larger, low opacity
+        # ── 4. HEADER STRIP (Frosted Cyber Header with neon gradient accents) ──
+        draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, 115*SC],
+                                radius=30*SC, fill=(6, 8, 14, 230))
+        # Draw a glowing gradient line under the header
+        for i in range(3 * SC):
+            y_line = 115*SC + i
+            alpha = int(255 * (1 - i / (3*SC)))
+            draw.line([(36*SC, y_line), (W-36*SC, y_line)], fill=(0, 229, 255, alpha))
 
-        # ── 4. HEADER STRIP (Ultra Dark) ──
-        draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, 108*SC],
-                                radius=28*SC, fill=(10, 12, 16, 240),
-                                outline=GOLD, width=3*SC)
+        header_txt = "🏏  C R I C O V E R S E   S P E C I A L   E D I T I O N  🏏"
+        _draw_text_centered_glow(draw, header_txt, W//2, 50*SC, f_mode, GOLD, glow_color=(255, 215, 0))
 
-        header_txt = "🏏 CRICOVERSE  |  PREMIUM PLAYER CARD  |  " + mode.upper()
-        hb = draw.textbbox((0,0), header_txt, font=f_mode)
-        hw = hb[2] - hb[0]
-        draw.text(((W - hw)//2, 52*SC), header_txt, font=f_mode, fill=GOLD)
-
-        # ── 5. AVATAR WITH ULTIMATE GOLD GLOWING RING ──
+        # ── 5. AVATAR WITH MULTI-LAYERED CYBER GLOW ──
         initials = "".join(part[:1] for part in (name or "Player").split()[:2])
-        # Assumes _circle_avatar is defined
-        avatar = _circle_avatar(avatar_bytes, 170*SC, initials)
-        img.alpha_composite(avatar, (80*SC, 130*SC))
-
-        # Ultimate layered gold glow ring
-        draw.ellipse([78*SC, 128*SC, 252*SC, 302*SC], outline=GOLD, width=6*SC)
-        for r in range(1, 20): # Increased glow spread
-            g_alpha = int(120 * (1 - r/20))
-            draw.ellipse([78*SC - r*SC, 128*SC - r*SC, 252*SC + r*SC, 302*SC + r*SC], 
-                         outline=(255, 215, 0, g_alpha), width=2*SC)
+        avatar = _circle_avatar(avatar_bytes, 180*SC, initials)
+        
+        av_cx, av_cy = 175*SC, 260*SC
+        av_r = 90*SC
+        
+        # Draw glowing neon backdrops for avatar
+        for r in range(15, 0, -1):
+            g_alpha = int(60 * (1 - r/15))
+            draw.ellipse([av_cx - av_r - r*SC, av_cy - av_r - r*SC, av_cx + av_r + r*SC, av_cy + av_r + r*SC],
+                         outline=(0, 229, 255, g_alpha), width=2*SC)
+                         
+        img.alpha_composite(avatar, (av_cx - av_r, av_cy - av_r))
+        
+        # Double rings on top of the avatar border
+        draw.ellipse([av_cx - av_r, av_cy - av_r, av_cx + av_r, av_cy + av_r], outline=GOLD, width=3*SC)
+        draw.ellipse([av_cx - av_r - 4*SC, av_cy - av_r - 4*SC, av_cx + av_r + 4*SC, av_cy + av_r + 4*SC], outline=(0, 229, 255, 120), width=1*SC)
 
         # ── 6. PLAYER NAME & DETAILS ──
-        safe_name = _clean_display_name(name or "Player", 20).upper()
-        draw.text((280*SC, 140*SC), safe_name, font=f_name, fill=WHITE)
-        draw.text((284*SC, 214*SC), "Player ID: " + str(user_id), font=f_small, fill=MUTED)
-
-        # Mode badge (Glowing Neon)
-        mode_badge = mode.upper()
-        mb = draw.textbbox((0,0), mode_badge, font=f_label)
-        mw = mb[2] - mb[0]
-        draw.rounded_rectangle([280*SC, 238*SC, 280*SC + mw + 32*SC, 278*SC],
-                                radius=12*SC, fill=(0, 212, 255, 30), outline=BLUE, width=2*SC)
-        draw.text((296*SC, 244*SC), mode_badge, font=f_label, fill=BLUE)
+        text_x = 295 * SC
+        safe_name = _clean_display_name(name or "Player", 16).upper()
+        
+        _draw_glowing_text(draw, safe_name, text_x, 155*SC, f_name, WHITE, glow_color=(0, 229, 255), glow_radius=8)
+        draw.text((text_x, 230*SC), f"PLAYER ID: {user_id}", font=f_small, fill=MUTED)
 
         # ── 7. WIN/LOSS SUMMARY CARD ──
         matches = stats.get("matches", 0)
@@ -16261,28 +16265,34 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         win_rate= stats.get("win_rate", 0)
         form    = stats.get("form", [])
 
-        wr_txt = f"{wins}W  {losses}L"
-        draw.rounded_rectangle([280*SC, 292*SC, 580*SC, 348*SC],
-                                radius=16*SC, fill=(255, 255, 255, 8), # Darker fill
-                                outline=BORDER, width=2*SC)
+        # Capsule shape for Win/Loss record
+        wl_rect = [295*SC, 280*SC, 580*SC, 340*SC]
+        draw.rounded_rectangle(wl_rect, radius=18*SC, fill=(255, 255, 255, 10), outline=(255, 255, 255, 20), width=1*SC)
         
-        wr_c = GREEN if wins >= losses else RED
-        draw.text((300*SC, 304*SC), wr_txt, font=f_value, fill=wr_c)
-        draw.text((468*SC, 308*SC), str(win_rate) + "% WIN", font=f_label, fill=MUTED)
+        wl_accent_color = GREEN if wins >= losses else RED
+        draw.rounded_rectangle([295*SC, 280*SC, 305*SC, 340*SC], radius=6*SC, fill=wl_accent_color)
+        
+        draw.text((325*SC, 290*SC), f"{wins}W - {losses}L", font=f_value, fill=wl_accent_color)
+        draw.text((475*SC, 296*SC), f"{win_rate}% WR", font=f_label, fill=MUTED)
 
-        # Form dots (Glowing)
+        # ── 8. Recent Form dots (glowing circular badges) ──
         if form:
-            form_x = 280*SC
-            for r in form[-6:]:
-                fc = GREEN if r == "W" else RED
-                # Core dot
-                draw.ellipse([form_x, 362*SC, form_x + 24*SC, 386*SC], fill=fc)
-                # Outer glow for dots
-                draw.ellipse([form_x - 3*SC, 362*SC - 3*SC, form_x + 27*SC, 386*SC + 3*SC], outline=(*fc[:3], 100), width=2*SC)
+            form_x = 295*SC
+            try:
+                f_mini = ImageFont.truetype("Roboto-Bold.ttf", 10 * SC)
+            except:
+                f_mini = ImageFont.load_default(size=10 * SC)
+            for r in form[-5:]:
+                fc = GREEN if r == "W" else (RED if r == "L" else GOLD)
+                for w in range(1, 4):
+                    draw.ellipse([form_x - w*SC, 360*SC - w*SC, form_x + 24*SC + w*SC, 384*SC + w*SC], outline=(*fc[:3], 50), width=1*SC)
+                draw.ellipse([form_x, 360*SC, form_x + 24*SC, 384*SC], fill=fc)
+                txt = str(r)
+                tb = draw.textbbox((0, 0), txt, font=f_mini)
+                tw = tb[2] - tb[0]
+                th = tb[3] - tb[1]
+                draw.text((form_x + 12*SC - tw//2, 372*SC - th//2 - 2*SC), txt, font=f_mini, fill=(10, 12, 18, 255))
                 form_x += 36*SC
-
-        # ── 8. DIVIDER ──
-        draw.line([(68*SC, 412*SC), (W - 68*SC, 412*SC)], fill=(255, 255, 255, 20), width=2*SC)
 
         # ── 9. SMOKED GLASS STATS GRID (4x2 layout) ──
         stat_cards = [
@@ -16297,35 +16307,41 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         ]
 
         sx, sy = 68*SC, 432*SC
-        card_w, card_h = 256*SC, 96*SC
+        card_w, card_h = 256*SC, 98*SC
         gap_x, gap_y   = 18*SC, 16*SC
         for idx, (label, value, color) in enumerate(stat_cards):
             col = idx % 4; row = idx // 4
             x1 = sx + col * (card_w + gap_x)
             y1 = sy + row * (card_h + gap_y)
             
-            # Ultra-dark glass card layout
             draw.rounded_rectangle([x1, y1, x1+card_w, y1+card_h],
-                                   radius=16*SC, fill=(255, 255, 255, 8),
-                                   outline=BORDER, width=2*SC)
-                                   
-            # Vibrant Neon color accent bar on the left
-            draw.rounded_rectangle([x1, y1, x1+10*SC, y1+card_h], radius=8*SC, fill=color)
+                                   radius=20*SC, fill=(20, 26, 42, 210),
+                                   outline=(255, 255, 255, 15), width=1*SC)
             
-            # Stat Text
-            draw.text((x1+26*SC, y1+12*SC), str(value), font=f_value, fill=WHITE)
-            draw.text((x1+26*SC, y1+62*SC), label,      font=f_label, fill=MUTED)
+            draw.rounded_rectangle([x1, y1, x1+8*SC, y1+card_h], radius=8*SC, fill=color)
+            draw.ellipse([x1+2*SC, y1+4*SC, x1+6*SC, y1+8*SC], fill=WHITE)
+            
+            val_str = str(value)
+            if len(val_str) > 10:
+                try:
+                    f_val_small = ImageFont.truetype("Roboto-Bold.ttf", 30 * SC)
+                except:
+                    f_val_small = ImageFont.load_default(size=30 * SC)
+                draw.text((x1+26*SC, y1+18*SC), val_str, font=f_val_small, fill=WHITE)
+            else:
+                draw.text((x1+26*SC, y1+12*SC), val_str, font=f_value, fill=WHITE)
+                
+            draw.text((x1+26*SC, y1+64*SC), label, font=f_label, fill=MUTED)
 
         # ── 10. FOOTER BRANDING ──
         py2 = sy + 2*(card_h + gap_y) + 20*SC
-        draw.line([(68*SC, py2), (W-68*SC, py2)], fill=(255, 255, 255, 20), width=2*SC)
+        draw.line([(68*SC, py2), (W-68*SC, py2)], fill=(255, 255, 255, 15), width=1*SC)
 
-        brand = "⚡ CRICOVERSE  ·  ULTIMATE EDITION STATISTICS"
+        brand = "⚡  C R I C O V E R S E   C L U B   ·   U L T I M A T E   S T A T I S T I C S  ⚡"
         bb = draw.textbbox((0,0), brand, font=f_small)
-        draw.text(((W - (bb[2]-bb[0]))//2, py2 + 12*SC), brand, font=f_small, fill=MUTED)
+        draw.text(((W - (bb[2]-bb[0]))//2, py2 + 15*SC), brand, font=f_small, fill=MUTED)
 
         # ── 11. DOWNSCALE FOR GOD-LEVEL CRISPNESS ──
-        # Resizing with LANCZOS down from SC=3 gives incredible anti-aliased sharpness
         final = img.convert("RGB").resize((1200, 740), Image.Resampling.LANCZOS)
         
         bio = BytesIO()

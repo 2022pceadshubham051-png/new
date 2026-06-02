@@ -13244,218 +13244,217 @@ def _circle_avatar(avatar_bytes: Optional[bytes], size: int, initials: str = "CV
     return out
 
 
-def fetch_overall_stats_snapshot(user_id: int) -> dict:
-    """Read overall stats from DB plus in-memory form for the profile card."""
-    row = None
+def _clean_display_name(name: str, max_len: int = 15) -> str:
+    """Helper to keep player names from breaking the layout."""
+    clean = name.strip()
+    return clean[:max_len] + "..." if len(clean) > max_len else clean
+
+def _create_avatar_image(avatar_bytes: bytes, size: int, initials: str) -> Image.Image:
+    """Helper to process the DP into a perfect circle, or fallback to initials."""
+    result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    mask = Image.new("L", (size, size), 0)
+    draw_mask = ImageDraw.Draw(mask)
+    draw_mask.ellipse((0, 0, size, size), fill=255)
+    
+    if avatar_bytes:
+        try:
+            av = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
+            # Crop to square first to avoid stretching
+            w, h = av.size
+            min_side = min(w, h)
+            left = (w - min_side) / 2
+            top = (h - min_side) / 2
+            av = av.crop((left, top, left + min_side, top + min_side))
+            av = av.resize((size, size), Image.Resampling.LANCZOS)
+            result.paste(av, (0, 0), mask=mask)
+            return result
+        except Exception as e:
+            pass
+            
+    # Fallback if no DP: Dark circle with neon initials
+    draw_fallback = ImageDraw.Draw(result)
+    draw_fallback.ellipse((0, 0, size, size), fill=(20, 30, 50, 255))
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT matches_played, matches_won, total_runs, highest_score,
-                   total_balls_faced, total_wickets, total_sixes, total_fours,
-                   total_dots, best_bowling_wickets, best_bowling_runs,
-                   total_ducks, total_fifties, total_hundreds,
-                   five_wicket_hauls, player_of_match_count
-            FROM user_stats
-            WHERE user_id = ?
-        """, (user_id,))
-        row = c.fetchone()
-        conn.close()
-    except Exception as e:
-        logger.info(f"Could not read overall stats for {user_id}: {e}")
+        font = ImageFont.truetype("Roboto-Bold.ttf", int(size * 0.4))
+    except:
+        font = ImageFont.load_default(size=int(size * 0.4))
+    
+    # Center text
+    bbox = draw_fallback.textbbox((0, 0), initials, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    draw_fallback.text(((size - tw) / 2, (size - th) / 2 - (size * 0.05)), initials, font=font, fill=(0, 229, 255, 255))
+    result.putalpha(mask)
+    return result
 
-    if not row:
-        row = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-
-    matches, won, runs, hs, balls, wickets, sixes, fours, dots, bb_w, bb_r, ducks, fifties, hundreds, fifers, mom = row
-    avg = round(runs / max(matches - ducks, 1), 2) if matches else 0
-    sr = round((runs / balls) * 100, 2) if balls else 0
-    win_rate = round((won / matches) * 100, 1) if matches else 0
-    return {
-        "matches": matches,
-        "wins": won,
-        "losses": max(matches - won, 0),
-        "win_rate": win_rate,
-        "runs": runs,
-        "highest": hs,
-        "balls": balls,
-        "average": avg,
-        "strike_rate": sr,
-        "wickets": wickets,
-        "sixes": sixes,
-        "fours": fours,
-        "dots": dots,
-        "ducks": ducks,
-        "fifties": fifties,
-        "hundreds": hundreds,
-        "fifers": fifers,
-        "mom": mom,
-        "best_bowling": f"{bb_w}/{bb_r}" if bb_w else "N/A",
-        "form": player_stats.get(user_id, {}).get("last_5_results", []),
-    }
-
-
-async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Optional[bytes] = None, mode: str = "overall") -> Optional[BytesIO]:
+async def fetch_overall_stats_snapshot(user_id: int, name: str, stats: dict, avatar_bytes: bytes = None, mode: str = "overall") -> BytesIO:
     """
-    Cricket-theme player profile card — premium cricket trading card design.
-    Features: Turf background, Gold glow DP ring, crossed bats watermark, and glass stats tiles.
+    ULTIMATE GOD-LEVEL CRICKET CARD
+    Features: Deep night theme, stadium neon glows, player DP, frosted glass panels.
     """
     try:
-        import math
-        SC = 2
+        SC = 2  # Super-sampling scale for high resolution
         W, H = 1200 * SC, 740 * SC
-        img = Image.new("RGBA", (W, H))
-        draw = ImageDraw.Draw(img)
+        img = Image.new("RGBA", (W, H), (8, 12, 24, 255)) # Deepest Night Blue
+        draw = ImageDraw.Draw(img, "RGBA")
 
-        # ── 1. MOWED TURF BACKGROUND ──
-        draw.rectangle([0, 0, W, H], fill=(12, 40, 22, 255))
-        stripe_w = 60 * SC
-        for x in range(0, W, stripe_w):
-            if (x // stripe_w) % 2 == 0:
-                draw.rectangle([x, 0, x + stripe_w, H], fill=(16, 50, 28, 255))
+        # ── 1. STADIUM FLOODLIGHT GLOWS (Background Effects) ──
+        glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow_layer)
+        
+        # Neon Cyan Glow (Top Left behind DP)
+        glow_draw.ellipse((-300*SC, -300*SC, 600*SC, 600*SC), fill=(0, 229, 255, 30))
+        # Neon Green/Purple Glow (Bottom Right)
+        glow_draw.ellipse((W - 500*SC, H - 400*SC, W + 300*SC, H + 400*SC), fill=(57, 255, 20, 20))
+        
+        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(150))
+        img.paste(glow_layer, (0, 0), glow_layer)
 
-        WHITE = (245, 250, 255, 255)
-        MUTED = (165, 190, 175, 255)
-        GOLD  = (255, 215, 0, 255)
-        BLUE  = (64, 196, 255, 255)
-        GREEN = (78, 228, 140, 255)
-        RED   = (255, 96, 110, 255)
-        PANEL = (10, 28, 16, 210)       # Frosted forest glass
-        BORDER = (255, 255, 255, 45)    # White frost border
+        # ── COLORS & FONTS ──
+        WHITE = (255, 255, 255, 255)
+        MUTED = (148, 163, 184, 255)
+        CYAN  = (0, 229, 255, 255)
+        GREEN = (57, 255, 20, 255)
+        RED   = (255, 60, 90, 255)
+        GLASS_PANEL = (20, 30, 45, 180) 
+        GLASS_OUTLINE = (0, 229, 255, 60)
 
-        f_title = _get_font(True, 42*SC)
-        f_name  = _get_font(True, 62*SC)
-        f_label = _get_font(False, 22*SC)
-        f_value = _get_font(True, 40*SC)
-        f_small = _get_font(False, 21*SC)
-        f_mode  = _get_font(True, 26*SC)
+        # Attempt to use local fonts, fallback to default
+        try:
+            f_title = ImageFont.truetype("Roboto-Bold.ttf", 62 * SC)
+            f_label = ImageFont.truetype("Roboto-Regular.ttf", 20 * SC)
+            f_value = ImageFont.truetype("Roboto-Bold.ttf", 44 * SC)
+            f_small = ImageFont.truetype("Roboto-Regular.ttf", 22 * SC)
+            f_mode  = ImageFont.truetype("Roboto-Bold.ttf", 26 * SC)
+        except:
+            f_title = ImageFont.load_default(size=62 * SC)
+            f_label = ImageFont.load_default(size=20 * SC)
+            f_value = ImageFont.load_default(size=44 * SC)
+            f_small = ImageFont.load_default(size=22 * SC)
+            f_mode  = ImageFont.load_default(size=26 * SC)
 
-        # ── 2. OUTER CARD FRAME (Frosted panel with gold highlight border) ──
-        draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, H-30*SC],
-                                radius=28*SC, fill=PANEL,
-                                outline=BORDER, width=2*SC)
-
-        # ── 3. CROSSED BATS WATERMARK (Subtle Gold behind details) ──
-        def _draw_crossed_bats_watermark(cx, cy, size, alpha):
-            w_color = (255, 215, 0, alpha)
-            hw = int(3 * SC)
-            bw = int(9 * SC)
-            # Bat 1 (Left to Right)
+        # ── 2. WATERMARK (Crossed Bats) ──
+        def _draw_bats(cx, cy, size, alpha):
+            w_color = (255, 255, 255, alpha)
+            hw, bw = int(3 * SC), int(10 * SC)
+            # Bat 1
             draw.line([(cx - size//2, cy - size//2), (cx - size//8, cy - size//8)], fill=w_color, width=hw)
             draw.line([(cx - size//8, cy - size//8), (cx + size//2, cy + size//2)], fill=w_color, width=bw)
-            draw.rectangle([cx + size//2 - bw//2, cy + size//2 - bw//2, cx + size//2 + bw//2, cy + size//2 + bw//2], fill=w_color)
-            # Bat 2 (Right to Left)
+            # Bat 2
             draw.line([(cx + size//2, cy - size//2), (cx + size//8, cy - size//8)], fill=w_color, width=hw)
             draw.line([(cx + size//8, cy - size//8), (cx - size//2, cy + size//2)], fill=w_color, width=bw)
-            draw.rectangle([cx - size//2 - bw//2, cy + size//2 - bw//2, cx - size//2 + bw//2, cy + size//2 + bw//2], fill=w_color)
 
-        _draw_crossed_bats_watermark(W - 200*SC, 240*SC, 200*SC, 24)
+        _draw_bats(W - 250*SC, 200*SC, 220*SC, 8)
 
-        # ── 4. HEADER STRIP ──
-        draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, 108*SC],
-                                radius=28*SC, fill=(10, 24, 15, 230),
-                                outline=GOLD, width=2*SC)
+        # ── 3. OUTER CARD FRAME ──
+        draw.rounded_rectangle([30*SC, 30*SC, W-30*SC, H-30*SC], radius=30*SC, outline=GLASS_OUTLINE, width=2*SC)
 
-        header_txt = "🏏 CRICOVERSE  |  PLAYER PROFILE CARD  |  " + mode.upper()
-        hb = draw.textbbox((0,0), header_txt, font=f_mode)
-        hw = hb[2] - hb[0]
-        draw.text(((W - hw)//2, 52*SC), header_txt, font=f_mode, fill=GOLD)
+        # ── 4. HEADER DETAILS ──
+        header_txt = "🏏 CRICORA ULTIMATE  |  " + mode.upper() + " STATS"
+        draw.text((60*SC, 50*SC), header_txt, font=f_mode, fill=CYAN)
+        draw.line([(60*SC, 90*SC), (W-60*SC, 90*SC)], fill=(255, 255, 255, 30), width=1*SC)
 
-        # ── 5. AVATAR WITH GOLD GLOWING RING ──
-        initials = "".join(part[:1] for part in (name or "Player").split()[:2])
-        avatar = _circle_avatar(avatar_bytes, 170*SC, initials)
-        img.alpha_composite(avatar, (80*SC, 130*SC))
+        # ── 5. PLAYER DP (AVATAR) WITH NEON RING ──
+        av_size = 200 * SC
+        initials = "".join(part[:1] for part in (name or "P").split()[:2]).upper()
+        avatar = _create_avatar_image(avatar_bytes, av_size, initials)
+        
+        av_x, av_y = 60 * SC, 130 * SC
+        img.alpha_composite(avatar, (av_x, av_y))
 
-        # Gold glow ring
-        draw.ellipse([78*SC, 128*SC, 252*SC, 302*SC], outline=GOLD, width=4*SC)
-        for r in range(1, 10):
-            g_alpha = int(90 * (1 - r/10))
-            draw.ellipse([78*SC - r*SC, 128*SC - r*SC, 252*SC + r*SC, 302*SC + r*SC], 
-                         outline=(255, 215, 0, g_alpha), width=1*SC)
+        # Multiple Neon Glowing Rings around DP
+        draw.ellipse([av_x-4*SC, av_y-4*SC, av_x+av_size+4*SC, av_y+av_size+4*SC], outline=CYAN, width=3*SC)
+        draw.ellipse([av_x-12*SC, av_y-12*SC, av_x+av_size+12*SC, av_y+av_size+12*SC], outline=(0, 229, 255, 50), width=1*SC)
 
-        # ── 6. PLAYER NAME & DETAILS ──
-        safe_name = _clean_display_name(name or "Player", 20).upper()
-        draw.text((280*SC, 140*SC), safe_name, font=f_name, fill=WHITE)
-        draw.text((284*SC, 214*SC), "Player ID: " + str(user_id), font=f_small, fill=MUTED)
+        # ── 6. PLAYER NAME & SUMMARY ──
+        text_x = 310 * SC
+        safe_name = _clean_display_name(name or "Player", 18).upper()
+        draw.text((text_x, 140*SC), safe_name, font=f_title, fill=WHITE)
+        draw.text((text_x, 220*SC), f"ID: {user_id}", font=f_small, fill=MUTED)
 
-        # Mode badge
-        mode_badge = mode.upper()
-        mb = draw.textbbox((0,0), mode_badge, font=f_label)
-        mw = mb[2] - mb[0]
-        draw.rounded_rectangle([280*SC, 238*SC, 280*SC + mw + 32*SC, 278*SC],
-                                radius=12*SC, fill=(*BLUE[:3], 120), outline=BLUE, width=1*SC)
-        draw.text((296*SC, 244*SC), mode_badge, font=f_label, fill=WHITE)
-
-        # ── 7. WIN/LOSS SUMMARY CARD ──
+        # Win/Loss Pill
         matches = stats.get("matches", 0)
         wins    = stats.get("wins", 0)
         losses  = stats.get("losses", max(matches - wins, 0))
-        win_rate= stats.get("win_rate", 0)
-        form    = stats.get("form", [])
+        win_rate = stats.get("win_rate", 0)
+        
+        draw.rounded_rectangle([text_x, 260*SC, text_x + 280*SC, 320*SC], radius=15*SC, fill=GLASS_PANEL, outline=GLASS_OUTLINE, width=1*SC)
+        wl_color = GREEN if wins >= losses else RED
+        draw.text((text_x + 20*SC, 275*SC), f"{wins}W - {losses}L", font=f_value, fill=wl_color)
+        draw.text((text_x + 190*SC, 282*SC), f"{win_rate}%", font=f_small, fill=MUTED)
 
-        wr_txt = f"{wins}W  {losses}L"
-        draw.rounded_rectangle([280*SC, 292*SC, 580*SC, 348*SC],
-                                radius=16*SC, fill=(255, 255, 255, 12),
-                                outline=BORDER, width=1*SC)
-        wr_c = GREEN if wins >= losses else RED
-        draw.text((300*SC, 304*SC), wr_txt, font=f_value, fill=wr_c)
-        draw.text((468*SC, 308*SC), str(win_rate) + "% WIN", font=f_label, fill=MUTED)
-
-        # Form dots
+        # Form tracker
+        form = stats.get("form", [])
         if form:
-            form_x = 280*SC
-            for r in form[-6:]:
-                fc = GREEN if r == "W" else RED
-                draw.ellipse([form_x, 362*SC, form_x + 24*SC, 386*SC], fill=fc)
-                form_x += 32*SC
+            fx = text_x + 310*SC
+            draw.text((fx, 270*SC), "FORM:", font=f_label, fill=MUTED)
+            fx += 80*SC
+            for res in form[-5:]:
+                fc = GREEN if res == "W" else RED
+                draw.ellipse([fx, 275*SC, fx+16*SC, 291*SC], fill=fc)
+                fx += 24*SC
 
-        # ── 8. DIVIDER ──
-        draw.line([(68*SC, 412*SC), (W - 68*SC, 412*SC)], fill=BORDER, width=1*SC)
+        # ── 7. GLASS STATS GRID (4x2) ──
+        # Extract variables safely
+        runs = stats.get("runs", 0)
+        hs = stats.get("highest", 0)
+        avg = stats.get("average", 0)
+        sr = stats.get("strike_rate", 0)
+        wickets = stats.get("wickets", 0)
+        fours = stats.get("fours", 0)
+        sixes = stats.get("sixes", 0)
+        mom = stats.get("mom", 0)
 
-        # ── 9. GLASS STATS GRID (4x2 layout) ──
         stat_cards = [
-            ("MATCHES",     stats.get("matches", 0),                 BLUE),
-            ("RUNS",        stats.get("runs", 0),                    GREEN),
-            ("HIGH SCORE",  stats.get("highest", 0),                 GOLD),
-            ("STRIKE RATE", str(stats.get("strike_rate", 0)) + "%",  BLUE),
-            ("AVERAGE",     stats.get("average", 0),                 GREEN),
-            ("WICKETS",     stats.get("wickets", 0),                 RED),
-            ("4s / 6s",     str(stats.get("fours",0)) + " / " + str(stats.get("sixes",0)), GOLD),
-            ("POTM AWARDS", stats.get("mom", 0),                     BLUE),
+            ("TOTAL MATCHES", str(matches), CYAN),
+            ("TOTAL RUNS", str(runs), GREEN),
+            ("HIGHEST SCORE", f"{hs}*", WHITE),
+            ("STRIKE RATE", f"{sr}", CYAN),
+            ("BATTING AVG", str(avg), WHITE),
+            ("TOTAL WICKETS", str(wickets), GREEN),
+            ("BOUNDARIES (4s/6s)", f"{fours} / {sixes}", WHITE),
+            ("POTM AWARDS", str(mom), CYAN),
         ]
 
-        sx, sy = 68*SC, 432*SC
-        card_w, card_h = 256*SC, 96*SC
-        gap_x, gap_y   = 18*SC, 16*SC
-        for idx, (label, value, color) in enumerate(stat_cards):
-            col = idx % 4; row = idx // 4
-            x1 = sx + col * (card_w + gap_x)
-            y1 = sy + row * (card_h + gap_y)
-            # Glass card layout
-            draw.rounded_rectangle([x1, y1, x1+card_w, y1+card_h],
-                                   radius=16*SC, fill=(255, 255, 255, 15),
-                                   outline=BORDER, width=1*SC)
-            # Dynamic color accent bar on the left of each tile
-            draw.rounded_rectangle([x1, y1, x1+8*SC, y1+card_h], radius=8*SC, fill=color)
+        grid_y = 390 * SC
+        card_w, card_h = 250 * SC, 110 * SC
+        gap_x, gap_y = 22 * SC, 22 * SC
+        start_x = 60 * SC
+
+        for i, (label, value, color) in enumerate(stat_cards):
+            col = i % 4
+            row = i // 4
+            x1 = start_x + col * (card_w + gap_x)
+            y1 = grid_y + row * (card_h + gap_y)
             
-            draw.text((x1+22*SC, y1+12*SC), str(value), font=f_value, fill=WHITE)
-            draw.text((x1+22*SC, y1+62*SC), label,      font=f_label, fill=MUTED)
+            # Draw Glass Tile
+            draw.rounded_rectangle([x1, y1, x1+card_w, y1+card_h], radius=16*SC, fill=GLASS_PANEL, outline=(255,255,255,20), width=1*SC)
+            
+            # Left edge neon accent
+            draw.rounded_rectangle([x1, y1, x1+6*SC, y1+card_h], radius=6*SC, fill=color)
+            
+            # Text layout inside tile
+            draw.text((x1 + 24*SC, y1 + 18*SC), str(value), font=f_value, fill=WHITE)
+            draw.text((x1 + 24*SC, y1 + 72*SC), label, font=f_label, fill=MUTED)
 
-        # ── 10. FOOTER BRANDING ──
-        py2 = sy + 2*(card_h + gap_y) + 20*SC
-        draw.line([(68*SC, py2), (W-68*SC, py2)], fill=BORDER, width=1*SC)
+        # ── 8. FOOTER ──
+        footer_y = H - 80*SC
+        draw.line([(60*SC, footer_y), (W-60*SC, footer_y)], fill=(255, 255, 255, 30), width=1*SC)
+        
+        brand_txt = "⚡ POWERED BY CRICORA ENGINE"
+        bb = draw.textbbox((0,0), brand_txt, font=f_small)
+        draw.text(((W - (bb[2]-bb[0]))//2, footer_y + 20*SC), brand_txt, font=f_small, fill=CYAN)
 
-        brand = "⚡ CRICOVERSE  ·  THE ULTIMATE PLAYER STATISTICS"
-        bb = draw.textbbox((0,0), brand, font=f_small)
-        draw.text(((W - (bb[2]-bb[0]))//2, py2 + 12*SC), brand, font=f_small, fill=MUTED)
-
+        # ── 9. FINALIZE & EXPORT ──
         final = img.convert("RGB").resize((1200, 740), Image.Resampling.LANCZOS)
         bio = BytesIO()
         final.save(bio, "PNG", optimize=True)
         bio.seek(0)
         return bio
+        
     except Exception as e:
-        logger.error("Stats image generation error: " + str(e))
+        import logging
+        logging.getLogger(__name__).error("God-Level Stats image generation error: " + str(e))
         return None
 
 # ─────────────────────────────────────────────────────────────────

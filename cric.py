@@ -7228,16 +7228,16 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
     overs_str = format_overs(bat_team.balls)
     crr_str = f"{crr:.2f}"
 
-    exec_lines = [
-        f"🔹 <b>Over:</b> {overs_str}  |  🔹 <b>RR:</b> {crr_str}",
-        f"🥎 {bowler_tag} is charging in to bowl...",
-        f"🏏 <b>{bat_team.name}:</b> {bat_team.score}/{bat_team.wickets}",
-    ]
+    text = (
+        f"╭━━  <b>LIVE</b> ━━━━━━\n"
+        f"┃  Over: {overs_str}  |   RR: {crr_str}\n"
+        f"┃  {bowler_tag} is charging in to bowl...\n"
+        f"╰━━━━━━━━━━━━━━━━"
+    )
     if equation:
-        exec_lines.append(equation.strip())
+        text += f"\n{equation.strip()}"
     if match.is_free_hit:
-        exec_lines.append("⚡ <b>FREE HIT!</b> → Batsman cannot be dismissed!")
-    text = themed("📊 Cricoverse LIVE", exec_lines, "🥎")
+        text += "\n⚡ <b>FREE HIT!</b> → Batsman cannot be dismissed!"
     
     # Button → "Deliver Bowl" deep-links bowler straight into their DM with the bot
     bot_username = context.bot.username
@@ -7830,11 +7830,12 @@ async def request_batsman_number(context: ContextTypes.DEFAULT_TYPE, group_id: i
     batsman_tag = f"<a href='tg://user?id={batsman.user_id}'>{batsman.first_name}</a>"
     
     sr_live = round((batsman.runs / batsman.balls_faced) * 100, 1) if batsman.balls_faced > 0 else 0.0
-    score_display = f"{match.current_batting_team.score}/{match.current_batting_team.wickets}"
-    text = f"╭━━ 📊 {score_display} ━━━━━━━━━━━━━━━\n"
-    text += f"┃ 🏏 {batsman_tag} ➔ {batsman.runs} ({batsman.balls_faced}) | ⚡ <b>𝗦𝗥:</b> {sr_live}\n"
-    text += f"┃ 👉 {html.escape(batsman.first_name)}, play your shot!\n"
-    text += f"╰━━━━━━━━━━━━━━━━━\n"
+    text = (
+        f"╭━━  <b>LIVE</b> ━━━\n"
+        f"┃  {batsman_tag}  ➜ {batsman.runs} ({batsman.balls_faced}) |  SR: {sr_live}\n"
+        f"┃ {html.escape(batsman.first_name)} , play your shot\n"
+        f"╰━━━━━━━━━━━━━━━━"
+    )
     
     # ✅ FIX: Add GIF
     batting_gif = "https://t.me/kyanaamrkhe/7"  # Cricket batting GIF
@@ -8296,31 +8297,84 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         
         msg = f"{freehit_prefix}"
         run_header = f"{run_emoji} {run_label}"
-        bat_line = f"🏏 <b>Score:</b> {bat_team.score}/{bat_team.wickets}"
-        comm_line = f"🏟️ {commentary}"
-        msg_lines = [bat_line, comm_line]
+
+        # --- Chase info line (2nd innings) ---
+        chase_line = ""
         if chase_info:
-            msg_lines.append(chase_info.strip())
-        # Live batting/bowling mini-panel
+            # format: Need X off Y balls (RRR Z)
+            chase_line = f"\nNeed <b>{rn}</b> off <b>{bl}</b> balls (RRR {rrr})\n"
+
+        # --- 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 panel ---
+        batting_panel = "\n 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n┌───────────────────\n"
         if bat_team.current_batsman_idx is not None:
             batter = bat_team.players[bat_team.current_batsman_idx]
-            sr_val = round((batter.runs / max(batter.balls_faced, 1)) * 100, 1)
-            msg_lines.append(f"👤 <b>{html.escape(batter.first_name)}</b> ➔ {batter.runs} ({batter.balls_faced}) | CSR: {sr_val:.2f}")
+            b_sr = round((batter.runs / max(batter.balls_faced, 1)) * 100, 2)
+            batting_panel += f"├  Striker ➔ {batter.runs} ({batter.balls_faced})\n"
+            batting_panel += f"├  𝗖𝗦𝗥: {b_sr:.2f}\n"
+            batting_panel += f"├ \n"
+        if bat_team.current_non_striker_idx is not None:
+            ns = bat_team.players[bat_team.current_non_striker_idx]
+            ns_sr = round((ns.runs / max(ns.balls_faced, 1)) * 100, 2)
+            batting_panel += f"├  Non -Striker ➔ {ns.runs} ({ns.balls_faced})\n"
+            batting_panel += f"├  𝗖𝗦𝗥: {ns_sr:.2f}\n"
+        batting_panel += "└───────────────────"
+
+        # --- 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 panel ---
+        bowling_panel = "\n 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 \n┌───────────────────\n"
         if bowl_team.current_bowler_idx is not None:
             bwlr = bowl_team.players[bowl_team.current_bowler_idx]
             this_over_balls = [b for b in match.ball_by_ball_log[-6:] if b.get('bowler') == bwlr.first_name]
-            over_summary = ", ".join(str(b.get('runs', 'W') if not b.get('wicket') else 'W') for b in this_over_balls)
-            msg_lines.append(f"🥎 <b>{html.escape(bwlr.first_name)}</b> | This Over: {over_summary or '-'}")
-        # Scoreboard mini
+            over_parts = []
+            for b in this_over_balls:
+                if b.get('wicket') or b.get('is_wicket'):
+                    over_parts.append('W')
+                elif b.get('noball'):
+                    over_parts.append('NB')
+                elif b.get('wide'):
+                    over_parts.append('WD')
+                else:
+                    over_parts.append(str(b.get('runs', 0)))
+            over_summary = ", ".join(over_parts) if over_parts else "-"
+            bowling_panel += f"├  {html.escape(bwlr.first_name)}\n"
+            bowling_panel += f"├  𝗧𝗵𝗶𝘀 𝗢𝘃𝗲𝗿: {over_summary}\n"
+        bowling_panel += "└───────────────────"
+
+        # --- 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗 panel ---
         tx = match.team_x
         ty = match.team_y
-        msg_lines.append(f"🔹 <b>{tx.name}:</b> {tx.score}/{tx.wickets} ({format_overs(tx.balls)} ov)")
-        msg_lines.append(f"🔸 <b>{ty.name}:</b> {ty.score}/{ty.wickets} ({format_overs(ty.balls)} ov)")
+        tx_crr = round(tx.score / (tx.balls / 6), 2) if tx.balls > 0 else 0.0
+        ty_crr = round(ty.score / (ty.balls / 6), 2) if ty.balls > 0 else 0.0
+        scoreboard_panel = (
+            f"\n 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗\n┌───────────────────\n"
+            f"├  𝗧𝗘𝗔𝗠 {html.escape(tx.name)}: {tx.score}/{tx.wickets} ({format_overs(tx.balls)} ov)\n"
+            f"├ ↳ 𝗖𝗥𝗥: {tx_crr:.2f}\n"
+            f"├ \n"
+            f"├  𝗧𝗘𝗔𝗠 {html.escape(ty.name)}: {ty.score}/{ty.wickets} ({format_overs(ty.balls)} ov)\n"
+            f"├ ↳ 𝗖𝗥𝗥: {ty_crr:.2f}\n"
+            f"└───────────────────"
+        )
+
+        # ── Score line (Four! / Six! / +N Runs!) ──
+        bat_line = f"┃  Score: {bat_team.score}/{bat_team.wickets}"
+        comm_line = f"┃  {commentary}"
+        score_box = (
+            f"╭━━  {run_label} ━━━━━━━ \n"
+            f"{bat_line}\n"
+            f"{comm_line} \n"
+            f"╰━━━━━━━━━━━━━━━━"
+        )
+
         if magic_ball_result and magic_ball_result.get("magic_type"):
             magic_msg = magic_ball_result.get("message", "")
             if magic_msg:
-                msg_lines.insert(1, f"🔮 {magic_msg}")
-        msg += themed(run_header, msg_lines, run_emoji)
+                score_box += f"\n🔮 {magic_msg}"
+
+        msg += score_box
+        if chase_line:
+            msg += chase_line
+        msg += batting_panel
+        msg += bowling_panel
+        msg += scoreboard_panel
         
         # React buttons for boundaries
         _bnd_react = None
@@ -9172,24 +9226,82 @@ async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     else:
         _best_ball_txt = f"📊 {dot_balls_over} dot ball{'s' if dot_balls_over != 1 else ''}"
 
-    # ── Build END OF OVER summary using themed style ──
+    # ── Build END OF OVER summary using new styled format ──
     mini_card = generate_mini_scorecard(match)
-    # Prepend end-of-over summary to the mini scorecard caption
     wkts_txt = f", {_last_wkts}W" if _last_wkts else ""
-    ov_lines = [
-        f"⚾ <b>Bowler:</b> {html.escape(bowler.first_name)}  ·  <b>{_last_runs} runs{wkts_txt}</b>  ·  Econ: <b>{_over_econ}</b>",
-        f"📊 <b>Score:</b> {bat_team.score}/{bat_team.wickets}  ┊  RR: {_rr}{_part_txt}",
-        f"✨ {_best_ball_txt}",
-    ]
-    if _hist:
-        ov_lines.append(f"📈 Last 5 overs: {_hist}")
-    ov_lines.append(f"🔄 <b>{new_striker.first_name if new_striker else '→'}</b> now on strike")
+
+    # Chase info for over-complete
+    _chase_line = ""
     if match.innings == 2 and match.target > 0:
         _needed = match.target - bat_team.score
         _bl = (match.total_overs * 6) - bat_team.balls
         _rrr = round(_needed / (_bl / 6), 2) if _bl > 0 else 0
-        ov_lines.append(f"🎯 Need <b>{_needed}</b> off <b>{_bl}</b> balls  (RRR: {_rrr})")
-    over_header = themed(f"🏁 END OF OVER {format_overs(bat_team.balls)}", ov_lines, "📊") + "\n\n"
+        _bl_str = f"{_bl}"
+        _rrr_str = f"{_rrr:.2f}"
+        _chase_line = f"\nNeed <b>{_needed}</b> off <b>{_bl_str}</b> balls (RRR {_rrr_str})\n"
+
+    # 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 panel
+    ov_batting_panel = "\n 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n┌───────────────────\n"
+    if new_striker:
+        s_sr = round((new_striker.runs / max(new_striker.balls_faced, 1)) * 100, 2)
+        ov_batting_panel += f"├  Striker ➔ {new_striker.runs} ({new_striker.balls_faced})\n"
+        ov_batting_panel += f"├  𝗖𝗦𝗥: {s_sr:.2f}\n"
+        ov_batting_panel += "├ \n"
+    if new_non_striker:
+        ns_sr = round((new_non_striker.runs / max(new_non_striker.balls_faced, 1)) * 100, 2)
+        ov_batting_panel += f"├  Non -Striker ➔ {new_non_striker.runs} ({new_non_striker.balls_faced})\n"
+        ov_batting_panel += f"├  𝗖𝗦𝗥: {ns_sr:.2f}\n"
+    ov_batting_panel += "└───────────────────"
+
+    # 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 panel
+    ov_bowling_panel = "\n 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 \n┌───────────────────\n"
+    _this_over_balls_oc = [
+        b for b in match.ball_by_ball_log
+        if b.get("batting_team") == bat_team.name
+    ][-6:]
+    _over_parts_oc = []
+    for b in _this_over_balls_oc:
+        if b.get('wicket') or b.get('is_wicket'):
+            _over_parts_oc.append('W')
+        elif b.get('noball'):
+            _over_parts_oc.append('NB')
+        elif b.get('wide'):
+            _over_parts_oc.append('WD')
+        else:
+            _over_parts_oc.append(str(b.get('runs', 0)))
+    _over_summary_oc = ", ".join(_over_parts_oc) if _over_parts_oc else "-"
+    ov_bowling_panel += f"├  {html.escape(bowler.first_name)}\n"
+    ov_bowling_panel += f"├  𝗧𝗵𝗶𝘀 𝗢𝘃𝗲𝗿: {_over_summary_oc}\n"
+    ov_bowling_panel += "└───────────────────"
+
+    # 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗 panel
+    _tx = match.team_x
+    _ty = match.team_y
+    _tx_crr = round(_tx.score / (_tx.balls / 6), 2) if _tx.balls > 0 else 0.0
+    _ty_crr = round(_ty.score / (_ty.balls / 6), 2) if _ty.balls > 0 else 0.0
+    ov_scoreboard_panel = (
+        f"\n 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗\n┌───────────────────\n"
+        f"├  𝗧𝗘𝗔𝗠 {html.escape(_tx.name)}: {_tx.score}/{_tx.wickets} ({format_overs(_tx.balls)} ov)\n"
+        f"├ ↳ 𝗖𝗥𝗥: {_tx_crr:.2f}\n"
+        f"├ \n"
+        f"├  𝗧𝗘𝗔𝗠 {html.escape(_ty.name)}: {_ty.score}/{_ty.wickets} ({format_overs(_ty.balls)} ov)\n"
+        f"├ ↳ 𝗖𝗥𝗥: {_ty_crr:.2f}\n"
+        f"└───────────────────"
+    )
+
+    over_header = (
+        f"🏁 <b>END OF OVER {format_overs(bat_team.balls)}</b>\n"
+        f"⚾ <b>Bowler:</b> {html.escape(bowler.first_name)}  ·  <b>{_last_runs} runs{wkts_txt}</b>  ·  Econ: <b>{_over_econ}</b>\n"
+        f"📊 <b>Score:</b> {bat_team.score}/{bat_team.wickets}  ┊  RR: {_rr}{_part_txt}\n"
+        f"✨ {_best_ball_txt}\n"
+    )
+    if _hist:
+        over_header += f"📈 Last 5 overs: {_hist}\n"
+    over_header += _chase_line
+    over_header += ov_batting_panel
+    over_header += ov_bowling_panel
+    over_header += ov_scoreboard_panel
+    over_header += "\n\n"
     combined_caption = over_header + mini_card
 
     # ✅ Send combined over-summary + mini scorecard with chart
@@ -12396,169 +12508,254 @@ _IMG4K_W, _IMG4K_H = 3840, 2160   # true 4K
 # ─────────────────────────────────────────────────────────────────
 def generate_players_squad_image(match) -> Optional[BytesIO]:
     """
-    🏏 Cricket-theme Squad Card  —  shows both team rosters on a premium turf field.
+    🏏 Premium Squad Card — Ultra-modern dual-team lineup with avatar rings,
+    live status badges, neon glassmorphism panels, and mowed-turf atmosphere.
     """
     try:
         import math
+
         SC = 2
-        
-        # Calculate dynamic height based on player counts (max up to 16 players)
         num_players = max(len(match.team_x.players), len(match.team_y.players), 5)
-        H_unscaled = 220 + num_players * 80 + 80
-        W, H = 1200 * SC, H_unscaled * SC
-        
-        img = Image.new("RGBA", (W, H))
+
+        # Dynamic height: header(180) + per-player rows(88) + footer(80) + padding
+        ROW_H     = 88 * SC
+        HEADER_H  = 195 * SC
+        SCORE_H   = 50 * SC
+        TEAM_HDR  = 70 * SC
+        FOOTER_H  = 70 * SC
+        H_px      = HEADER_H + SCORE_H + TEAM_HDR + num_players * ROW_H + FOOTER_H + 40 * SC
+        W         = 1200 * SC
+
+        img  = Image.new("RGBA", (W, H_px))
         draw = ImageDraw.Draw(img)
 
-        # ── 1. MOWED TURF BACKGROUND ──
-        # Grass base
-        draw.rectangle([0, 0, W, H], fill=(16, 50, 28, 255))
-        
-        # Vertical stripes (mowed outfield lawn)
-        stripe_w = 60 * SC
+        # ── 1. DEEP-NIGHT TURF GRADIENT BACKGROUND ──
+        for y in range(H_px):
+            t = y / H_px
+            r = int(8  + (18 - 8)  * t)
+            g = int(24 + (52 - 24) * t)
+            b = int(14 + (26 - 14) * t)
+            draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
+
+        # Mowed stripe overlay
+        stripe_w = 55 * SC
         for x in range(0, W, stripe_w):
             if (x // stripe_w) % 2 == 0:
-                draw.rectangle([x, 0, x + stripe_w, H], fill=(22, 62, 36, 255))
-                
-        # Subtle stadium floodlight glow / vignette overlay
-        for i in range(20):
-            alpha = int(140 * (1 - i / 20))
-            offset = i * 4 * SC
-            draw.rectangle([offset, offset, W - offset, H - offset], fill=None, outline=(8, 24, 12, alpha), width=4*SC)
+                draw.rectangle([x, 0, x + stripe_w, H_px], fill=(255, 255, 255, 6))
 
-        C_GOLD  = (255, 215, 0, 255)
-        C_X     = (64, 196, 255, 255)    # Team X — Bright Sky Blue
-        C_Y     = (255, 96, 144, 255)    # Team Y — Hot Pink
-        C_WHITE = (245, 250, 255, 255)
-        C_MUTED = (160, 190, 175, 255)
-        PANEL   = (10, 32, 20, 200)      # Deep green frosted glass
-        BORDER  = (255, 255, 255, 45)    # Glass border
+        # Stadium floodlight glow blobs
+        glow = Image.new("RGBA", (W, H_px), (0, 0, 0, 0))
+        gd   = ImageDraw.Draw(glow)
+        gd.ellipse([-200*SC, -200*SC, 500*SC, 500*SC], fill=(0, 230, 120, 22))
+        gd.ellipse([W-400*SC, -200*SC, W+200*SC, 400*SC], fill=(255, 215, 0, 16))
+        gd.ellipse([W//2-300*SC, H_px-300*SC, W//2+300*SC, H_px+100*SC], fill=(0, 180, 255, 14))
+        glow = glow.filter(ImageFilter.GaussianBlur(100 * SC // 3))
+        img.paste(glow, (0, 0), glow)
 
-        f_header = _get_font(True, 44 * SC)
-        f_team   = _get_font(True, 36 * SC)
-        f_name   = _get_font(True, 28 * SC)
-        f_stat   = _get_font(False, 22 * SC)
-        f_sm     = _get_font(False, 20 * SC)
+        # ── PALETTE ──
+        GOLD    = (255, 215,   0, 255)
+        WHITE   = (245, 250, 255, 255)
+        MUTED   = (140, 175, 155, 255)
+        C_X     = ( 64, 196, 255, 255)   # Cyan  – Team X
+        C_Y     = (255,  96, 144, 255)   # Pink  – Team Y
+        LIVE_R  = (255,  60,  60, 255)
+        PANEL   = ( 10,  30,  18, 200)
+        BORDER  = (255, 255, 255,  40)
+        GREEN_S = ( 50, 220,  90, 255)   # On-strike
+        GREY_NS = (160, 160, 160, 255)   # Non-striker / bowler
 
-        # ── 2. HEADER BANNER (Glassmorphism style with gold accent) ──
-        draw.rounded_rectangle([40*SC, 30*SC, W-40*SC, 130*SC], radius=24*SC,
-                                fill=(10, 28, 16, 220), outline=C_GOLD, width=3*SC)
-        
-        title = "🏏  PLAYING SQUADS  🏏"
-        bbox = draw.textbbox((0, 0), title, font=f_header)
-        tw = bbox[2] - bbox[0]
-        draw.text(((W - tw) // 2, 52*SC), title, font=f_header, fill=C_GOLD)
+        # ── FONTS ──
+        f_hero  = _get_font(True,  52 * SC)
+        f_big   = _get_font(True,  38 * SC)
+        f_med   = _get_font(True,  28 * SC)
+        f_name  = _get_font(True,  26 * SC)
+        f_sm    = _get_font(False, 21 * SC)
+        f_xs    = _get_font(False, 18 * SC)
+        f_badge = _get_font(True,  20 * SC)
 
-        # Match phase sub-label
+        # ── helper: centered text ──
+        def _cx(text, font, fill, y, draw=draw):
+            bb = draw.textbbox((0, 0), text, font=font)
+            x  = (W - (bb[2] - bb[0])) // 2
+            draw.text((x, y), text, font=font, fill=fill)
+
+        # ── 2. HEADER PANEL ──
+        draw.rounded_rectangle([30*SC, 20*SC, W-30*SC, HEADER_H - 10*SC],
+                                radius=28*SC, fill=(8, 22, 14, 230),
+                                outline=GOLD, width=2*SC)
+        # Glowing accent strip under header
+        for i in range(4 * SC):
+            a = int(255 * (1 - i / (4*SC)))
+            draw.line([(30*SC, HEADER_H - 10*SC + i), (W-30*SC, HEADER_H - 10*SC + i)],
+                      fill=(0, 230, 120, a))
+
+        # Title
+        _cx("🏏  P L A Y I N G  S Q U A D S  🏏", f_hero, GOLD, 32*SC)
+
+        # Phase badge
         phase_map = {
-            "match_in_progress": "🔴 LIVE MATCH IN PROGRESS",
-            "innings_break": "☕ INNINGS BREAK",
-            "toss": "🪙 TOSS UNDERWAY",
-            "team_joining": "⏳ LOBBY OPEN",
-            "match_ended": "🏆 MATCH COMPLETE",
+            "match_in_progress": "🔴  LIVE MATCH IN PROGRESS",
+            "innings_break":     "☕  INNINGS BREAK",
+            "toss":              "🪙  TOSS UNDERWAY",
+            "team_joining":      "⏳  LOBBY OPEN  —  Waiting for players",
+            "match_ended":       "🏆  MATCH COMPLETE",
         }
-        phase_txt = phase_map.get(getattr(match, 'phase', None) and match.phase.value, "⚡ CRICOVERSE")
-        bbox2 = draw.textbbox((0, 0), phase_txt, font=f_sm)
-        draw.text(((W - (bbox2[2] - bbox2[0])) // 2, 98*SC), phase_txt, font=f_sm, fill=C_MUTED)
+        ph_val = match.phase.value if match.phase else ""
+        phase_txt = phase_map.get(ph_val, "⚡  CRICOVERSE  HAND  CRICKET")
+        _cx(phase_txt, f_sm, MUTED, 108*SC)
 
-        # ── 3. SCORE BAR ──
-        if match.phase and match.phase.value in ("match_in_progress", "innings_break", "match_ended"):
-            score_txt = (f"{match.team_x.name}: {match.team_x.score}/{match.team_x.wickets} ({format_overs(match.team_x.balls)})   "
-                         f"vs   {match.team_y.name}: {match.team_y.score}/{match.team_y.wickets} ({format_overs(match.team_y.balls)})")
-            bbox3 = draw.textbbox((0, 0), score_txt, font=f_sm)
-            sx = max(50*SC, (W - (bbox3[2] - bbox3[0])) // 2)
-            draw.text((sx, 142*SC), score_txt, font=f_sm, fill=C_WHITE)
+        # Score bar (if match has started)
+        if ph_val in ("match_in_progress", "innings_break", "match_ended"):
+            tx, ty = match.team_x, match.team_y
+            tx_crr = round(tx.score / (tx.balls / 6), 2) if tx.balls > 0 else 0.0
+            ty_crr = round(ty.score / (ty.balls / 6), 2) if ty.balls > 0 else 0.0
+            score_txt = (
+                f"{tx.name}  {tx.score}/{tx.wickets} ({format_overs(tx.balls)} ov)  CRR {tx_crr}"
+                f"   ⚔️   "
+                f"{ty.name}  {ty.score}/{ty.wickets} ({format_overs(ty.balls)} ov)  CRR {ty_crr}"
+            )
+            _cx(score_txt, f_xs, WHITE, 140*SC)
 
-        # ── 4. TWO-COLUMN TEAM PANELS ──
-        col_left  = 40*SC
-        col_right = W // 2 + 20*SC
-        col_w     = W // 2 - 60*SC
-        panel_top = 170*SC
+        # ── 3. STATUS LEGEND STRIP ──
+        legend_y = HEADER_H + 6*SC
+        legend_items = [
+            ("🏏 Batting", GREEN_S),
+            ("🔄 Non-Strike", GREY_NS),
+            ("⚡ Bowling", (255, 200, 0, 255)),
+            ("❌ Out", (220, 60, 60, 255)),
+            ("🟢 Active", (80, 220, 100, 255)),
+        ]
+        li_x = 50 * SC
+        for icon_txt, col in legend_items:
+            bb = draw.textbbox((0, 0), icon_txt, font=f_xs)
+            draw.text((li_x, legend_y + 10*SC), icon_txt, font=f_xs, fill=col)
+            li_x += (bb[2] - bb[0]) + 40*SC
 
-        def _status_icon(player, team):
+        # ── 4. STATUS ICON HELPER ──
+        def _status(player, team):
             if player.is_out:
-                return "❌"
+                return "❌", (200, 60, 60, 255)
             if match.current_batting_team == team:
-                bat_idx = team.current_batsman_idx
-                ns_idx  = team.current_non_striker_idx
-                if bat_idx is not None and bat_idx < len(team.players) and team.players[bat_idx].user_id == player.user_id:
-                    return "🏏"
-                if ns_idx is not None and ns_idx < len(team.players) and team.players[ns_idx].user_id == player.user_id:
-                    return "🔄"
+                if (team.current_batsman_idx is not None
+                        and team.players[team.current_batsman_idx].user_id == player.user_id):
+                    return "🏏", GREEN_S
+                if (team.current_non_striker_idx is not None
+                        and team.players[team.current_non_striker_idx].user_id == player.user_id):
+                    return "🔄", GREY_NS
             if match.current_bowling_team == team:
-                bowl_idx = team.current_bowler_idx
-                if bowl_idx is not None and bowl_idx < len(team.players) and team.players[bowl_idx].user_id == player.user_id:
-                    return "⚡"
-            return "🟢"
+                if (team.current_bowler_idx is not None
+                        and team.players[team.current_bowler_idx].user_id == player.user_id):
+                    return "⚡", (255, 200, 0, 255)
+            return "🟢", (80, 220, 100, 255)
 
-        def _draw_team_panel(team, color, x0):
-            # Calculate panel height dynamically to contain all players
-            panel_h = 75*SC + len(team.players) * 80*SC + 15*SC
+        # ── 5. AVATAR CIRCLE ──
+        def _avatar_circle(initials: str, size: int, color) -> Image.Image:
+            av = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            ad = ImageDraw.Draw(av)
+            # Glow ring
+            for r in range(6, 0, -1):
+                alpha = int(80 * (r / 6))
+                ad.ellipse([-r, -r, size+r, size+r], fill=(*color[:3], alpha))
+            # Filled circle bg
+            ad.ellipse([0, 0, size, size], fill=(*color[:3], 200))
+            # Initials
+            af = _get_font(True, size // 2)
+            bb = ad.textbbox((0, 0), initials, font=af)
+            tx_ = (size - (bb[2]-bb[0])) // 2
+            ty_ = (size - (bb[3]-bb[1])) // 2 - bb[1]
+            ad.text((tx_, ty_), initials, font=af, fill=(255, 255, 255, 255))
+            return av
+
+        # ── 6. DRAW ONE TEAM PANEL ──
+        col_left  = 40 * SC
+        col_right = W // 2 + 20 * SC
+        col_w     = W // 2 - 60 * SC
+        panel_top = HEADER_H + SCORE_H + 20 * SC
+
+        def _draw_team(team, color, x0):
+            players  = team.players
+            panel_h  = TEAM_HDR + len(players) * ROW_H + 20 * SC
+
+            # Panel background
             draw.rounded_rectangle([x0, panel_top, x0 + col_w, panel_top + panel_h],
-                                   radius=20*SC, fill=PANEL, outline=BORDER, width=2*SC)
+                                   radius=22*SC, fill=PANEL, outline=BORDER, width=2*SC)
 
-            # Team header bar
-            draw.rounded_rectangle([x0, panel_top, x0 + col_w, panel_top + 65*SC],
-                                   radius=20*SC, fill=(*color[:3], 120), outline=color, width=2*SC)
-            
+            # Team header bar (colored)
+            draw.rounded_rectangle([x0, panel_top, x0 + col_w, panel_top + TEAM_HDR],
+                                   radius=22*SC, fill=(*color[:3], 140), outline=color, width=2*SC)
+
+            # Captain name + toss winner
             toss_mark = " 🪙" if getattr(match, 'toss_winner', None) == team else ""
-            cap_name = ""
-            for p in team.players:
-                if p.user_id == team.captain_id:
-                    cap_name = f" · 👑 {p.first_name}"
-                    break
-
-            team_label = f" {team.name}{toss_mark}{cap_name}"
-            draw.text((x0 + 16*SC, panel_top + 15*SC), team_label, font=f_team, fill=C_WHITE)
+            cap_name  = next((p.first_name for p in players if p.user_id == team.captain_id), "")
+            team_lbl  = f"  {team.name}{toss_mark}  👑 {cap_name}" if cap_name else f"  {team.name}{toss_mark}"
+            draw.text((x0 + 20*SC, panel_top + 16*SC), team_lbl, font=f_big, fill=WHITE)
 
             # Player rows
-            py = panel_top + 75*SC
-            for i, player in enumerate(team.players):
-                # Glass row style
-                row_fill = (255, 255, 255, 18) if i % 2 == 0 else (255, 255, 255, 8)
-                draw.rounded_rectangle([x0 + 8*SC, py, x0 + col_w - 8*SC, py + 72*SC],
-                                       radius=12*SC, fill=row_fill, outline=BORDER, width=1*SC)
+            py = panel_top + TEAM_HDR + 8 * SC
+            for i, player in enumerate(players):
+                status_icon, s_color = _status(player, team)
 
-                # Number badge with team primary color
-                draw.ellipse([x0+20*SC, py+16*SC, x0+52*SC, py+48*SC], fill=color)
-                num_txt = str(i + 1)
-                nb = draw.textbbox((0, 0), num_txt, font=f_sm)
-                draw.text((x0 + 36*SC - (nb[2]-nb[0])//2, py + 18*SC), num_txt, font=f_sm, fill=(10, 30, 20, 255))
+                # Alternating row tint
+                row_fill = (255, 255, 255, 22) if i % 2 == 0 else (255, 255, 255, 10)
+                draw.rounded_rectangle([x0 + 10*SC, py, x0 + col_w - 10*SC, py + ROW_H - 6*SC],
+                                       radius=14*SC, fill=row_fill, outline=BORDER, width=1*SC)
 
-                # Captain/Player tags
+                # Left accent bar (team color)
+                draw.rounded_rectangle([x0 + 10*SC, py + 8*SC, x0 + 18*SC, py + ROW_H - 14*SC],
+                                       radius=4*SC, fill=(*color[:3], 200))
+
+                # Circular avatar placeholder (initials)
+                av_size  = 54 * SC
+                av_x     = x0 + 26 * SC
+                av_y     = py + (ROW_H - av_size) // 2 - 2*SC
+                initials = "".join(w[:1] for w in player.first_name.split()[:2]).upper() or "P"
+                av_img   = _avatar_circle(initials, av_size, color)
+                img.paste(av_img, (av_x, av_y), av_img)
+
+                # Number badge (overlapping bottom-right of avatar)
+                badge_x  = av_x + av_size - 22*SC
+                badge_y  = av_y + av_size - 22*SC
+                draw.ellipse([badge_x, badge_y, badge_x + 22*SC, badge_y + 22*SC],
+                             fill=(10, 20, 12, 230), outline=color, width=1*SC)
+                num_str = str(i + 1)
+                nb = draw.textbbox((0, 0), num_str, font=f_xs)
+                draw.text((badge_x + (22*SC - (nb[2]-nb[0]))//2,
+                           badge_y + (22*SC - (nb[3]-nb[1]))//2 - nb[1]),
+                          num_str, font=f_xs, fill=WHITE)
+
+                # Player name
                 cap_icon = " 👑" if player.user_id == team.captain_id else ""
-                status_icon = _status_icon(player, team)
                 name_str = f"{player.first_name[:16]}{cap_icon}"
-                draw.text((x0 + 68*SC, py + 10*SC), name_str, font=f_name, fill=C_WHITE)
+                draw.text((av_x + av_size + 14*SC, py + 10*SC), name_str, font=f_name, fill=WHITE)
 
-                # Player stats sub-line
+                # Stats sub-line
                 stat_parts = []
                 if player.balls_faced > 0 or player.is_out:
                     sr = round((player.runs / max(player.balls_faced, 1)) * 100, 1)
-                    stat_parts.append(f"🏏 {player.runs}({player.balls_faced}) SR:{sr}")
+                    stat_parts.append(f"🏏 {player.runs}({player.balls_faced})  SR {sr}")
                 if player.balls_bowled > 0:
                     eco = round(player.runs_conceded / max(player.balls_bowled / 6, 0.1), 1)
-                    stat_parts.append(f"⚾ {player.wickets}W/{player.runs_conceded}R Eco:{eco}")
+                    stat_parts.append(f"⚾ {player.wickets}W/{player.runs_conceded}R  Eco {eco}")
                 stat_str = "  ·  ".join(stat_parts) if stat_parts else "Waiting to play…"
-                draw.text((x0 + 68*SC, py + 42*SC), stat_str, font=f_stat, fill=C_MUTED)
+                draw.text((av_x + av_size + 14*SC, py + 42*SC), stat_str, font=f_xs, fill=MUTED)
 
-                # Status icon
-                draw.text((x0 + col_w - 48*SC, py + 18*SC), status_icon, font=f_name, fill=C_WHITE)
+                # Status icon (right side)
+                si_bb = draw.textbbox((0, 0), status_icon, font=f_med)
+                draw.text((x0 + col_w - 55*SC, py + 22*SC), status_icon, font=f_med, fill=s_color)
 
-                py += 80*SC
+                py += ROW_H
 
-        _draw_team_panel(match.team_x, C_X, col_left)
-        _draw_team_panel(match.team_y, C_Y, col_right)
+        _draw_team(match.team_x, C_X, col_left)
+        _draw_team(match.team_y, C_Y, col_right)
 
-        # ── 5. FOOTER BRANDING ──
-        footer_y = H - 52*SC
-        draw.line([(40*SC, footer_y - 10*SC), (W - 40*SC, footer_y - 10*SC)], fill=C_GOLD, width=1*SC)
-        brand = "⚡ CRICOVERSE  ·  THE ULTIMATE HAND CRICKET EXPERIENCE"
-        fb = draw.textbbox((0, 0), brand, font=f_sm)
-        draw.text(((W - (fb[2]-fb[0])) // 2, footer_y), brand, font=f_sm, fill=C_MUTED)
+        # ── 7. FOOTER BRANDING ──
+        footer_y = H_px - FOOTER_H + 10*SC
+        draw.line([(40*SC, footer_y), (W - 40*SC, footer_y)], fill=GOLD, width=1*SC)
+        brand = "⚡  CRICOVERSE  ·  THE ULTIMATE HAND CRICKET EXPERIENCE  ·  ⚡"
+        _cx(brand, f_xs, MUTED, footer_y + 16*SC)
 
-        # Resize to final crisp output
-        final_h = H_unscaled
+        # ── 8. FINALIZE ──
+        final_h = H_px // SC
         final = img.convert("RGB").resize((1200, final_h), Image.Resampling.LANCZOS)
         bio = BytesIO()
         final.save(bio, "PNG", optimize=True)

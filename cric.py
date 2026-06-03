@@ -17202,6 +17202,128 @@ async def unapprove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML
     )
 
+async def unapprovegroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔒 Owner revokes tournament approval from a group and locks all premium commands"""
+    user = update.effective_user
+
+    # ── Only bot owner can use this ──
+    if user.id != OWNER_ID:
+        return
+
+    chat = update.effective_chat
+
+    # ── Resolve group_id ──
+    if chat.type == "private":
+        if not context.args:
+            await update.message.reply_text(
+                "📋 <b>USAGE:</b>\n"
+                "<code>/unapprovegroup &lt;group_id&gt;</code>\n\n"
+                "🔒 Revokes tournament & auction access from the group.\n"
+                "All premium commands get locked immediately.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        try:
+            group_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text(
+                "❌ <b>Invalid group ID!</b>\nPlease provide a valid numeric group ID.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+    else:
+        group_id = chat.id
+
+    # ── Check if it was actually approved ──
+    was_approved = group_id in TOURNAMENT_APPROVED_GROUPS
+
+    # ── Remove from memory ──
+    TOURNAMENT_APPROVED_GROUPS.discard(group_id)
+
+    # ── Remove from database ──
+    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM tournament_groups WHERE group_id = ?', (group_id,))
+    conn.commit()
+    conn.close()
+
+    save_data()
+
+    # ── Try to get group name ──
+    try:
+        group_info = await context.bot.get_chat(group_id)
+        group_name = group_info.title or "Unknown Group"
+    except Exception:
+        group_name = "Unknown Group"
+
+    # ── Notify the group that access has been revoked ──
+    try:
+        await context.bot.send_message(
+            chat_id=group_id,
+            text=(
+                "🔒 <b>PREMIUM ACCESS REVOKED!</b>\n"
+                "─────────────────\n\n"
+                "⚠️ This group's <b>Tournament & Auction</b> access has been <b>deactivated</b> by the bot owner.\n\n"
+                "🚫 The following commands are now <b>locked</b> in this group:\n"
+                "• /auction\n"
+                "• /registration\n"
+                "• /startregistration\n"
+                "• /register\n"
+                "• /registeredlist\n"
+                "• /startauction\n"
+                "• /endauction\n"
+                "• /pauseauction\n"
+                "• /resumeauction\n"
+                "• /bid\n"
+                "• /bidder\n"
+                "• /aucplayer\n"
+                "• /auctionset\n"
+                "• /auctionresults\n"
+                "• And all other auction/tournament commands\n\n"
+                "─────────────────\n"
+                "📞 <b>TO RESTORE ACCESS:</b>\n\n"
+                f"Contact Bot Owner:\n"
+                f'<a href="tg://user?id={OWNER_ID}">🔗 Click Here to Contact Owner</a>\n\n'
+                "─────────────────"
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.warning(f"Could not notify group {group_id} about unapproval: {e}")
+
+    # ── Notify support group ──
+    try:
+        await context.bot.send_message(
+            chat_id=SUPPORT_GROUP_ID,
+            text=(
+                "🔒 <b>GROUP UNAPPROVED!</b>\n"
+                "─────────────────\n"
+                f"📛 <b>Group:</b> {html.escape(group_name)}\n"
+                f"🆔 <b>ID:</b> <code>{group_id}</code>\n"
+                f"👤 <b>Revoked by:</b> {html.escape(user.first_name)}\n"
+                f"🕐 <b>Time:</b> {datetime.now().strftime('%d %b %Y, %H:%M')}\n\n"
+                "⚠️ All premium commands are now locked in that group."
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.warning(f"Could not notify support group about unapproval: {e}")
+
+    # ── Confirm to owner ──
+    status_note = "✅ Was approved — now revoked." if was_approved else "ℹ️ Was not approved (cleaned up anyway)."
+    await update.message.reply_text(
+        f"🔒 <b>GROUP UNAPPROVED SUCCESSFULLY!</b>\n"
+        f"─────────────────\n\n"
+        f"📛 <b>Group:</b> {html.escape(group_name)}\n"
+        f"🆔 <b>Group ID:</b> <code>{group_id}</code>\n"
+        f"📌 <b>Status:</b> {status_note}\n\n"
+        f"🚫 All tournament & auction commands are now <b>locked</b> in that group.\n"
+        f"📞 Group members will see a message to contact you to unlock.\n\n"
+        f"─────────────────",
+        parse_mode=ParseMode.HTML
+    )
+
+
 async def start_auction_live_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🎯 Start auction live callback"""
     query = update.callback_query
@@ -27376,6 +27498,7 @@ def main():
     application.add_handler(CommandHandler("gcsettings", gcsettings_command))
     application.add_handler(CallbackQueryHandler(gcsettings_callback, pattern="^gcs_"))
     application.add_handler(CommandHandler("unapprove", unapprove_command))
+    application.add_handler(CommandHandler("unapprovegroup", unapprovegroup_command))
     application.add_handler(CommandHandler("auction", auction_command))
 
     # Tournament Registration

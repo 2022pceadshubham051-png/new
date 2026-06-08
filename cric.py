@@ -16161,81 +16161,94 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         YELLOW = (255, 230, 60, 255)
         GREEN  = (100, 255, 140, 255)
 
-        # ── 1. PLAYER NAME — below the crown (top-center of left panel) ──
-        safe_name = (name or "Player")[:18]
-        nb = draw.textbbox((0, 0), safe_name, font=f_name)
-        nw = nb[2] - nb[0]
-        # Crown is roughly at x=90, y=10 on the left panel
-        # Name goes roughly at x=90 center, y=58
-        name_cx = 90
-        draw.text((name_cx - nw // 2, 52), safe_name, font=f_name, fill=YELLOW)
+        # ── 1. PLAYER NAME — top-left area below crown, where template shows name ──
+        # Template has name at roughly x=60, y=30 (top-left, yellow text)
+        safe_name = (name or "Player")[:20]
+        draw.text((55, 30), safe_name, font=f_name, fill=YELLOW)
 
-        # ── 2. STAT VALUES — match the icon+label positions from template ──
-        # Template left panel layout (approx pixel positions for value text):
-        # MATCHES      → y ≈ 172,  label at x≈130
-        # RUNS         → y ≈ 233
-        # WICKETS      → y ≈ 293
-        # 50 / 100     → y ≈ 352
-        # STRIKE RATE  → y ≈ 412
-        # HIGHEST SCORE→ y ≈ 471
-        val_x = 200  # right of the icon+label area
+        # ── 2. STAT VALUES — RIGHT-ALIGNED to the end of each stat row ──
+        # The template pre-prints labels (MATCHES, RUNS, WICKETS …) starting at ~x=130.
+        # Values must appear at the far right of that row (~x=370) so they NEVER
+        # overlap the pre-printed label text.
+        #
+        # Row vertical centres (based on 1024×682 template visual inspection):
+        #   MATCHES       → cy ≈ 207
+        #   RUNS          → cy ≈ 263
+        #   WICKETS       → cy ≈ 318
+        #   50 / 100      → cy ≈ 373
+        #   STRIKE RATE   → cy ≈ 428
+        #   HIGHEST SCORE → cy ≈ 483
+        #
+        # We right-align the value text so its right edge sits at x≈410,
+        # keeping it inside the left panel and well clear of the labels.
+        VAL_RIGHT_X = 410   # right edge of value text
+        ROW_FONT_SIZE = 28
+
+        try:
+            f_val = ImageFont.truetype("Roboto-Bold.ttf", ROW_FONT_SIZE)
+        except Exception:
+            f_val = ImageFont.load_default(size=ROW_FONT_SIZE)
 
         stat_rows = [
-            (stats.get("matches", 0),    172),
-            (stats.get("runs", 0),       233),
-            (stats.get("wickets", 0),    293),
-            (f"{stats.get('fifties',0)} / {stats.get('hundreds',0)}", 352),
-            (f"{stats.get('strike_rate', 0.0)}%", 412),
-            (stats.get("highest", 0),    471),
+            (str(stats.get("matches", 0)),                               207),
+            (str(stats.get("runs", 0)),                                  263),
+            (str(stats.get("wickets", 0)),                               318),
+            (f"{stats.get('fifties',0)} / {stats.get('hundreds',0)}",    373),
+            (f"{stats.get('strike_rate', 0.0):.1f}%",                    428),
+            (str(stats.get("highest", 0)),                               483),
         ]
-        for val, y in stat_rows:
-            val_str = str(val)
-            vb = draw.textbbox((0, 0), val_str, font=f_val)
-            vw = vb[2] - vb[0]
-            draw.text((val_x - vw // 2, y - 14), val_str, font=f_val, fill=WHITE)
+        for val_str, cy in stat_rows:
+            vb  = draw.textbbox((0, 0), val_str, font=f_val)
+            vw  = vb[2] - vb[0]
+            vh  = vb[3] - vb[1]
+            tx  = VAL_RIGHT_X - vw          # right-align
+            ty  = cy - vh // 2              # vertically centre on row
+            draw.text((tx, ty), val_str, font=f_val, fill=WHITE)
 
-        # ── 3. PLAYER PFP — in the big white circle on the right ──
-        # Circle center approx: cx=730, cy=341, radius≈185px (based on 1024x682 template)
-        pfp_cx, pfp_cy, pfp_r = 730, 341, 185
+        # ── 3. PLAYER PFP — in the big glowing circle on the right side ──
+        # Visual inspection of the template puts the circle at roughly:
+        #   centre-x ≈ 745,  centre-y ≈ 355,  radius ≈ 175 px  (for 1024×682)
+        pfp_cx, pfp_cy, pfp_r = 745, 355, 175
         pfp_size = pfp_r * 2
+        hq_size = pfp_size * 3  # render at 3x for crisp quality
 
-        pfp_img = Image.new("RGBA", (pfp_size, pfp_size), (200, 200, 200, 255))
+        pfp_img = Image.new("RGBA", (hq_size, hq_size), (200, 200, 200, 255))
         if avatar_bytes:
             try:
                 src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
-                src = ImageOps.fit(src, (pfp_size, pfp_size), method=Image.Resampling.LANCZOS)
+                src = ImageOps.fit(src, (hq_size, hq_size), method=Image.Resampling.LANCZOS)
                 pfp_img = src
             except Exception:
                 pass
         else:
             # Draw initials
             init_draw = ImageDraw.Draw(pfp_img)
-            init_draw.rectangle([0, 0, pfp_size, pfp_size], fill=(30, 45, 90, 255))
+            init_draw.rectangle([0, 0, hq_size, hq_size], fill=(30, 45, 90, 255))
             initials = "".join(p[:1] for p in (name or "PL").split()[:2]).upper()
             try:
-                fi = ImageFont.truetype("Roboto-Bold.ttf", pfp_size // 3)
+                fi = ImageFont.truetype("Roboto-Bold.ttf", hq_size // 3)
             except Exception:
-                fi = ImageFont.load_default(size=pfp_size // 3)
+                fi = ImageFont.load_default(size=hq_size // 3)
             ib = init_draw.textbbox((0, 0), initials, font=fi)
             init_draw.text(
-                ((pfp_size - (ib[2]-ib[0])) // 2, (pfp_size - (ib[3]-ib[1])) // 2),
+                ((hq_size - (ib[2]-ib[0])) // 2, (hq_size - (ib[3]-ib[1])) // 2),
                 initials, font=fi, fill=(255, 255, 255, 255)
             )
 
-        # Circular mask
-        mask = Image.new("L", (pfp_size, pfp_size), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, pfp_size - 1, pfp_size - 1), fill=255)
-        pfp_circle = Image.new("RGBA", (pfp_size, pfp_size), (0, 0, 0, 0))
-        pfp_circle.paste(pfp_img, (0, 0), mask)
+        # Apply circular mask at high resolution, then downsample
+        mask_hq = Image.new("L", (hq_size, hq_size), 0)
+        ImageDraw.Draw(mask_hq).ellipse((0, 0, hq_size - 1, hq_size - 1), fill=255)
+        pfp_circle_hq = Image.new("RGBA", (hq_size, hq_size), (0, 0, 0, 0))
+        pfp_circle_hq.paste(pfp_img, (0, 0), mask_hq)
+        pfp_circle = pfp_circle_hq.resize((pfp_size, pfp_size), Image.Resampling.LANCZOS)
 
         paste_x = pfp_cx - pfp_r
         paste_y = pfp_cy - pfp_r
         overlay.alpha_composite(pfp_circle, (paste_x, paste_y))
 
-        # ── 4. COMPOSITE ──
         final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()
-        final.save(bio, "JPEG", quality=92)
+        final.save(bio, "JPEG", quality=97)
         bio.seek(0)
         return bio
 
@@ -26776,80 +26789,54 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
         # ── Circle paste helper ──
         def paste_circle(img_overlay, avatar_bytes, cx, cy, r, initials="?"):
             size = r * 2
-            pfp = Image.new("RGBA", (size, size), (80, 80, 80, 200))
+            # Render at 3x resolution for crisp quality, then downsample
+            hq_size = size * 3
+            pfp = Image.new("RGBA", (hq_size, hq_size), (80, 80, 80, 200))
             if avatar_bytes:
                 try:
                     src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
-                    src = ImageOps.fit(src, (size, size), method=Image.Resampling.LANCZOS)
+                    # Use high-quality Lanczos for upscaling to hq_size
+                    src = ImageOps.fit(src, (hq_size, hq_size), method=Image.Resampling.LANCZOS)
                     pfp = src
                 except Exception:
                     pass
             else:
                 d = ImageDraw.Draw(pfp)
-                d.ellipse([0, 0, size-1, size-1], fill=(30, 30, 80, 255))
+                d.ellipse([0, 0, hq_size-1, hq_size-1], fill=(30, 30, 80, 255))
                 try:
-                    fi = ImageFont.truetype("Roboto-Bold.ttf", size // 3)
+                    fi = ImageFont.truetype("Roboto-Bold.ttf", hq_size // 3)
                 except Exception:
-                    fi = ImageFont.load_default(size=size // 3)
+                    fi = ImageFont.load_default(size=hq_size // 3)
                 ib = d.textbbox((0, 0), initials[:2], font=fi)
-                d.text(((size-(ib[2]-ib[0]))//2, (size-(ib[3]-ib[1]))//2),
+                d.text(((hq_size-(ib[2]-ib[0]))//2, (hq_size-(ib[3]-ib[1]))//2),
                        initials[:2], font=fi, fill=(255, 255, 255, 255))
-            mask = Image.new("L", (size, size), 0)
-            ImageDraw.Draw(mask).ellipse((0, 0, size-1, size-1), fill=255)
-            circle = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-            circle.paste(pfp, (0, 0), mask)
+            # Apply circular mask at high resolution
+            mask = Image.new("L", (hq_size, hq_size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, hq_size-1, hq_size-1), fill=255)
+            circle_hq = Image.new("RGBA", (hq_size, hq_size), (0, 0, 0, 0))
+            circle_hq.paste(pfp, (0, 0), mask)
+            # Downsample to final size with anti-aliasing
+            circle = circle_hq.resize((size, size), Image.Resampling.LANCZOS)
             img_overlay.alpha_composite(circle, (cx - r, cy - r))
 
-        # Template layout (1024 x 682):
-        # CENTER (1st) : cx≈512, cy≈285, r≈120
-        # LEFT   (2nd) : cx≈188, cy≈315, r≈105
-        # RIGHT  (3rd) : cx≈836, cy≈330, r≈100
+        # ── Precise circle positions matched to solo_podium_template.jpg (1024×682) ──
+        # Visual inspection of the template:
+        #   1st place  (CENTER, gold ring)   : cx≈512, cy≈268, r≈118
+        #   2nd place  (LEFT,  silver ring)  : cx≈192, cy≈295, r≈103
+        #   3rd place  (RIGHT, bronze ring)  : cx≈832, cy≈310, r≈98
 
         def get_init(p):
             return (getattr(p, "first_name", "P") or "P")[:2].upper()
 
-        paste_circle(overlay, pfp_bytes[0], 512, 285, 120, get_init(top3[0]))  # 1st center
+        paste_circle(overlay, pfp_bytes[0], 512, 268, 118, get_init(top3[0]))   # 1st – center
         if len(top3) > 1:
-            paste_circle(overlay, pfp_bytes[1], 188, 315, 105, get_init(top3[1]))  # 2nd left
+            paste_circle(overlay, pfp_bytes[1], 192, 295, 103, get_init(top3[1]))  # 2nd – left
         if len(top3) > 2:
-            paste_circle(overlay, pfp_bytes[2], 836, 330, 100, get_init(top3[2]))  # 3rd right
-
-        # ── Player names on podium ──
-        try:
-            f_name = ImageFont.truetype("Roboto-Bold.ttf", 26)
-            f_score = ImageFont.truetype("Roboto-Bold.ttf", 22)
-        except Exception:
-            f_name = ImageFont.load_default(size=26)
-            f_score = ImageFont.load_default(size=22)
-
-        WHITE = (255, 255, 255, 255)
-        GOLD  = (255, 215, 0, 255)
-
-        name_positions = [
-            (512, 420),  # 1st
-            (188, 435),  # 2nd
-            (836, 445),  # 3rd
-        ]
-        score_positions = [
-            (512, 452),  # 1st
-            (188, 467),  # 2nd
-            (836, 477),  # 3rd
-        ]
-
-        for i, p in enumerate(top3):
-            nx, ny = name_positions[i]
-            pname = (getattr(p, "first_name", "Player") or "Player")[:14]
-            nb = draw.textbbox((0, 0), pname, font=f_name)
-            draw.text((nx - (nb[2]-nb[0])//2, ny), pname, font=f_name, fill=GOLD if i == 0 else WHITE)
-
-            sx, sy = score_positions[i]
-            score_str = f"{getattr(p, 'runs', 0)} ({getattr(p, 'balls_faced', 0)})"
-            sb = draw.textbbox((0, 0), score_str, font=f_score)
-            draw.text((sx - (sb[2]-sb[0])//2, sy), score_str, font=f_score, fill=WHITE)
+            paste_circle(overlay, pfp_bytes[2], 832, 310,  98, get_init(top3[2]))  # 3rd – right
 
         final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()
-        final.save(bio, "JPEG", quality=92)
+        final.save(bio, "JPEG", quality=97)
         bio.seek(0)
         return bio
 

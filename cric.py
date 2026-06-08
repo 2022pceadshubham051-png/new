@@ -1638,46 +1638,30 @@ class Team:
         for i, player in enumerate(self.players):
             if player.user_id == user_id:
                 self.players.pop(i)
-                
-                # Adjust batsman index
+                # ✅ Fix indices so match doesn't break after mid-match removal
+                # Adjust current_batsman_idx
                 if self.current_batsman_idx is not None:
                     if self.current_batsman_idx == i:
-                        self.current_batsman_idx = None
+                        self.current_batsman_idx = None  # Need new batsman
                     elif self.current_batsman_idx > i:
                         self.current_batsman_idx -= 1
-                
-                # Adjust non-striker index
+                # Adjust current_non_striker_idx
                 if self.current_non_striker_idx is not None:
                     if self.current_non_striker_idx == i:
                         self.current_non_striker_idx = None
                     elif self.current_non_striker_idx > i:
                         self.current_non_striker_idx -= 1
-                
-                # Adjust bowler index
+                # Adjust current_bowler_idx
                 if self.current_bowler_idx is not None:
                     if self.current_bowler_idx == i:
-                        self.current_bowler_idx = None
+                        self.current_bowler_idx = None  # Need new bowler
                     elif self.current_bowler_idx > i:
                         self.current_bowler_idx -= 1
-                
-                # Adjust bowler history list (indices in players list)
-                new_history = []
-                for idx in self.bowler_history:
-                    if idx > i:
-                        new_history.append(idx - 1)
-                    elif idx < i:
-                        new_history.append(idx)
-                self.bowler_history = new_history
-
-                # Adjust out players indices set
-                new_out = set()
-                for idx in self.out_players_indices:
-                    if idx > i:
-                        new_out.add(idx - 1)
-                    elif idx < i:
-                        new_out.add(idx)
-                self.out_players_indices = new_out
-
+                # Adjust bowler_history indices
+                self.bowler_history = [
+                    (h - 1 if h > i else h)
+                    for h in self.bowler_history if h != i
+                ]
                 return True
         return False
     
@@ -2825,10 +2809,10 @@ async def handle_timeout_penalties(context: ContextTypes.DEFAULT_TYPE, group_id:
         bowler = bowl_team.players[bowl_team.current_bowler_idx]
         bowler.bowling_timeouts += 1
         
-        # Case A: Disqualification (2 Timeouts)
+        # Case A: Disqualification (3 Timeouts)
         if bowler.bowling_timeouts >= 2:
-            msg = f"🚫 <b>REMOVED FROM OVER!</b> {bowler.first_name} timed out 2 times!\n"
-            msg += "⚠️ <b>The over will RESTART with a new bowler. (They can still bowl later in the match).</b>"
+            msg = f"🚫 <b>DISQUALIFIED!</b> {bowler.first_name} timed out 2 times!\n"
+            msg += "⚠️ <b>The over will RESTART with a new bowler.</b>"
             await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
             
             # Reset Balls for this over (Over restart logic)
@@ -2839,9 +2823,11 @@ async def handle_timeout_penalties(context: ContextTypes.DEFAULT_TYPE, group_id:
             
             # Remove bowler from attack
             bowl_team.current_bowler_idx = None
+            # bowler.is_bowling_banned kept False — can bowl again next over
             
-            # Request New Bowler
+            # Request New Bowler (bowler NOT permanently banned - only this over is restarted)
             match.current_ball_data = {} # Clear ball data
+            bowler.is_bowling_banned = False  # ✅ Not permanently banned, just rotated out
             await request_bowler_selection(context, group_id, match)
             return
 
@@ -2870,7 +2856,7 @@ async def handle_timeout_penalties(context: ContextTypes.DEFAULT_TYPE, group_id:
         striker = bat_team.players[bat_team.current_batsman_idx]
         striker.batting_timeouts += 1
         
-        # Case A: Hit Wicket (2 Timeouts)
+        # Case A: Hit Wicket (3 Timeouts)
         if striker.batting_timeouts >= 2:
             msg = f"🚫 <b>DISMISSED!</b> {striker.first_name} timed out 2 times.\n"
             msg += "❌ <b>Result:</b> HIT WICKET (OUT)!"
@@ -2903,83 +2889,6 @@ async def handle_timeout_penalties(context: ContextTypes.DEFAULT_TYPE, group_id:
                 await check_over_complete(context, group_id, match)
             else:
                 await execute_ball(context, group_id, match)
-
-async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Re-sends the lobby setup message depending on the current game phase.
-    Only match host or group admin can use it.
-    """
-    chat = update.effective_chat
-    user = update.effective_user
-    
-    if not chat or chat.id not in active_matches:
-        await update.message.reply_text("⚠️ No active match setup found in this group.")
-        return
-        
-    match = active_matches[chat.id]
-    
-    # Check permissions (Host or Admin)
-    is_host = (user.id == match.host_id)
-    is_admin = False
-    try:
-        member = await context.bot.get_chat_member(chat.id, user.id)
-        is_admin = member.status in ["administrator", "creator"]
-    except Exception:
-        pass
-        
-    if not (is_host or is_admin):
-        await update.message.reply_text("⚠️ Only the match host or group admins can refresh the lobby.")
-        return
-        
-    # Refresh depending on phase
-    phase = match.phase
-    chat_id = chat.id
-    
-    if phase == GamePhase.TEAM_JOINING:
-        keyboard = [
-            [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
-             InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-            [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        text = get_team_join_message(match)
-        await refresh_game_message(context, chat_id, match, text, reply_markup, media_key="joining")
-        await update.message.reply_text("🔄 Lobby message refreshed and pinned!")
-        
-    elif phase == GamePhase.SOLO_JOINING:
-        await update_solo_board(context, chat_id, match)
-        await update.message.reply_text("🔄 Solo lobby message refreshed and pinned!")
-        
-    elif phase == GamePhase.CAPTAIN_SELECTION:
-        captain_x = match.team_x.get_player(match.team_x.captain_id)
-        captain_y = match.team_y.get_player(match.team_y.captain_id)
-        cap_x_name = captain_x.first_name if captain_x else "Not Selected"
-        cap_y_name = captain_y.first_name if captain_y else "Not Selected"
-        
-        keyboard = [
-            [InlineKeyboardButton("Become Captain - Team X", callback_data="captain_team_x")],
-            [InlineKeyboardButton("Become Captain - Team Y", callback_data="captain_team_y")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        msg = "🧢 <b>CAPTAIN SELECTION</b>\n"
-        msg += "─────────────────\n"
-        msg += f"🧊 <b>Team X:</b> {cap_x_name}\n"
-        msg += f"🔥 <b>Team Y:</b> {cap_y_name}\n\n"
-        msg += "<i>Waiting for both captains...</i>"
-        await refresh_game_message(context, chat_id, match, msg, reply_markup, media_key="squads")
-        await update.message.reply_text("🔄 Captain selection message refreshed and pinned!")
-        
-    elif phase == GamePhase.TEAM_EDIT:
-        await start_team_edit_phase(None, context, match)
-        await update.message.reply_text("🔄 Team setup message refreshed and pinned!")
-        
-    elif phase == GamePhase.TOSS:
-        await start_toss(None, context, match)
-        await update.message.reply_text("🔄 Toss message refreshed and pinned!")
-        
-    else:
-        await update.message.reply_text("⚠️ Match is already in progress or ended. Cannot refresh setup message.")
 
 async def celebrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Celebration GIF"""
@@ -3064,9 +2973,9 @@ async def handle_solo_timeout(context, chat_id, match, player_type):
         batter = match.solo_players[match.current_solo_bat_idx]
         batter.batting_timeouts += 1
         
-        # 2 Timeouts = AUTO OUT
+        # 3 Timeouts = AUTO OUT
         if batter.batting_timeouts >= 2:
-            msg = f"🚫 <b>AUTO-OUT!</b> {batter.first_name} timed out 2 times.\n❌ <b>Result:</b> Wicket!"
+            msg = f"🚫 <b>AUTO-OUT!</b> {batter.first_name} timed out 3 times.\n❌ <b>Result:</b> Wicket!"
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
             
             # Simulate Wicket Logic
@@ -3074,19 +2983,18 @@ async def handle_solo_timeout(context, chat_id, match, player_type):
             await process_solo_turn_result(context, chat_id, match)
             return
 
-        # < 2 Timeouts = -6 Penalty
+        # < 3 Timeouts = -6 Penalty
         else:
             penalty = 6
             batter.runs -= penalty
             if batter.runs < 0: batter.runs = 0
             
             msg = f"⏰ <b>TIMEOUT WARNING!</b> ({batter.batting_timeouts}/2)\n"
-            msg += f"─────────────────\n"
+            msg = f"─────────────────\n"
             msg += f"📉 <b>Penalty:</b> -6 Runs deducted!\n"
             msg += f"📊 <b>Current Score:</b> {batter.runs}"
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
             
-            # Count ball but no runs
             batter.balls_faced += 1
             await rotate_solo_bowler(context, chat_id, match)
 
@@ -3096,22 +3004,23 @@ async def handle_solo_timeout(context, chat_id, match, player_type):
         batter = match.solo_players[match.current_solo_bat_idx]
         bowler.bowling_timeouts += 1
         
-        # 2 Timeouts = ROTATE
+        # 2 Timeouts = Rotate bowler (NOT permanently banned)
         if bowler.bowling_timeouts >= 2:
-            msg = f"🚫 <b>ROTATED OUT!</b> {bowler.first_name} timed out 2 times!\n"
-            msg += "⚠️ <b>They are rotated out from this spell. (They can still bowl later in the match).</b>"
+            msg = f"⏰ <b>BOWLER TIMEOUT!</b> {bowler.first_name} timed out 2 times!\n"
+            msg += "⚠️ <b>Rotating to next bowler for this over.</b>"
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
+            bowler.bowling_timeouts = 0  # Reset so they can bowl again later
             
             await rotate_solo_bowler(context, chat_id, match, force_new_bowler=True)
             return
             
-        # < 2 Timeouts = NO BALL + FREE HIT
+        # < 3 Timeouts = NO BALL + FREE HIT
         else:
             batter.runs += 1
             match.is_free_hit = True
             
             msg = f"⏰ <b>BOWLER TIMEOUT!</b> ({bowler.bowling_timeouts}/2)\n"
-            msg += "─────────────────\n"
+            msg = "─────────────────\n"
             msg += "🚫 <b>Result:</b> DEAD BALL! (+1 Run)\n"
             msg += "⚡ <b>Next ball is a NORMAL BALL!</b>\n"
             msg += "🔄 <i>Bowler must bowl again!</i>"
@@ -5611,7 +5520,7 @@ async def start_team_edit_phase(query, context: ContextTypes.DEFAULT_TYPE, match
 
     
     # Use Master Function (Corrected Call)
-    chat_id = query.message.chat.id if query else match.group_id
+    chat_id = query.message.chat.id
     await refresh_game_message(context, chat_id, match, edit_text, reply_markup=reply_markup, media_key="squads")
 
 # Add/Remove player commands (Host only)
@@ -6597,13 +6506,7 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_players_cooldown(group_id)
 
     try:
-        host_avatar = await fetch_user_avatar_bytes(context, match.host_id)
-        cap_x_avatar = await fetch_user_avatar_bytes(context, match.team_x.captain_id) if match.team_x.captain_id else None
-        cap_y_avatar = await fetch_user_avatar_bytes(context, match.team_y.captain_id) if match.team_y.captain_id else None
-        
-        players_img = await asyncio.to_thread(
-            generate_players_squad_image, match, cap_x_avatar, cap_y_avatar, host_avatar
-        )
+        players_img = await generate_players_squad_image(match, context)
         if players_img:
             sent = await update.message.reply_photo(
                 photo=players_img, caption=text, parse_mode=ParseMode.HTML
@@ -6819,12 +6722,14 @@ async def bowler_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id:
             
             timeout_count = bowler.bowling_timeouts
             
-            if timeout_count >= 2:
-                # Remove from current bowler (over restarts or new bowler selection)
+            if timeout_count >= 3:
+                # Ban from bowling
+                bowler.is_bowling_banned = True
+                
                 penalty_msg = (
-                    f"🚨 <b>BOWLER REMOVED FROM OVER → TIMEOUT!</b>\n"
+                    f"🚨 <b>BOWLER BANNED → TIMEOUT!</b>\n"
                     f"─────────────────\n"
-                    f"⛔ <b>{bowler.first_name}</b> timed out 2× → Removed from over! (They can still bowl later in the match).\n"
+                    f"⛔ <b>{bowler.first_name}</b> timed out 3× → BANNED from bowling!\n"
                     f"📌 NO BALL  ·  ➕ +1 Run  ·  ⚡ FREE HIT next!\n"
                     f"⌨️ Select another: <code>/bowling [number]</code>"
                 )
@@ -6841,7 +6746,7 @@ async def bowler_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id:
                 )
             else:
                 penalty_msg = (
-                    f"⏱️ <b>BOWLER TIMEOUT!</b>  <code>{timeout_count}/2</code>\n"
+                    f"⏱️ <b>BOWLER TIMEOUT!</b>  <code>{timeout_count}/3</code>\n"
                     f"─────────────────\n"
                     f"⚠️ <b>{bowler.first_name}</b> didn't bowl in time!\n"
                     f"📌 NO BALL  ·  ➕ +1 Run  ·  ⚡ FREE HIT!\n"
@@ -7533,25 +7438,20 @@ async def handle_bowler_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: in
     gif_url = get_random_gif(MatchEvent.NO_BALL)
     commentary = get_random_commentary("noball")
     
-    if timeout_count >= 2:
-        # Remove bowler from current bowler index
-        match.current_bowling_team.current_bowler_idx = None
+    if timeout_count >= 3:
+        # Ban from bowling
+        bowler.is_bowling_banned = True
         
-        # Reset Balls for this over (Over restart logic)
-        current_over_balls = match.current_batting_team.get_current_over_balls()
-        match.current_batting_team.balls -= current_over_balls
-        match.current_batting_team.update_overs()
-        
-        penalty_text = f"🚨 <b>BOWLER REMOVED FROM OVER → TIMEOUT!</b>\n"
+        penalty_text = f"🚨 <b>BOWLER TIMEOUT → BANNED!</b>\n"
         penalty_text += f"─────────────────\n"
-        penalty_text += f"⛔ <b>{bowler.first_name}</b> timed out 2 times → Removed from over! (They can still bowl later in the match).\n"
+        penalty_text += f"⛔ <b>{bowler.first_name}</b> timed out 3 times → BANNED from bowling!\n"
         penalty_text += f"─────────────────\n"
         penalty_text += f"📌 NO BALL  ·  ➕ +1 Run  ·  ⚡ FREE HIT next ball!\n"
         penalty_text += f"💬 <i>{commentary}</i>\n"
         penalty_text += f"─────────────────\n"
         penalty_text += f"📊 Score: <b>{match.current_batting_team.score}/{match.current_batting_team.wickets}</b>"
     else:
-        penalty_text = f"⏱️ <b>BOWLER TIMEOUT!</b>  <code>{timeout_count}/2</code>\n"
+        penalty_text = f"⏱️ <b>BOWLER TIMEOUT!</b>  <code>{timeout_count}/3</code>\n"
         penalty_text += f"─────────────────\n"
         penalty_text += f"⚠️ <b>{bowler.first_name}</b> didn't bowl in time!\n"
         penalty_text += f"─────────────────\n"
@@ -7582,7 +7482,7 @@ async def handle_bowler_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: in
     # Continue with next ball
     await asyncio.sleep(2)
     
-    if timeout_count >= 2:
+    if bowler.is_bowling_banned:
         # Need new bowler → request selection, don't call execute_ball here
         match.waiting_for_bowler = True
         match.current_ball_data = {}
@@ -8068,7 +7968,7 @@ async def handle_batsman_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: i
     # Update current_over_runs to reflect penalty (so worm/bar chart shows correct values)
     match.current_over_runs = max(0, getattr(match, 'current_over_runs', 0) - 6)
     
-    if timeout_count >= 2:
+    if timeout_count >= 3:
         # Auto out - Hit Wicket
         batsman.is_out = True
         batsman.dismissal_type = "Hit Wicket (Timeout)"
@@ -8081,11 +7981,11 @@ async def handle_batsman_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: i
         gif_url = get_random_gif(MatchEvent.WICKET)
         
         penalty_text = f"╭━━ 📊 Cricoverse ━━━━━━\n"
-        penalty_text += f"┃ ⏳ BATSMAN TIMEOUT! (2/2)\n"
+        penalty_text += f"┃ ⏳ BATSMAN TIMEOUT! (3/3)\n"
         penalty_text += f"┃ ─────────────────\n"
         penalty_text += f"┃ 🚨 Penalty: -6 Runs! → OUT!\n"
         penalty_text += f"┃ 🏏 Updated Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
-        penalty_text += f"┃ ⚠ {html.escape(batsman.first_name)} timed out 2× → Wicket!\n"
+        penalty_text += f"┃ ⚠ {html.escape(batsman.first_name)} timed out 3× → Wicket!\n"
         penalty_text += f"╰━━━━━━━━━━━━━━━━━\n"
         
         try:
@@ -8128,7 +8028,7 @@ async def handle_batsman_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: i
             await request_batsman_selection(context, group_id, match)
     else:
         penalty_text = f"╭━━ 📊 Cricoverse ━━━━━━\n"
-        penalty_text += f"┃ ⏳ BATSMAN TIMEOUT! ({timeout_count}/2)\n"
+        penalty_text += f"┃ ⏳ BATSMAN TIMEOUT! ({timeout_count}/3)\n"
         penalty_text += f"┃ ─────────────────\n"
         penalty_text += f"┃ 🚨 Penalty: -6 Runs!\n"
         penalty_text += f"┃ 🏏 Updated Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
@@ -8173,7 +8073,7 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     # 🚨 WIDE BALL CHECK (3 Same Numbers)
     # ============================================
     if bowler_num is not None:
-        is_wide = await check_wide_condition(match, bowler_num, bowler.user_id, add_to_history=False)
+        is_wide = await check_wide_condition(match, bowler_num)
         if is_wide:
             bat_team.score += 1
             bat_team.extras += 1
@@ -8181,7 +8081,7 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             commentary = await get_ai_commentary_async("wide", gc_settings.get(group_id, {}).get("commentary_style", registered_groups.get(group_id, {}).get("commentary_style", "english")))
             
             wide_lines = [
-                f"⚠ {html.escape(bowler.first_name if 'bowler' in dir() else 'Bowler')} bowled the same number 3 times!",
+                f"⚠ {html.escape(bowler.first_name if 'bowler' in dir() else 'Bowler')} bowled the same number 3 times in a row!",
                 f"🏏 <b>Score:</b> {bat_team.score}/{bat_team.wickets}",
                 f"💬 <i>{commentary}</i>",
                 f"➕ <b>+1 Wide run</b> added!",
@@ -8624,30 +8524,43 @@ async def commentary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass
 
 
-async def check_wide_condition(match: Match, current_number: int, bowler_id: int, add_to_history: bool = True) -> bool:
+async def check_wide_condition(match: Match, current_number: int) -> bool:
     """
-    ✅ UPDATED: Wide only if bowler has bowled the same number 3 times (cumulative) in this match.
-    Tracks history per player (user_id).
+    ✅ UPDATED: Wide if the CURRENT BOWLER sends the SAME number 3 times
+    in the ENTIRE MATCH (not necessarily consecutive).
+    📌 Example: Bowler sends 4, 2, 4, 1, 4 → WIDE on the 5th ball (3rd time '4')
+    🚫 Different bowlers do NOT share counts
     """
     # Check if wides are disabled for this group
     group_id = getattr(match, 'group_id', None)
     if group_id and not get_gc_setting(group_id, "wide_enabled", True):
         return False
-    
-    if not hasattr(match, 'player_bowled_numbers'):
-        match.player_bowled_numbers = {} # Dict[int, List[int]]
-        
-    if bowler_id not in match.player_bowled_numbers:
-        match.player_bowled_numbers[bowler_id] = []
-        
-    if add_to_history:
-        match.player_bowled_numbers[bowler_id].append(current_number)
-        
-    count = match.player_bowled_numbers[bowler_id].count(current_number)
-    if count > 0 and count % 3 == 0:
-        logger.info(f"🚨 WIDE DETECTED! Bowler {bowler_id} has sent {current_number} {count} times.")
-        return True
-        
+
+    # Get current bowler id
+    bowl_team = match.current_bowling_team
+    bowler_id = None
+    if bowl_team and bowl_team.current_bowler_idx is not None:
+        try:
+            bowler_id = bowl_team.players[bowl_team.current_bowler_idx].user_id
+        except (IndexError, AttributeError):
+            bowler_id = None
+
+    # Initialize per-bowler tracking dict if not exists
+    if not hasattr(match, 'bowler_number_counts'):
+        match.bowler_number_counts = {}  # {bowler_id: {number: count}}
+
+    if bowler_id is not None:
+        if bowler_id not in match.bowler_number_counts:
+            match.bowler_number_counts[bowler_id] = {}
+        counts = match.bowler_number_counts[bowler_id]
+        counts[current_number] = counts.get(current_number, 0) + 1
+
+        if counts[current_number] >= 3:
+            # ✅ WIDE CONFIRMED — reset this number's count for this bowler
+            logger.info(f"🚨 WIDE DETECTED! Bowler {bowler_id} sent {current_number} x{counts[current_number]} times")
+            counts[current_number] = 0
+            return True
+
     return False
 
 async def offer_drs_to_captain(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
@@ -10555,11 +10468,7 @@ async def end_solo_game_logic(context, chat_id, match):
 
     # Try sending with PIL-generated top3 image as champion card
     try:
-        pfp1 = await fetch_user_avatar_bytes(context, sorted_players[0].user_id) if len(sorted_players) > 0 else None
-        pfp2 = await fetch_user_avatar_bytes(context, sorted_players[1].user_id) if len(sorted_players) > 1 else None
-        pfp3 = await fetch_user_avatar_bytes(context, sorted_players[2].user_id) if len(sorted_players) > 2 else None
-        
-        top3_bio = await asyncio.to_thread(generate_solo_top3_image, sorted_players, pfp1, pfp2, pfp3)
+        top3_bio = await generate_solo_top3_image(sorted_players, context)
         if top3_bio:
             await context.bot.send_photo(chat_id, photo=top3_bio, caption=msg, parse_mode=ParseMode.HTML)
             return
@@ -12521,42 +12430,123 @@ _IMG4K_W, _IMG4K_H = 3840, 2160   # true 4K
 # ─────────────────────────────────────────────────────────────────
 #  WORM GRAPH (Score Progression with Wicket Fall)  BLACK BG
 # ─────────────────────────────────────────────────────────────────
-def generate_players_squad_image(match, cap_x_avatar=None, cap_y_avatar=None, host_avatar=None) -> Optional[BytesIO]:
+async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]:
     """
-    🏏 Premium Squad Card — Loads assets/players_template.jpg
-    and overlays Host and Captains circular profile pictures.
+    ✅ TEMPLATE-BASED players/squad card.
+    Uses players_template.jpg (1024x639) as background.
+    Pastes:
+      - Captain X pfp in the LEFT big circle
+      - Captain Y pfp in the RIGHT big circle
+      - Host pfp in the SMALL CENTER circle (above VS)
     """
     try:
-        template_path = os.path.join("assets", "players_template.jpg")
-        img = Image.open(template_path).convert("RGBA")
-        
-        # 1. Host
-        host_initials = (match.host_name or "H")[:2]
-        host_img = _circle_avatar(host_avatar, 132, host_initials)
-        img.paste(host_img, (445, 170), host_img)
-        
-        # 2. Team X Captain
-        cap_x_id = match.team_x.captain_id
-        cap_x_player = match.team_x.get_player(cap_x_id) if cap_x_id else None
-        cap_x_initials = (cap_x_player.first_name if cap_x_player else "X")[:2]
-        cap_x_img = _circle_avatar(cap_x_avatar, 242, cap_x_initials)
-        img.paste(cap_x_img, (118, 239), cap_x_img)
-        
-        # 3. Team Y Captain
-        cap_y_id = match.team_y.captain_id
-        cap_y_player = match.team_y.get_player(cap_y_id) if cap_y_id else None
-        cap_y_initials = (cap_y_player.first_name if cap_y_player else "Y")[:2]
-        cap_y_img = _circle_avatar(cap_y_avatar, 242, cap_y_initials)
-        img.paste(cap_y_img, (655, 239), cap_y_img)
-        
-        # Save to BytesIO
-        out = BytesIO()
-        img.convert("RGB").save(out, format="JPEG", quality=90)
-        out.seek(0)
-        return out
+        import os
+        from PIL import Image, ImageDraw, ImageFont, ImageOps
+        from io import BytesIO
+
+        TEMPLATE_PATH = "players_template.jpg"
+        if not os.path.exists(TEMPLATE_PATH):
+            TEMPLATE_PATH = "/home/cricoverse/players_template.jpg"
+
+        base = Image.open(TEMPLATE_PATH).convert("RGBA")
+        W, H = base.size  # 1024 x 639
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+
+        # ── Fetch pfp bytes ──
+        async def get_pfp(uid):
+            if context is None or uid is None:
+                return None
+            try:
+                return await fetch_user_avatar_bytes(context, uid)
+            except Exception:
+                return None
+
+        cap_x_id  = match.team_x.captain_id if hasattr(match.team_x, "captain_id") else None
+        cap_y_id  = match.team_y.captain_id if hasattr(match.team_y, "captain_id") else None
+        host_id   = getattr(match, "host_id", None)
+
+        cap_x_bytes  = await get_pfp(cap_x_id)
+        cap_y_bytes  = await get_pfp(cap_y_id)
+        host_bytes   = await get_pfp(host_id)
+
+        # ── Circle paste helper ──
+        def paste_circle(img_overlay, avatar_bytes, cx, cy, r, initials="?"):
+            size = r * 2
+            pfp = Image.new("RGBA", (size, size), (50, 50, 50, 200))
+            if avatar_bytes:
+                try:
+                    src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
+                    src = ImageOps.fit(src, (size, size), method=Image.Resampling.LANCZOS)
+                    pfp = src
+                except Exception:
+                    pass
+            else:
+                d = ImageDraw.Draw(pfp)
+                d.ellipse([0, 0, size-1, size-1], fill=(30, 60, 120, 255))
+                try:
+                    fi = ImageFont.truetype("Roboto-Bold.ttf", size // 3)
+                except Exception:
+                    fi = ImageFont.load_default(size=size // 3)
+                ib = d.textbbox((0, 0), initials[:2], font=fi)
+                d.text(((size-(ib[2]-ib[0]))//2, (size-(ib[3]-ib[1]))//2), initials[:2],
+                       font=fi, fill=(255, 255, 255, 255))
+
+            mask = Image.new("L", (size, size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, size-1, size-1), fill=255)
+            circle = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            circle.paste(pfp, (0, 0), mask)
+            img_overlay.alpha_composite(circle, (cx - r, cy - r))
+
+        # Template layout (1024 x 639):
+        # LEFT circle  (Team X cap)  : cx≈202, cy≈330, r≈155
+        # RIGHT circle (Team Y cap)  : cx≈822, cy≈330, r≈155
+        # CENTER small (Host)        : cx≈512, cy≈215, r≈72
+        paste_circle(overlay, cap_x_bytes,  202, 330, 155,
+                     initials=(match.team_x.name or "X")[:2].upper())
+        paste_circle(overlay, cap_y_bytes,  822, 330, 155,
+                     initials=(match.team_y.name or "Y")[:2].upper())
+        paste_circle(overlay, host_bytes,   512, 215,  72,
+                     initials=(getattr(match, "host_name", "H") or "H")[:2].upper())
+
+        # ── Team name labels ──
+        draw = ImageDraw.Draw(overlay)
+        try:
+            f_team = ImageFont.truetype("Roboto-Bold.ttf", 34)
+        except Exception:
+            f_team = ImageFont.load_default(size=34)
+
+        WHITE = (255, 255, 255, 255)
+        # Team X label (bottom-left banner area ~y=565)
+        tx_name = (match.team_x.name or "TEAM X")[:14].upper()
+        tb = draw.textbbox((0, 0), tx_name, font=f_team)
+        draw.text((202 - (tb[2]-tb[0])//2, 562), tx_name, font=f_team, fill=WHITE)
+
+        # Team Y label (bottom-right)
+        ty_name = (match.team_y.name or "TEAM Y")[:14].upper()
+        tb = draw.textbbox((0, 0), ty_name, font=f_team)
+        draw.text((822 - (tb[2]-tb[0])//2, 562), ty_name, font=f_team, fill=WHITE)
+
+        # Host label (small, above host circle)
+        host_name = (getattr(match, "host_name", "Host") or "Host")[:16]
+        try:
+            f_host = ImageFont.truetype("Roboto-Regular.ttf", 20)
+        except Exception:
+            f_host = ImageFont.load_default(size=20)
+        hb = draw.textbbox((0, 0), host_name, font=f_host)
+        draw.text((512 - (hb[2]-hb[0])//2, 140), host_name, font=f_host, fill=WHITE)
+
+        final = Image.alpha_composite(base, overlay).convert("RGB")
+        bio = BytesIO()
+        final.save(bio, "JPEG", quality=92)
+        bio.seek(0)
+        return bio
+
     except Exception as e:
         logger.error(f"generate_players_squad_image error: {e}")
         return None
+
+
+
 
 def generate_worm_graph(match) -> Optional[BytesIO]:
     """
@@ -12951,48 +12941,119 @@ def generate_mid_match_image(match) -> Optional[BytesIO]:
 # ─────────────────────────────────────────────────────────────────
 #  SOLO TOP BATSMEN IMAGE  (sent at solo game end)
 # ─────────────────────────────────────────────────────────────────
-def generate_solo_top3_image(sorted_players, pfp1=None, pfp2=None, pfp3=None) -> Optional[BytesIO]:
+def generate_solo_top3_image(sorted_players) -> Optional[BytesIO]:
     """
-    🥇 Premium Solo Podium Card — Loads assets/solo_podium_template.jpg
-    and overlays circular profile pictures for the top 3 players.
+    🥇 GOD-LEVEL 4K PODIUM:
+    • 3D-Style Pedestal Layout for 1st, 2nd, and 3rd
+    • Glassmorphism Floating Cards with Material Depth
+    • Victory Aura Rays & Particle System
+    • Smooth Anti-Aliasing via 2x Downsampling
     """
     try:
-        if not sorted_players:
-            return None
-            
-        template_path = os.path.join("assets", "solo_podium_template.jpg")
-        img = Image.open(template_path).convert("RGBA")
+        if not sorted_players: return None
+
+        # 4K Internal Rendering for Smoothness (Anti-Aliasing)
+        SC = 2
+        W, H = 1920 * SC, 1080 * SC
+        img = Image.new("RGBA", (W, H), (5, 8, 22, 255))
+        draw = ImageDraw.Draw(img)
+
+        # --- COLORS ---
+        C_GOLD, C_SILVER, C_BRONZE = (255, 215, 0, 255), (192, 192, 192, 255), (205, 127, 50, 255)
+        C_WIN, C_WHITE = (0, 255, 150, 255), (245, 250, 255, 255)
+        C_PANEL = (15, 20, 45, 200)
+
+        # 1. ENHANCED VICTORY BACKGROUND
+        # Deep space gradient with victory rays
+        for i in range(H):
+            draw.line([(0, i), (W, i)], fill=(10 + i//100, 15 + i//150, 35 + i//80, 255))
         
-        # 1st place (middle)
-        if len(sorted_players) > 0:
-            p1 = sorted_players[0]
-            init1 = p1.first_name[:2].upper() if p1.first_name else "1st"
-            img1 = _circle_avatar(pfp1, 210, init1)
-            img.paste(img1, (411, 193), img1)
+        cx_bg, cy_bg = W // 2, H // 2 + 200*SC
+        for angle in range(0, 360, 10):
+            rad = math.radians(angle)
+            ex, ey = cx_bg + 2000*math.cos(rad), cy_bg + 2000*math.sin(rad)
+            draw.line([(cx_bg, cy_bg), (ex, ey)], fill=(30, 45, 90, 100), width=3*SC)
+
+        # 2. PODIUM DATA
+        top3 = sorted_players[:3]
+        
+        # Slots: (Player, Rank_Index, Center_X, Elevation, Card_Scale, Color)
+        slots = []
+        if len(top3) >= 3:
+            slots = [
+                (top3[1], 1, W//2 - 550*SC, 420*SC, 0.85, C_SILVER), # 2nd Left
+                (top3[2], 2, W//2 + 550*SC, 480*SC, 0.80, C_BRONZE), # 3rd Right
+                (top3[0], 0, W//2, 300*SC, 1.0, C_GOLD)             # 1st Center
+            ]
+        elif len(top3) == 2:
+            slots = [
+                (top3[1], 1, W//2 - 300*SC, 400*SC, 0.9, C_SILVER), 
+                (top3[0], 0, W//2 + 300*SC, 300*SC, 1.0, C_GOLD)
+            ]
+        else:
+            slots = [(top3[0], 0, W//2, 320*SC, 1.1, C_GOLD)]
+
+        # 3. DRAW SLOTS (Z-INDEX AWARE)
+        # Hum 1st place (Rank 0) ko sabse aakhir mein draw karenge taaki wo upar dikhe
+        slots.sort(key=lambda x: x[1], reverse=True)
+
+        for p, rank_idx, cx, sy, scale, color in slots:
+            cw, ch = int(500 * SC * scale), int(620 * SC * scale)
+            px1, py1 = cx - cw // 2, sy
+            px2, py2 = cx + cw // 2, sy + ch
+
+            # Glassmorphism Card with Elevation Glow
+            glow_color = (*color[:3], 60)
+            draw.rounded_rectangle([px1-15*SC, py1-15*SC, px2+15*SC, py2+15*SC], radius=45*SC, fill=glow_color)
+            draw.rounded_rectangle([px1, py1, px2, py2], radius=40*SC, fill=C_PANEL, outline=color, width=4*SC)
+
+            # Medal Emoji / Rank Number
+            medals = ["🥇", "🥈", "🥉"]
+            _draw_text_centered_glow(draw, medals[rank_idx], cx, py1 - 70*SC, _get_font(True, 100*SC), color)
+
+            # Player Stats (Using first_name to avoid attribute errors)
+            p_name = getattr(p, 'first_name', 'PLAYER').upper()
+            draw.text((cx, py1 + 80*SC), p_name, font=_get_font(True, int(55*SC * scale)), fill=C_WHITE, anchor="mt")
+            draw.line([(cx - 80*SC, py1 + 160*SC), (cx + 80*SC, py1 + 160*SC)], fill=color, width=3*SC)
             
-        # 2nd place (left)
-        if len(sorted_players) > 1:
-            p2 = sorted_players[1]
-            init2 = p2.first_name[:2].upper() if p2.first_name else "2nd"
-            img2 = _circle_avatar(pfp2, 190, init2)
-            img.paste(img2, (133, 263), img2)
+            score_txt = f"{p.runs} ({p.balls_faced})"
+            draw.text((cx, py1 + 220*SC), score_txt, font=_get_font(True, int(85*SC * scale)), fill=C_WIN, anchor="mt")
             
-        # 3rd place (right)
-        if len(sorted_players) > 2:
-            p3 = sorted_players[2]
-            init3 = p3.first_name[:2].upper() if p3.first_name else "3rd"
-            img3 = _circle_avatar(pfp3, 190, init3)
-            img.paste(img3, (702, 268), img3)
-            
-        # Save to BytesIO
-        out = BytesIO()
-        img.convert("RGB").save(out, format="JPEG", quality=90)
-        out.seek(0)
-        return out
+            sr = round((p.runs / max(p.balls_faced, 1)) * 100, 1)
+            draw.text((cx, py1 + 330*SC), f"SR: {sr}", font=_get_font(True, int(45*SC * scale)), fill=C_GOLD if sr > 140 else C_WHITE, anchor="mt")
+
+            # Boundaries Badge
+            if hasattr(p, 'boundaries') and (p.boundaries > 0 or getattr(p, 'sixes', 0) > 0):
+                badge_rect = [cx - 150*SC*scale, py2 - 90*SC*scale, cx + 150*SC*scale, py2 - 30*SC*scale]
+                draw.rounded_rectangle(badge_rect, radius=15*SC, fill=(25, 35, 70, 255))
+                b_txt = f"4s: {p.boundaries} • 6s: {getattr(p, 'sixes', 0)}"
+                draw.text((cx, py2 - 75*SC*scale), b_txt, font=_get_font(False, int(32*SC * scale)), fill=C_WHITE, anchor="mt")
+
+        # 4. VICTORY OVERLAY (Particles around Champion)
+        random.seed(42)
+        for _ in range(80):
+            ptx, pty = random.randint(W//2 - 600*SC, W//2 + 600*SC), random.randint(150*SC, 700*SC)
+            draw.ellipse([ptx, pty, ptx+6*SC, pty+6*SC], fill=random.choice([C_GOLD, C_WHITE, C_WIN, (255,255,255,100)]))
+
+        # 5. FOOTER & BRANDING
+        draw.text((W//2, H - 150*SC), f"🏆 BATTLE CHAMPION: {getattr(top3[0], 'first_name', 'PLAYER').upper()} 🏆", font=_get_font(True, 65*SC), fill=C_GOLD, anchor="mt")
+        draw.text((W//2, H - 60*SC), "⚡ CRICORA • SOLO BATTLE SERIES", font=_get_font(False, 30*SC), fill=(140, 160, 200, 255), anchor="mt")
+
+        # Final Rescale (LANCZOS) for makhan-smooth edges
+        final_img = img.convert("RGB").resize((1920, 1080), Image.Resampling.LANCZOS)
+        
+        bio = BytesIO()
+        final_img.save(bio, "PNG", optimize=True)
+        bio.seek(0)
+        return bio
+        
     except Exception as e:
-        logger.error(f"generate_solo_top3_image error: {e}")
+        print(f"Podium Error: {e}")
         return None
 
+# ─────────────────────────────────────────────────────────────────
+#  TEAM END IMAGE V3  (wrapper using new summary image)
+# ─────────────────────────────────────────────────────────────────
 async def generate_team_end_image_v3(match, winner_name: str, context) -> Optional[BytesIO]:
     """Generate final match summary image - uses worm graph as summary."""
     try:
@@ -16064,3141 +16125,124 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Optional[bytes] = None, mode: str = "overall") -> Optional[BytesIO]:
     """
-    Cricket-theme player profile card — Loads assets/mystats_template.jpg
-    and overlays Player circular profile picture and stats.
+    ✅ TEMPLATE-BASED mystats card.
+    Uses mystats_template.jpg as background and overlays:
+      - Player pfp in the circular area (right side)
+      - Player name below the crown (top area)
+      - Stats (matches, runs, wickets, 50/100, strike rate, highest score)
+        at the exact positions shown in the template
     """
     try:
-        template_path = os.path.join("assets", "mystats_template.jpg")
-        img = Image.open(template_path).convert("RGBA")
-        draw = ImageDraw.Draw(img)
-        
-        # 1. Player Profile Picture
-        player_initials = name[:2].upper() if name else "P"
-        pfp_img = _circle_avatar(avatar_bytes, 392, player_initials)
-        # Paste at top-left (547, 144) to center at (743, 340)
-        img.paste(pfp_img, (547, 144), pfp_img)
-        
-        # 2. Player Name (inside black box centered at 275, 105)
-        name_text = name.upper()
-        font_size = 40
-        font_name = _get_font(True, font_size)
-        while font_size > 15:
-            font_name = _get_font(True, font_size)
-            bbox = draw.textbbox((0, 0), name_text, font=font_name)
-            width = bbox[2] - bbox[0]
-            if width <= 440:
-                break
-            font_size -= 2
-        draw.text((275, 105), name_text, font=font_name, fill=(255, 255, 255, 255), anchor="mm")
-        
-        # 3. Stats Values (right-aligned at X=430)
-        font_val = _get_font(True, 32)
-        
-        # Matches (Y = 237)
-        draw.text((430, 237), str(stats.get("matches", 0)), font=font_val, fill=(255, 255, 255, 255), anchor="rm")
-        # Runs (Y = 302)
-        draw.text((430, 302), str(stats.get("runs", 0)), font=font_val, fill=(255, 255, 255, 255), anchor="rm")
-        # Wickets (Y = 365)
-        draw.text((430, 365), str(stats.get("wickets", 0)), font=font_val, fill=(255, 255, 255, 255), anchor="rm")
-        # 50 / 100 (Y = 428)
-        fifties = stats.get("fifties", 0)
-        hundreds = stats.get("hundreds", 0)
-        draw.text((430, 428), f"{fifties} / {hundreds}", font=font_val, fill=(255, 255, 255, 255), anchor="rm")
-        # Strike Rate (Y = 489)
-        sr = stats.get("strike_rate", 0)
-        sr_str = f"{sr}%" if not str(sr).endswith("%") else str(sr)
-        draw.text((430, 489), sr_str, font=font_val, fill=(255, 255, 255, 255), anchor="rm")
-        # Highest Score (Y = 551)
-        hs = stats.get("highest", stats.get("hs", 0))
-        draw.text((430, 551), str(hs), font=font_val, fill=(255, 255, 255, 255), anchor="rm")
-        
-        # Save to BytesIO
-        out = BytesIO()
-        img.convert("RGB").save(out, format="JPEG", quality=90)
-        out.seek(0)
-        return out
-    except Exception as e:
-        logger.error(f"generate_stats_image error: {e}")
-        return None
-
-def fetch_overall_stats_snapshot(user_id: int, name: str, stats: dict, avatar_bytes: bytes = None, mode: str = "overall") -> BytesIO:
-    """
-    ULTIMATE GOD-LEVEL CRICKET CARD
-    Features: Deep night theme, stadium neon glows, player DP, frosted glass panels.
-    """
-    try:
-        SC = 2  # Super-sampling scale for high resolution
-        W, H = 1200 * SC, 740 * SC
-        img = Image.new("RGBA", (W, H), (8, 12, 24, 255)) # Deepest Night Blue
-        draw = ImageDraw.Draw(img, "RGBA")
-
-        # ── 1. STADIUM FLOODLIGHT GLOWS (Background Effects) ──
-        glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow_layer)
-        
-        # Neon Cyan Glow (Top Left behind DP)
-        glow_draw.ellipse((-300*SC, -300*SC, 600*SC, 600*SC), fill=(0, 229, 255, 30))
-        # Neon Green/Purple Glow (Bottom Right)
-        glow_draw.ellipse((W - 500*SC, H - 400*SC, W + 300*SC, H + 400*SC), fill=(57, 255, 20, 20))
-        
-        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(150))
-        img.paste(glow_layer, (0, 0), glow_layer)
-
-        # ── COLORS & FONTS ──
-        WHITE = (255, 255, 255, 255)
-        MUTED = (148, 163, 184, 255)
-        CYAN  = (0, 229, 255, 255)
-        GREEN = (57, 255, 20, 255)
-        RED   = (255, 60, 90, 255)
-        GLASS_PANEL = (20, 30, 45, 180) 
-        GLASS_OUTLINE = (0, 229, 255, 60)
-
-        # Attempt to use local fonts, fallback to default
-        try:
-            f_title = ImageFont.truetype("Roboto-Bold.ttf", 62 * SC)
-            f_label = ImageFont.truetype("Roboto-Regular.ttf", 20 * SC)
-            f_value = ImageFont.truetype("Roboto-Bold.ttf", 44 * SC)
-            f_small = ImageFont.truetype("Roboto-Regular.ttf", 22 * SC)
-            f_mode  = ImageFont.truetype("Roboto-Bold.ttf", 26 * SC)
-        except:
-            f_title = ImageFont.load_default(size=62 * SC)
-            f_label = ImageFont.load_default(size=20 * SC)
-            f_value = ImageFont.load_default(size=44 * SC)
-            f_small = ImageFont.load_default(size=22 * SC)
-            f_mode  = ImageFont.load_default(size=26 * SC)
-
-        # ── 2. WATERMARK (Crossed Bats) ──
-        def _draw_bats(cx, cy, size, alpha):
-            w_color = (255, 255, 255, alpha)
-            hw, bw = int(3 * SC), int(10 * SC)
-            # Bat 1
-            draw.line([(cx - size//2, cy - size//2), (cx - size//8, cy - size//8)], fill=w_color, width=hw)
-            draw.line([(cx - size//8, cy - size//8), (cx + size//2, cy + size//2)], fill=w_color, width=bw)
-            # Bat 2
-            draw.line([(cx + size//2, cy - size//2), (cx + size//8, cy - size//8)], fill=w_color, width=hw)
-            draw.line([(cx + size//8, cy - size//8), (cx - size//2, cy + size//2)], fill=w_color, width=bw)
-
-        _draw_bats(W - 250*SC, 200*SC, 220*SC, 8)
-
-        # ── 3. OUTER CARD FRAME ──
-        draw.rounded_rectangle([30*SC, 30*SC, W-30*SC, H-30*SC], radius=30*SC, outline=GLASS_OUTLINE, width=2*SC)
-
-        # ── 4. HEADER DETAILS ──
-        header_txt = "🏏 CRICORA ULTIMATE  |  " + mode.upper() + " STATS"
-        draw.text((60*SC, 50*SC), header_txt, font=f_mode, fill=CYAN)
-        draw.line([(60*SC, 90*SC), (W-60*SC, 90*SC)], fill=(255, 255, 255, 30), width=1*SC)
-
-        # ── 5. PLAYER DP (AVATAR) WITH NEON RING ──
-        av_size = 200 * SC
-        initials = "".join(part[:1] for part in (name or "P").split()[:2]).upper()
-        avatar = _create_avatar_image(avatar_bytes, av_size, initials)
-        
-        av_x, av_y = 60 * SC, 130 * SC
-        img.alpha_composite(avatar, (av_x, av_y))
-
-        # Multiple Neon Glowing Rings around DP
-        draw.ellipse([av_x-4*SC, av_y-4*SC, av_x+av_size+4*SC, av_y+av_size+4*SC], outline=CYAN, width=3*SC)
-        draw.ellipse([av_x-12*SC, av_y-12*SC, av_x+av_size+12*SC, av_y+av_size+12*SC], outline=(0, 229, 255, 50), width=1*SC)
-
-        # ── 6. PLAYER NAME & SUMMARY ──
-        text_x = 310 * SC
-        safe_name = _clean_display_name(name or "Player", 18).upper()
-        draw.text((text_x, 140*SC), safe_name, font=f_title, fill=WHITE)
-        draw.text((text_x, 220*SC), f"ID: {user_id}", font=f_small, fill=MUTED)
-
-        # Win/Loss Pill
-        matches = stats.get("matches", 0)
-        wins    = stats.get("wins", 0)
-        losses  = stats.get("losses", max(matches - wins, 0))
-        win_rate = stats.get("win_rate", 0)
-        
-        draw.rounded_rectangle([text_x, 260*SC, text_x + 280*SC, 320*SC], radius=15*SC, fill=GLASS_PANEL, outline=GLASS_OUTLINE, width=1*SC)
-        wl_color = GREEN if wins >= losses else RED
-        draw.text((text_x + 20*SC, 275*SC), f"{wins}W - {losses}L", font=f_value, fill=wl_color)
-        draw.text((text_x + 190*SC, 282*SC), f"{win_rate}%", font=f_small, fill=MUTED)
-
-        # Form tracker
-        form = stats.get("form", [])
-        if form:
-            fx = text_x + 310*SC
-            draw.text((fx, 270*SC), "FORM:", font=f_label, fill=MUTED)
-            fx += 80*SC
-            for res in form[-5:]:
-                fc = GREEN if res == "W" else RED
-                draw.ellipse([fx, 275*SC, fx+16*SC, 291*SC], fill=fc)
-                fx += 24*SC
-
-        # ── 7. GLASS STATS GRID (4x2) ──
-        # Extract variables safely
-        runs = stats.get("runs", 0)
-        hs = stats.get("highest", 0)
-        avg = stats.get("average", 0)
-        sr = stats.get("strike_rate", 0)
-        wickets = stats.get("wickets", 0)
-        fours = stats.get("fours", 0)
-        sixes = stats.get("sixes", 0)
-        mom = stats.get("mom", 0)
-
-        stat_cards = [
-            ("TOTAL MATCHES", str(matches), CYAN),
-            ("TOTAL RUNS", str(runs), GREEN),
-            ("HIGHEST SCORE", f"{hs}*", WHITE),
-            ("STRIKE RATE", f"{sr}", CYAN),
-            ("BATTING AVG", str(avg), WHITE),
-            ("TOTAL WICKETS", str(wickets), GREEN),
-            ("BOUNDARIES (4s/6s)", f"{fours} / {sixes}", WHITE),
-            ("POTM AWARDS", str(mom), CYAN),
-        ]
-
-        grid_y = 390 * SC
-        card_w, card_h = 250 * SC, 110 * SC
-        gap_x, gap_y = 22 * SC, 22 * SC
-        start_x = 60 * SC
-
-        for i, (label, value, color) in enumerate(stat_cards):
-            col = i % 4
-            row = i // 4
-            x1 = start_x + col * (card_w + gap_x)
-            y1 = grid_y + row * (card_h + gap_y)
-            
-            # Draw Glass Tile
-            draw.rounded_rectangle([x1, y1, x1+card_w, y1+card_h], radius=16*SC, fill=GLASS_PANEL, outline=(255,255,255,20), width=1*SC)
-            
-            # Left edge neon accent
-            draw.rounded_rectangle([x1, y1, x1+6*SC, y1+card_h], radius=6*SC, fill=color)
-            
-            # Text layout inside tile
-            draw.text((x1 + 24*SC, y1 + 18*SC), str(value), font=f_value, fill=WHITE)
-            draw.text((x1 + 24*SC, y1 + 72*SC), label, font=f_label, fill=MUTED)
-
-        # ── 8. FOOTER ──
-        footer_y = H - 80*SC
-        draw.line([(60*SC, footer_y), (W-60*SC, footer_y)], fill=(255, 255, 255, 30), width=1*SC)
-        
-        brand_txt = "⚡ POWERED BY CRICORA ENGINE"
-        bb = draw.textbbox((0,0), brand_txt, font=f_small)
-        draw.text(((W - (bb[2]-bb[0]))//2, footer_y + 20*SC), brand_txt, font=f_small, fill=CYAN)
-
-        # ── 9. FINALIZE & EXPORT ──
-        final = img.convert("RGB").resize((1200, 740), Image.Resampling.LANCZOS)
-        bio = BytesIO()
-        final.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-        
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error("God-Level Stats image generation error: " + str(e))
-        return None
-
-# ─────────────────────────────────────────────────────────────────
-#  MOMENTUM IMAGE  (4K)
-# ─────────────────────────────────────────────────────────────────
-def _draw_rounded_rect(draw, xy, radius, fill=None, outline=None, width=1):
-    """Draw a rectangle with rounded corners."""
-    x1, y1, x2, y2 = xy
-    r = radius
-    if fill:
-        draw.rectangle([x1+r, y1, x2-r, y2], fill=fill)
-        draw.rectangle([x1, y1+r, x2, y2-r], fill=fill)
-        draw.ellipse([x1, y1, x1+2*r, y1+2*r], fill=fill)
-        draw.ellipse([x2-2*r, y1, x2, y1+2*r], fill=fill)
-        draw.ellipse([x1, y2-2*r, x1+2*r, y2], fill=fill)
-        draw.ellipse([x2-2*r, y2-2*r, x2, y2], fill=fill)
-    if outline:
-        draw.arc([x1, y1, x1+2*r, y1+2*r], 180, 270, fill=outline, width=width)
-        draw.arc([x2-2*r, y1, x2, y1+2*r], 270, 360, fill=outline, width=width)
-        draw.arc([x1, y2-2*r, x1+2*r, y2], 90, 180, fill=outline, width=width)
-        draw.arc([x2-2*r, y2-2*r, x2, y2], 0, 90, fill=outline, width=width)
-        draw.line([x1+r, y1, x2-r, y1], fill=outline, width=width)
-        draw.line([x1+r, y2, x2-r, y2], fill=outline, width=width)
-        draw.line([x1, y1+r, x1, y2-r], fill=outline, width=width)
-        draw.line([x2, y1+r, x2, y2-r], fill=outline, width=width)
-
-
-def _draw_rounded_rect_rgba(draw, xy, radius, fill=None, outline=None, width=1):
-    """Draw a rounded rect on an RGBA ImageDraw (supports alpha fill tuples)."""
-    _draw_rounded_rect(draw, xy, radius, fill=fill, outline=outline, width=width)
-
-
-# ─────────────────────────────────────────────────────────────────
-#  OVER-BY-OVER BAR CHART  (replaces static MINI_SCORECARD_PHOTO)
-# ─────────────────────────────────────────────────────────────────
-from PIL import Image, ImageDraw, ImageFilter
-from io import BytesIO
-from typing import Optional
-
-def generate_over_bar_chart(match) -> Optional[BytesIO]:
-    """
-    Over-by-Over Bar Chart — Pure Black Stadium Canvas.
-    Neon rounded bars, wicket chips, live-over highlight.
-    """
-    try:
-        SC = 2
-        W, H = 1400 * SC, 800 * SC
-        PAD_L, PAD_R, PAD_T, PAD_B = 100*SC, 70*SC, 150*SC, 145*SC
-        CHART_W = W - PAD_L - PAD_R
-        CHART_H = H - PAD_T - PAD_B
-
-        # Pure black base
-        img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
-        draw = ImageDraw.Draw(img)
-
-        # Subtle vertical streak texture (stadium floodlights)
-        for x in range(0, W, 90*SC):
-            draw.line([(x, 0), (x, H)], fill=(8, 14, 32, 255), width=2*SC)
-        for x in range(-H, W, 160*SC):
-            draw.line([(x, 0), (x+H, H)], fill=(10, 18, 40, 80), width=1*SC)
-
-        C_X    = (0, 200, 255, 255)
-        C_Y    = (255, 55, 120, 255)
-        C_GOLD = (255, 215, 0, 255)
-        C_WHITE= (240, 248, 255, 255)
-        C_MUTED= (100, 125, 175, 255)
-        C_GRID = (22, 35, 70, 200)
-        C_WKT  = (240, 50, 55, 255)
-
-        fn_title = _get_font(True, 52*SC)
-        fn_bold  = _get_font(True, 38*SC)
-        fn_med   = _get_font(True, 28*SC)
-        fn_reg   = _get_font(False, 24*SC)
-
-        # Data
-        bat_team_bar = getattr(match, "current_batting_team", None)
-        cur_over_runs = getattr(match, "current_over_runs", 0)
-        cur_over_wkts = getattr(match, "current_over_wickets", 0)
-
-        full_x_runs = list(match.team_x_over_runs)
-        full_y_runs = list(match.team_y_over_runs)
-        full_x_wkts = list(getattr(match, "team_x_over_wickets", []))
-        full_y_wkts = list(getattr(match, "team_y_over_wickets", []))
-
-        x_is_live = y_is_live = False
-        if bat_team_bar is not None and cur_over_runs > 0:
-            if bat_team_bar == match.team_x:
-                full_x_runs = full_x_runs + [cur_over_runs]
-                full_x_wkts = full_x_wkts + [cur_over_wkts]
-                x_is_live = True
-            else:
-                full_y_runs = full_y_runs + [cur_over_runs]
-                full_y_wkts = full_y_wkts + [cur_over_wkts]
-                y_is_live = True
-
-        x_runs = full_x_runs[-8:]
-        y_runs = full_y_runs[-8:]
-        x_wkts = full_x_wkts[-8:]
-        y_wkts = full_y_wkts[-8:]
-
-        x_live_idx = len(x_runs) - 1 if x_is_live else -1
-        y_live_idx = len(y_runs) - 1 if y_is_live else -1
-
-        n = max(len(x_runs), len(y_runs), 1)
-        while len(x_runs) < n: x_runs.insert(0, 0); x_wkts.insert(0, 0)
-        while len(y_runs) < n: y_runs.insert(0, 0); y_wkts.insert(0, 0)
-
-        x_over_offset = len(full_x_runs) - len(x_runs)
-        y_over_offset = len(full_y_runs) - len(y_runs)
-
-        max_runs = max(x_runs + y_runs + [10]) + 3
-        slot_w = CHART_W // n
-        bar_w = int(slot_w * 0.30)
-
-        # Grid lines
-        for j in range(6):
-            val = int(j * max_runs / 5)
-            gy = PAD_T + CHART_H - int(j * CHART_H / 5)
-            draw.line([(PAD_L, gy), (PAD_L + CHART_W, gy)], fill=C_GRID, width=2*SC)
-            draw.text((PAD_L - 55*SC, gy - 14*SC), str(val), font=fn_reg, fill=C_MUTED)
-
-        # Axis lines
-        draw.line([(PAD_L, PAD_T), (PAD_L, PAD_T + CHART_H)], fill=(50, 70, 130, 255), width=2*SC)
-        draw.line([(PAD_L, PAD_T + CHART_H), (PAD_L + CHART_W, PAD_T + CHART_H)], fill=(50, 70, 130, 255), width=2*SC)
-
-        def draw_bar(x1, x2, runs, wkts, color, is_live):
-            if runs <= 0 and not is_live:
-                return
-            bh = max(16*SC, int(runs / max_runs * CHART_H))
-            y2 = PAD_T + CHART_H
-            y1 = y2 - bh
-
-            # Shadow
-            draw.rounded_rectangle([x1+5*SC, y1+6*SC, x2+5*SC, y2], radius=10*SC, fill=(0,0,0,140))
-
-            # Gradient bar (lighter top, darker bottom)
-            for i in range(bh):
-                ratio = i / bh
-                bright = tuple(int(c * (0.35 + 0.65 * (1 - ratio))) for c in color[:3])
-                draw.line([(x1, y1+i), (x2, y1+i)], fill=bright)
-
-            # Live pulsing outline
-            outline_c = (80, 255, 160, 255) if is_live else (255, 255, 255, 60)
-            draw.rounded_rectangle([x1, y1, x2, y2], radius=10*SC, outline=outline_c, width=3*SC if is_live else 1*SC)
-
-            # Top highlight
-            draw.line([(x1+3*SC, y1), (x2-3*SC, y1)], fill=(255, 255, 255, 180), width=3*SC)
-
-            # Run label above bar
-            txt = str(runs) + (" LIVE" if is_live else "")
-            tb = draw.textbbox((0,0), txt, font=fn_med)
-            tw = tb[2] - tb[0]
-            tx = (x1 + x2) // 2 - tw // 2
-            draw.text((tx, y1 - 55*SC), txt, font=fn_med, fill=(80,255,160,255) if is_live else C_WHITE)
-
-            # Wicket chip
-            if wkts and wkts > 0:
-                cx = (x1 + x2) // 2
-                cy = y1 - 95*SC
-                rad = 18*SC
-                draw.ellipse([cx-rad, cy-rad, cx+rad, cy+rad], fill=C_WKT, outline=C_GOLD, width=2*SC)
-                wb = draw.textbbox((0,0), str(wkts), font=fn_med)
-                draw.text((cx - (wb[2]-wb[0])//2, cy - (wb[3]-wb[1])//2), str(wkts), font=fn_med, fill=C_WHITE)
-
-        for i in range(n):
-            center_x = PAD_L + i * slot_w + (slot_w // 2)
-            bar_x_live = (i == x_live_idx)
-            bar_y_live = (i == y_live_idx)
-
-            if x_runs[i] > 0 or bar_x_live:
-                bx1, bx2 = center_x - bar_w - 6*SC, center_x - 6*SC
-                draw_bar(bx1, bx2, x_runs[i], x_wkts[i] if i < len(x_wkts) else 0, C_X[:3], bar_x_live)
-
-            if y_runs[i] > 0 or bar_y_live:
-                by1, by2 = center_x + 6*SC, center_x + bar_w + 6*SC
-                draw_bar(by1, by2, y_runs[i], y_wkts[i] if i < len(y_wkts) else 0, C_Y[:3], bar_y_live)
-
-            if x_runs[i] > 0 or x_is_live:
-                ov_num = x_over_offset + i + 1
-            else:
-                ov_num = y_over_offset + i + 1
-            live_mark = " *" if (bar_x_live or bar_y_live) else ""
-            lbl = "OV " + str(ov_num) + live_mark
-            lb = draw.textbbox((0,0), lbl, font=fn_reg)
-            draw.text((center_x - (lb[2]-lb[0])//2, PAD_T + CHART_H + 28*SC), lbl, font=fn_reg,
-                       fill=C_GOLD if (bar_x_live or bar_y_live) else C_MUTED)
-
-        # Title + score line
-        title = match.team_x.name + " ** " + match.team_y.name
-        _draw_text_centered_glow(draw, title.upper(), W//2, 28*SC, fn_title, C_GOLD, glow_color=(130, 105, 0))
-        score_txt = (match.team_x.name + "  " + str(match.team_x.score) + "/" + str(match.team_x.wickets) +
-                     "   vs   " + match.team_y.name + "  " + str(match.team_y.score) + "/" + str(match.team_y.wickets))
-        _draw_text_centered_glow(draw, score_txt, W//2, 108*SC, fn_reg, C_WHITE)
-
-        # Legend
-        leg_y = H - 72*SC
-        draw.line([(PAD_L, leg_y - 10*SC), (W - PAD_R, leg_y - 10*SC)], fill=(38, 55, 100, 200), width=1*SC)
-        draw.rectangle([PAD_L, leg_y, PAD_L + 34*SC, leg_y + 28*SC], fill=C_X[:3])
-        draw.text((PAD_L + 42*SC, leg_y), match.team_x.name, font=fn_reg, fill=C_X)
-        draw.rectangle([PAD_L + 300*SC, leg_y, PAD_L + 334*SC, leg_y + 28*SC], fill=C_Y[:3])
-        draw.text((PAD_L + 342*SC, leg_y), match.team_y.name, font=fn_reg, fill=C_Y)
-        draw.ellipse([PAD_L + 620*SC, leg_y + 4*SC, PAD_L + 644*SC, leg_y + 28*SC], fill=C_WKT[:3])
-        draw.text((PAD_L + 654*SC, leg_y), "= Wickets", font=fn_reg, fill=C_MUTED)
-        draw.text((W - PAD_R, leg_y + 4*SC), "Last 8 overs", font=fn_reg, fill=C_MUTED, anchor="ra")
-
-        img = img.convert("RGB").resize((1400, 800), Image.Resampling.LANCZOS)
-        bio = BytesIO()
-        img.save(bio, "PNG", quality=95)
-        bio.seek(0)
-        return bio
-    except Exception as e:
-        print("Over bar chart error: " + str(e))
-        return None
-def _draw_neo_bar(draw, x1, x2, runs, max_runs, chart_h, pad_t, color, wkts, font):
-    """Draws a rounded, glowing bar with wicket indicators."""
-    bh = max(int(runs / max_runs * chart_h), 10)
-    y2 = pad_t + chart_h
-    y1 = y2 - bh
-    
-    # 1. Soft Shadow
-    draw.rectangle([x1+4, y1+4, x2+4, y2], fill=(0, 0, 0, 80))
-    
-    # 2. Main Bar Gradient (Glass effect)
-    for i in range(bh):
-        ratio = i / bh
-        # Lighten the top, darken the bottom
-        current_color = tuple(int(c * (0.4 + 0.6 * (1 - ratio))) for c in color)
-        draw.line([(x1, y1 + i), (x2, y1 + i)], fill=current_color)
-    
-    # 3. Top Highlight Line
-    draw.line([(x1, y1), (x2, y1)], fill=(255, 255, 255, 200), width=3)
-    
-    # 4. Run Label
-    txt = str(runs)
-    tw = draw.textbbox((0, 0), txt, font=font)[2]
-    draw.text(((x1 + x2)//2 - tw//2, y1 - 50), txt, font=font, fill=(255, 255, 255))
-    
-    # 5. Wicket Glow (If any)
-    if wkts > 0:
-        rad = 18
-        cx, cy = (x1 + x2) // 2, y1 - 85
-        draw.ellipse([cx-rad, cy-rad, cx+rad, cy+rad], fill=(255, 50, 50))
-        draw.text((cx-8, cy-12), str(wkts), font=font, fill=(255, 255, 255))
-
-def _draw_glowing_text(draw, text, x, y, font, fill, glow_color=None, glow_radius=12):
-    """Draw text with a soft glow effect."""
-    if glow_color:
-        for dx in range(-glow_radius, glow_radius+1, 4):
-            for dy in range(-glow_radius, glow_radius+1, 4):
-                alpha = max(0, 1 - (abs(dx)+abs(dy))/(glow_radius*2))
-                gc = tuple(int(c * alpha * 0.6) for c in glow_color)
-                if any(c > 0 for c in gc):
-                    draw.text((x+dx, y+dy), text, font=font, fill=gc)
-    draw.text((x, y), text, font=font, fill=fill)
-
-
-def _draw_text_centered_glow(draw, text, cx, y, font, fill, glow_color=None):
-    """Centered text with optional glow."""
-    bbox = draw.textbbox((0, 0), text, font=font)
-    w = bbox[2] - bbox[0]
-    _draw_glowing_text(draw, text, cx - w//2, y, font, fill, glow_color, glow_radius=18)
-
-
-def _draw_multi_gradient_bg(img, colors):
-    """Draw a multi-stop vertical gradient background."""
-    draw = ImageDraw.Draw(img)
-    W, H = img.size
-    n = len(colors) - 1
-    seg_h = H // n
-    for si in range(n):
-        c1, c2 = colors[si], colors[si+1]
-        sy = si * seg_h
-        ey = (si+1) * seg_h if si < n-1 else H
-        for i in range(ey - sy):
-            t = i / max(ey - sy - 1, 1)
-            r = int(c1[0] + t*(c2[0]-c1[0]))
-            g = int(c1[1] + t*(c2[1]-c1[1]))
-            b = int(c1[2] + t*(c2[2]-c1[2]))
-            draw.line([(0, sy+i),(W, sy+i)], fill=(r,g,b))
-
-def generate_leaderboard_image(title: str, rows: list, metric: str, offset: int = 0) -> Optional[BytesIO]:
-    """🏆 Generate a readable leaderboard image (2x scaled for clarity)."""
-    try:
-        SC = 2
-        ROW_H = 144
-        TITLE_BAR = 160
-        FOOTER_H = 72
-        W = 1000 * SC
-        H = min(TITLE_BAR + len(rows) * ROW_H + FOOTER_H, 900 * SC)
-        img = Image.new("RGB", (W, H), (8, 10, 24))
-        draw = ImageDraw.Draw(img)
-
-        for y in range(H):
-            t = y / H
-            draw.line([(0, y), (W, y)], fill=(int(8 + t*12), int(10 + t*15), int(24 + t*20)))
-
-        fn_title = _get_font(True, 84)
-        fn_bold  = _get_font(True, 64)
-        fn_reg   = _get_font(False, 56)
-        fn_sm    = _get_font(False, 48)
-
-        GOLD   = (255, 200, 50)
-        SILVER = (192, 192, 210)
-        BRONZE = (205, 127, 50)
-        WHITE  = (230, 240, 255)
-        GRAY   = (140, 160, 200)
-        ACCENT = (80, 160, 255)
-
-        draw.rectangle([(0, 0), (W, TITLE_BAR)], fill=(20, 25, 60))
-        draw.rectangle([(0, TITLE_BAR - 8), (W, TITLE_BAR)], fill=GOLD)
-        draw.text((48, 32), "🏆", font=fn_title, fill=GOLD)
-        title_clean = title.replace("→", "-").replace("🏃", "").replace("⚾", "").replace("🏆", "").replace("🎯","").replace("🚀","").replace("🌟","").strip()
-        draw.text((160, 40), title_clean, font=fn_bold, fill=WHITE)
-
-        medals_colors = [GOLD, SILVER, BRONZE]
-
-        y = TITLE_BAR
-        for i, row in enumerate(rows):
-            rank = offset + i + 1
-            row_color = (18, 22, 48) if i % 2 == 0 else (22, 28, 58)
-            draw.rectangle([(20, y), (W - 20, y + ROW_H - 4)], fill=row_color)
-
-            # Rank badge
-            if rank <= 3:
-                draw.ellipse([(36, y + 16), (136, y + 116)], fill=medals_colors[rank - 1])
-                draw.text((56 if rank < 10 else 44, y + 36), f"#{rank}", font=fn_bold, fill=(10, 10, 20))
-            else:
-                draw.ellipse([(36, y + 16), (136, y + 116)], fill=(40, 50, 90))
-                txt = f"#{rank}"
-                draw.text((44 if rank >= 10 else 56, y + 40), txt, font=fn_sm, fill=GRAY)
-
-            # Name + stat
-            if metric == "runs":
-                uid, name, val1, val2 = row
-                avg = round(val1 / max(val2, 1), 1)
-                name_str = (name or "Player")[:22]
-                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
-                draw.text((150, y + 76), f"{val1} runs  •  avg {avg}", font=fn_sm, fill=ACCENT)
-            elif metric == "wickets":
-                uid, name, val = row
-                name_str = (name or "Player")[:22]
-                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
-                draw.text((150, y + 76), f"{val} wickets", font=fn_sm, fill=ACCENT)
-            elif metric == "wins":
-                uid, name, tw, tp = row
-                name_str = (name or "Player")[:22]
-                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
-                draw.text((150, y + 76), f"{tw} wins  /  {tp} played", font=fn_sm, fill=ACCENT)
-            elif metric == "winrate":
-                uid, name, tw, tp = row
-                wr = round(tw / max(tp, 1) * 100, 1)
-                name_str = (name or "Player")[:22]
-                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
-                draw.text((150, y + 76), f"{wr}%  ({tw}/{tp})", font=fn_sm, fill=ACCENT)
-            elif metric == "sixes":
-                uid, name, val = row
-                name_str = (name or "Player")[:22]
-                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
-                draw.text((150, y + 76), f"{val} sixes", font=fn_sm, fill=ACCENT)
-            elif metric == "mom":
-                uid, name, val = row
-                name_str = (name or "Player")[:22]
-                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
-                draw.text((150, y + 76), f"{val} MOM awards", font=fn_sm, fill=ACCENT)
-
-            y += ROW_H
-
-        draw.rectangle([(0, H - FOOTER_H), (W, H)], fill=(15, 18, 40))
-        draw.text((40, H - FOOTER_H + 12), "CRICOVERSE  •  Global Leaderboard", font=fn_sm, fill=GRAY)
-
-        bio = BytesIO()
-        img.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-    except Exception as e:
-        logger.error(f"Leaderboard image error: {e}")
-        return None
-
-
-def generate_points_table_image(group_id: int) -> Optional[BytesIO]:
-    """
-    💎 BROADCAST-QUALITY POINTS TABLE:
-    • 4K Super-Sampled Rendering (LANCZOS Downscaling)
-    • Glassmorphism Row Highlights with Neon Left-Border
-    • Dynamic NRR Color Coding & Gold/Silver/Bronze Rank Accents
-    • Ultra-clean Typography Alignment
-    """
-    try:
-        pts = tournament_points.get(group_id, {})
-        if not pts: return None
-        
-        sorted_teams = sorted(pts.items(), key=lambda x: (-x[1].get("pts", 0), -x[1].get("nrr", 0.0)))
-
-        # ── Scaling for Ultra Smoothness (2x) ──
-        SC = 2
-        ROW_H, HEADER_H, FOOTER_H = 80*SC, 120*SC, 60*SC
-        W = 1200 * SC
-        H = HEADER_H + (len(sorted_teams) * ROW_H) + FOOTER_H + 40*SC
-
-        # Base Image with Deep Space Gradient
-        img = Image.new("RGBA", (W, H), (6, 10, 25, 255))
-        draw = ImageDraw.Draw(img)
-        
-        # Premium Background Gradient
-        for y in range(H):
-            ratio = y / H
-            r = int(8 + 12 * ratio)
-            g = int(12 + 15 * ratio)
-            b = int(32 + 25 * ratio)
-            draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
-
-        # Colors & Fonts
-        C_GOLD, C_WHITE = (255, 210, 50, 255), (240, 245, 255, 255)
-        C_ACCENT, C_GRAY = (0, 190, 255, 255), (150, 170, 200, 255)
-        C_GREEN, C_RED = (0, 255, 130, 255), (255, 60, 90, 255)
-        
-        fn_title = _get_font(True, 55 * SC)
-        fn_hdr   = _get_font(True, 32 * SC)
-        fn_bold  = _get_font(True, 30 * SC)
-        fn_reg   = _get_font(False, 28 * SC)
-        fn_sm    = _get_font(False, 22 * SC)
-
-        # ── 1. Header Section ──
-        draw.rectangle([(0, 0), (W, HEADER_H)], fill=(15, 20, 50, 200))
-        draw.line([(0, HEADER_H-4*SC), (W, HEADER_H-4*SC)], fill=C_GOLD, width=4*SC)
-        draw.text((60*SC, 35*SC), "📊  TOURNAMENT STANDINGS", font=fn_title, fill=C_WHITE)
-
-        # ── 2. Column Headers ──
-        cols = ["POS", "TEAM", "P", "W", "L", "T", "PTS", "NRR"]
-        # Precisely calculated X-positions for perfect alignment
-        col_x = [60*SC, 160*SC, 580*SC, 670*SC, 760*SC, 850*SC, 960*SC, 1080*SC]
-        
-        header_y = HEADER_H + 10*SC
-        draw.rectangle([(40*SC, header_y), (W-40*SC, header_y + 55*SC)], fill=(25, 40, 85, 255), outline=C_ACCENT, width=1*SC)
-        for cx, ch in zip(col_x, cols):
-            draw.text((cx, header_y + 10*SC), ch, font=fn_hdr, fill=C_ACCENT)
-
-        # ── 3. Data Rows ──
-        curr_y = header_y + 65*SC
-        for idx, (name, stats) in enumerate(sorted_teams):
-            # Glassmorphism Row Background
-            row_fill = (22, 30, 65, 180) if idx % 2 == 0 else (18, 25, 55, 150)
-            row_rect = [40*SC, curr_y, W-40*SC, curr_y + ROW_H - 8*SC]
-            draw.rounded_rectangle(row_rect, radius=10*SC, fill=row_fill)
-
-            # Rank Accent Colors
-            rank_color = C_GOLD if idx == 0 else ((192, 192, 210, 255) if idx == 1 else ((205, 127, 50, 255) if idx == 2 else C_GRAY))
-            
-            # Left Neon Border for top 3
-            if idx < 3:
-                draw.rectangle([40*SC, curr_y, 46*SC, curr_y + ROW_H - 8*SC], fill=rank_color)
-
-            # Row Data Alignment
-            row_y_text = curr_y + 20*SC
-            draw.text((col_x[0] + 10*SC, row_y_text), str(idx+1), font=fn_bold, fill=rank_color)
-            draw.text((col_x[1], row_y_text), name[:22].upper(), font=fn_bold, fill=C_WHITE)
-            
-            # Stats (Center-aligned feel)
-            draw.text((col_x[2], row_y_text), str(stats.get("played", 0)), font=fn_reg, fill=C_WHITE)
-            draw.text((col_x[3], row_y_text), str(stats.get("won", 0)), font=fn_reg, fill=C_GREEN)
-            draw.text((col_x[4], row_y_text), str(stats.get("lost", 0)), font=fn_reg, fill=C_RED)
-            draw.text((col_x[5], row_y_text), str(stats.get("tied", 0)), font=fn_reg, fill=C_GRAY)
-            draw.text((col_x[6], row_y_text), str(stats.get("pts", 0)), font=fn_bold, fill=C_GOLD)
-            
-            nrr = stats.get("nrr", 0.0)
-            nrr_txt = f"{nrr:+.3f}"
-            draw.text((col_x[7], row_y_text), nrr_txt, font=fn_bold, fill=C_GREEN if nrr >= 0 else C_RED)
-
-            curr_y += ROW_H
-
-        # ── 4. Footer ──
-        footer_y = H - FOOTER_H - 10*SC
-        draw.line([(40*SC, footer_y), (W-40*SC, footer_y)], fill=C_GRAY, width=1*SC)
-        footer_info = "⚡ CRICORA PREMIUM LEAGUE  •  Win: 2 pts | Tie: 1 pt | Loss: 0 pts"
-        draw.text((60*SC, footer_y + 15*SC), footer_info, font=fn_sm, fill=C_GRAY)
-
-        # ── Final Rescale (The Magic Step) ──
-        # Rendering at 2x and resizing with LANCZOS makes it look "Soothing" and "Smooth"
-        final_w, final_h = W // SC, H // SC
-        img = img.convert("RGB").resize((final_w, final_h), Image.Resampling.LANCZOS)
-        
-        bio = BytesIO()
-        img.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-        
-    except Exception as e:
-        print(f"Points Table Error: {e}")
-        return None
-
-def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
-    """
-    🏆 Generate tournament leaderboard image with top scorers etc.
-    """
-    try:
-        all_runs = {}
-        all_wickets = {}
-        all_sixes = {}
-        all_fours = {}
-
-        for match_id, stats in tour_match_stats.get(group_id, {}).items():
-            for pid, runs in stats.get("player_runs", {}).items():
-                if pid not in all_runs:
-                    all_runs[pid] = {"name": pid, "total": 0}
-                all_runs[pid]["total"] += runs
-            for pid, wkts in stats.get("player_wickets", {}).items():
-                if pid not in all_wickets:
-                    all_wickets[pid] = {"name": pid, "total": 0}
-                all_wickets[pid]["total"] += wkts
-            for pid, sixes in stats.get("player_sixes", {}).items():
-                if pid not in all_sixes:
-                    all_sixes[pid] = {"name": pid, "total": 0}
-                all_sixes[pid]["total"] += sixes
-            for pid, fours in stats.get("player_fours", {}).items():
-                if pid not in all_fours:
-                    all_fours[pid] = {"name": pid, "total": 0}
-                all_fours[pid]["total"] += fours
-
-        top_runs = sorted(all_runs.values(), key=lambda x: -x["total"])[:5]
-        top_wkts = sorted(all_wickets.values(), key=lambda x: -x["total"])[:5]
-        top_sixes = sorted(all_sixes.values(), key=lambda x: -x["total"])[:5]
-        top_fours = sorted(all_fours.values(), key=lambda x: -x["total"])[:5]
-
-        SC = 2
-        W, H = 1100 * SC, 820 * SC
-        img = Image.new("RGB", (W, H), (8, 12, 28))
-        draw = ImageDraw.Draw(img)
-
-        for y in range(H):
-            t = y / H
-            draw.line([(0, y), (W, y)], fill=(int(8 + t*8), int(12 + t*12), int(28 + t*18)))
-
-        fn_title = _get_font(True, 44 * SC)
-        fn_hdr = _get_font(True, 32 * SC)
-        fn_bold = _get_font(True, 26 * SC)
-        fn_reg = _get_font(False, 24 * SC)
-        fn_sm = _get_font(False, 20 * SC)
-
-        WHITE = (230, 240, 255)
-        GOLD = (255, 200, 50)
-        GRAY = (140, 160, 200)
-        ACCENT = (80, 160, 255)
-        GREEN = (80, 220, 120)
-
-        # Header
-        draw.rectangle([(0, 0), (W, 90 * SC)], fill=(16, 22, 60))
-        draw.rectangle([(0, 88 * SC), (W, 92 * SC)], fill=GOLD)
-        draw.text((20 * SC, 22 * SC), "🏆 TOURNAMENT LEADERBOARD", font=fn_title, fill=GOLD)
-
-        sections = [
-            ("🏃 TOP RUN SCORERS", top_runs, "runs"),
-            ("⚾ TOP WICKET TAKERS", top_wkts, "wkts"),
-            ("🚀 MOST SIXES", top_sixes, "sixes"),
-            ("4️⃣ MOST FOURS", top_fours, "fours"),
-        ]
-
-        medal_colors = [GOLD, (192, 192, 210), (205, 127, 50), (140, 180, 255), (180, 255, 180)]
-        
-        y = 100 * SC
-        half_w = W // 2
-        for sec_idx, (sec_title, sec_rows, unit) in enumerate(sections):
-            sx = (sec_idx % 2) * half_w + 10 * SC
-            sy = y + (sec_idx // 2) * 310 * SC
-
-            # Section header
-            draw.rectangle([(sx, sy), (sx + half_w - 20 * SC, sy + 46 * SC)], fill=(22, 30, 72))
-            draw.text((sx + 12 * SC, sy + 8 * SC), sec_title, font=fn_hdr, fill=ACCENT)
-
-            row_y = sy + 52
-            if not sec_rows:
-                draw.text((sx + 20, row_y + 10), "No data yet", font=fn_reg, fill=GRAY)
-            else:
-                for ri, d in enumerate(sec_rows[:5]):
-                    mc = medal_colors[ri]
-                    draw.text((sx + 12, row_y + 4), f"#{ri+1}", font=fn_bold, fill=mc)
-                    name = str(d.get("name", "?"))[:16]
-                    draw.text((sx + 60, row_y + 4), name, font=fn_bold, fill=WHITE)
-                    draw.text((sx + 60, row_y + 28), f"{d['total']} {unit}", font=fn_sm, fill=GREEN)
-                    row_y += 50
-
-        # Footer
-        draw.rectangle([(0, H - 36 * SC), (W, H)], fill=(14, 18, 44))
-        draw.text((20 * SC, H - 28 * SC), "CRICOVERSE TOURNAMENT STATS", font=fn_sm, fill=GRAY)
-
-        bio = BytesIO()
-        img.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-    except Exception as e:
-        logger.error(f"Tour leaderboard image error: {e}")
-        return None
-
-
-def generate_momentum_image(match) -> Optional[BytesIO]:
-    """
-    ⚡ GOD-TIER 4K Momentum Dashboard → Ultra Enhanced:
-    • Glassmorphism panel cards with rounded corners & glows
-    • Dual neon arc speedometers with gradient fills
-    • Win-probability iridescent semicircle gauge  
-    • Smooth Last-6-balls animated-style hex tiles
-    • Animated neon grid background
-    • Cricora branding footer with particle dots
-    """
-    try:
-        import math
+        import os
+        from PIL import Image, ImageDraw, ImageFont, ImageOps
         from io import BytesIO
-        from PIL import Image, ImageDraw
 
-        W, H = _IMG4K_W, _IMG4K_H
-
-        # ══════════════════════════════════════════════════════
-        # GOD-TIER BACKGROUND → deep space aurora gradient
-        # ══════════════════════════════════════════════════════
-        img = Image.new('RGB', (W, H), (4, 5, 14))
-        _draw_multi_gradient_bg(img, [
-            (4,   5,  14),
-            (8,  12,  32),
-            (6,   9,  26),
-            (10, 14,  38),
-            (5,   8,  20),
-        ])
-        draw = ImageDraw.Draw(img)
-
-        # Subtle neon grid lines
-        for gx in range(0, W, 240):
-            draw.line([(gx, 0), (gx, H)], fill=(20, 30, 60), width=1)
-        for gy in range(0, H, 240):
-            draw.line([(0, gy), (W, gy)], fill=(20, 30, 60), width=1)
-
-        # Diagonal accent streaks
-        for sx in range(-H, W, 400):
-            draw.line([(sx, 0), (sx+H, H)], fill=(25, 35, 80), width=2)
-
-        # ── Enhanced Palette for Clear Visibility ──
-        C_BG      = (4,   5,  14)
-        C_BORDER  = (45, 60, 120)
-        C_BORDER2 = (80, 100, 200)
-        C_GOLD    = (255, 215, 70)   # Brighter Gold
-        C_WHITE   = (245, 250, 255)  # Crisper White
-        C_GRAY    = (160, 175, 210)
-        C_X       = (70, 185, 255)   # Team X – Electric Blue
-        C_X2      = (140, 220, 255)
-        C_Y       = (255, 85, 130)   # Team Y – Hot Pink
-        C_Y2      = (255, 150, 185)
-        C_GREEN   = (55, 240, 130)
-        C_RED     = (240, 70, 80)
-        C_CYAN    = (0, 230, 230)
-        C_PURPLE  = (190, 90, 255)
-
-        tx_name = match.team_x.name[:16]
-        ty_name = match.team_y.name[:16]
-
-        # ══════════════════════════════════════════════════════
-        # PREMIUM HEADER → glassmorphism card with glow border
-        # ══════════════════════════════════════════════════════
-        _draw_rounded_rect(draw, (40, 18, W-40, 200), radius=30, fill=(18, 24, 58))
-        _draw_rounded_rect(draw, (40, 18, W-40, 200), radius=30, outline=C_BORDER2, width=4)
+        TEMPLATE_PATH = "mystats_template.jpg"
+        if not os.path.exists(TEMPLATE_PATH):
+            # Fallback: try upload location
+            TEMPLATE_PATH = "/home/cricoverse/mystats_template.jpg"
         
-        # Gold accent line under header
-        for lx in range(40, W-40):
-            t = (lx - 40) / (W - 80)
-            r = int(C_GOLD[0]*t + C_PURPLE[0]*(1-t)) if t > 0.5 else int(C_PURPLE[0]*t*2 + C_X[0]*(1-t*2))
-            g = int(C_GOLD[1]*t + C_PURPLE[1]*(1-t)) if t > 0.5 else int(C_PURPLE[1]*t*2 + C_X[1]*(1-t*2))
-            b = int(C_GOLD[2]*t + C_PURPLE[2]*(1-t)) if t > 0.5 else int(C_PURPLE[2]*t*2 + C_X[2]*(1-t*2))
-            draw.point((lx, 198), fill=(r, g, b))
-        draw.line([(40, 198), (W-40, 198)], fill=C_GOLD, width=3)
-
-        f_hdr  = _get_font(True,  128)
-        f_sub  = _get_font(False, 76)
-        f_med  = _get_font(True,  92)
-        f_sml  = _get_font(False, 66)
-        f_xs   = _get_font(False, 54)
-        f_num  = _get_font(True,  148)
-
-        _draw_text_centered_glow(draw, "⚡  MOMENTUM  DASHBOARD", W//2, 28, f_hdr, C_GOLD, glow_color=(255, 160, 0))
-        _draw_text_centered_glow(draw, f"{tx_name}  ⚔  {ty_name}", W//2, 110, f_sub, C_GRAY)
-
-        # ═══════════════════════════════
-        # 1.  NEON ARC SPEEDOMETERS (Shifted up to center the layout)
-        # ═══════════════════════════════
-        def calc_momentum_score(team_name, ball_log):
-            score = 0
-            for b in ball_log[-24:]:
-                bt = b.get('batting_team', '')
-                r  = b.get('runs', 0)
-                w  = b.get('wicket', False) or b.get('is_wicket', False)
-                wd = b.get('wide', False)
-                nb = b.get('noball', False)
-                dot = (r == 0 and not wd and not nb)
-                if bt == team_name:
-                    score += r
-                    if r == 6: score += 8
-                    elif r == 4: score += 4
-                    if dot: score -= 2
-                    if w: score -= 20
-                else:
-                    if w: score += 15
-                    if dot: score += 3
-                    if r == 6: score -= 6
-            return score
-
-        raw_x = calc_momentum_score(match.team_x.name, match.ball_by_ball_log)
-        raw_y = calc_momentum_score(match.team_y.name, match.ball_by_ball_log)
-        mx = max(abs(raw_x), abs(raw_y), 1)
-        pct_x = max(0, min(100, 50 + raw_x / mx * 50))
-        pct_y = max(0, min(100, 50 + raw_y / mx * 50))
-
-        def draw_speedometer(cx, cy, radius, pct, team_color, team_color2, team_name, raw_score):
-            sa, ea = 200, 340  
-            span = ea - sa     
-
-            # Glass card behind speedometer
-            card_pad = radius + 180
-            _draw_rounded_rect(draw,
-                (cx - card_pad, cy - card_pad, cx + card_pad, cy + card_pad // 2 + 220),
-                radius=50, fill=(12, 16, 38))
-            _draw_rounded_rect(draw,
-                (cx - card_pad, cy - card_pad, cx + card_pad, cy + card_pad // 2 + 220),
-                radius=50, outline=team_color, width=4)
-
-            # Track arc (dark)
-            draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)], sa, ea, fill=(28, 35, 80), width=52)
-
-            # Filled neon arc
-            fill_end = sa + span * pct / 100
-            segs = max(2, int(span * pct / 100 // 5))
-            if segs > 1:
-                seg_span = (fill_end - sa) / segs
-                for si in range(segs):
-                    t = si / max(segs-1, 1)
-                    rc = int(team_color[0] + t*(team_color2[0]-team_color[0]))
-                    gc = int(team_color[1] + t*(team_color2[1]-team_color[1]))
-                    bc = int(team_color[2] + t*(team_color2[2]-team_color[2]))
-                    seg_s = sa + si * seg_span
-                    seg_e = sa + (si+1) * seg_span + 1
-                    draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)],
-                             seg_s, seg_e, fill=(rc, gc, bc), width=58)
-            else:
-                draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)],
-                         sa, fill_end, fill=team_color, width=58)
-
-            # Needle with glow
-            needle_angle = math.radians(sa + span * pct / 100)
-            needle_len = radius - 70
-            nx = cx + int(needle_len * math.cos(needle_angle))
-            ny = cy + int(needle_len * math.sin(needle_angle))
-            
-            draw.line([(cx, cy+4), (nx+4, ny+4)], fill=(0,0,0), width=12) # Shadow
-            draw.line([(cx, cy), (nx, ny)], fill=C_WHITE, width=14)       # Needle
-            draw.line([(cx, cy), (nx, ny)], fill=team_color2, width=4)    # Glow
-            
-            draw.ellipse([(cx-28, cy-28), (cx+28, cy+28)], fill=C_WHITE)
-            draw.ellipse([(cx-16, cy-16), (cx+16, cy+16)], fill=team_color)
-
-            # Tick marks
-            for tick_p in [0, 20, 40, 60, 80, 100]:
-                ta = math.radians(sa + span * tick_p / 100)
-                is_major = tick_p % 40 == 0
-                t_in  = radius + (15 if is_major else 25)
-                t_out = radius + (75 if is_major else 55)
-                tx1 = cx + int(t_in  * math.cos(ta))
-                ty1 = cy + int(t_in  * math.sin(ta))
-                tx2 = cx + int(t_out * math.cos(ta))
-                ty2 = cy + int(t_out * math.sin(ta))
-                draw.line([(tx1, ty1), (tx2, ty2)], fill=C_BORDER2 if is_major else C_BORDER, width=8 if is_major else 4)
-
-            # Labels
-            pct_color = C_GREEN if pct < 40 else C_GOLD if pct < 70 else C_RED
-            _draw_text_centered_glow(draw, f"{pct:.0f}", cx, cy - 100, f_num, pct_color, glow_color=pct_color)
-            _draw_text_centered(draw, team_name, cx, cy + 60, f_med, team_color)
-            _draw_text_centered(draw, "MOMENTUM SCORE", cx, cy - 220, f_xs, C_GRAY)
-
-            # Score badge
-            badge_txt = f"+{raw_score}" if raw_score >= 0 else str(raw_score)
-            _draw_rounded_rect(draw, (cx-120, cy+160, cx+120, cy+230), radius=20, fill=team_color)
-            _draw_text_centered(draw, badge_txt, cx, cy + 168, f_sml, (10, 10, 20))
-
-        R = 510
-        # ADJUSTED Y-COORDINATES (moved from 1050 to 900)
-        draw_speedometer(720,  900, R, pct_x, C_X,  C_X2,  tx_name, raw_x)
-        draw_speedometer(3120, 900, R, pct_y, C_Y,  C_Y2,  ty_name, raw_y)
-
-        # ═══════════════════════════════
-        # 2.  WIN PROBABILITY GAUGE
-        # ═══════════════════════════════
-        def win_prob(team, opp):
-            if match.innings == 1:
-                rr_t = team.score / max(team.balls / 6, 0.1)
-                rr_o = opp.score / max(opp.balls / 6, 0.1) if opp.balls > 0 else rr_t
-                base = 50 + (rr_t - rr_o) * 5
-                wkt_pen = team.wickets * 2
-                return max(5, min(95, base - wkt_pen))
-            else:
-                needed = max(0, match.target - team.score)
-                bl = (match.total_overs * 6) - (opp.balls)
-                if bl <= 0:
-                    return 95 if team.score >= match.target else 5
-                rrr = needed / bl * 6
-                crr = team.score / max(team.balls / 6, 0.1)
-                base = 50 + (crr - rrr) * 6
-                wkt_pen = team.wickets * 3
-                return max(5, min(95, base - wkt_pen))
-
-        bat_team  = match.current_batting_team  or match.team_x
-        bowl_team = match.current_bowling_team or match.team_y
-        wp_bat  = win_prob(bat_team, bowl_team)
-        wp_bowl = 100 - wp_bat
-
-        # ADJUSTED Y-COORDINATES (moved from 960 to 900)
-        gcx, gcy = W // 2, 900
-        gr = 500
-
-        # Glass card for gauge
-        _draw_rounded_rect(draw, (gcx-gr-120, gcy-gr-80, gcx+gr+120, gcy+220), radius=50, fill=(12, 16, 38))
-        _draw_rounded_rect(draw, (gcx-gr-120, gcy-gr-80, gcx+gr+120, gcy+220), radius=50, outline=C_BORDER, width=3)
-
-        # Track
-        draw.arc([(gcx-gr, gcy-gr), (gcx+gr, gcy+gr)], 180, 360, fill=(28, 35, 80), width=68)
-
-        # X team arc (electric blue)
-        x_degrees = int(180 * wp_bat / 100)
-        for seg in range(x_degrees):
-            t = seg / max(x_degrees, 1)
-            rc = int(C_X[0] + t*(C_X2[0]-C_X[0]))
-            gc2 = int(C_X[1] + t*(C_X2[1]-C_X[1]))
-            bc = int(C_X[2] + t*(C_X2[2]-C_X[2]))
-            draw.arc([(gcx-gr, gcy-gr), (gcx+gr, gcy+gr)], 180+seg, 181+seg, fill=(rc, gc2, bc), width=75)
-
-        # Y team arc (hot pink)
-        y_start = 180 + x_degrees
-        for seg in range(180 - x_degrees):
-            t = seg / max(180 - x_degrees, 1)
-            rc = int(C_Y[0] + t*(C_Y2[0]-C_Y[0]))
-            gc2 = int(C_Y[1] + t*(C_Y2[1]-C_Y[1]))
-            bc = int(C_Y[2] + t*(C_Y2[2]-C_Y[2]))
-            draw.arc([(gcx-gr, gcy-gr), (gcx+gr, gcy+gr)], y_start+seg, y_start+seg+1, fill=(rc, gc2, bc), width=75)
-
-        draw.ellipse([(gcx-20, gcy-20), (gcx+20, gcy+20)], fill=C_WHITE)
-
-        # Labels
-        _draw_text_centered_glow(draw, "WIN PROBABILITY", gcx, gcy-gr-60, f_med, C_GOLD, glow_color=(180,120,0))
-        _draw_text_centered(draw, f"{bat_team.name[:12]}", gcx-420, gcy-110, f_med, C_X)
-        _draw_text_centered_glow(draw, f"{wp_bat:.0f}%", gcx-420, gcy-30, f_num, C_X, glow_color=C_X)
-        _draw_text_centered(draw, f"{bowl_team.name[:12]}", gcx+420, gcy-110, f_med, C_Y)
-        _draw_text_centered_glow(draw, f"{wp_bowl:.0f}%", gcx+420, gcy-30, f_num, C_Y, glow_color=C_Y)
-        draw.line([(gcx-gr-100, gcy), (gcx+gr+100, gcy)], fill=C_BORDER2, width=5)
-
-        # ═══════════════════════════════
-        # 3.  LAST 6 BALLS (Shifted up neatly)
-        # ═══════════════════════════════
-        # ADJUSTED Y-COORDINATES (moved from 1950 to 1550)
-        row_y = 1550
-        _draw_rounded_rect(draw, (0, row_y, W, row_y+260), radius=0, fill=(10, 14, 32))
-        draw.line([(0, row_y), (W, row_y)], fill=C_BORDER2, width=4)
-
-        l6 = match.ball_by_ball_log[-6:] if len(match.ball_by_ball_log) >= 6 else match.ball_by_ball_log
-        tile_r = 90
-        tile_gap = 240
-        start_cx = 280
-        _draw_text_centered(draw, "LAST 6 BALLS", start_cx + (len(l6)-1)*tile_gap//2 + 80, row_y+15, f_xs, C_GRAY)
-
-        for idx, b in enumerate(l6):
-            r  = b.get('runs', 0)
-            w  = b.get('wicket', False) or b.get('is_wicket', False)
-            wd = b.get('wide', False)
-            nb = b.get('noball', False)
-            
-            if w:    bc, lbl, glow = (200,40,40),   'W',   (255, 60, 60)
-            elif wd: bc, lbl, glow = (200,170,0),   'Wd',  (255, 220, 0)
-            elif nb: bc, lbl, glow = (180,100,0),   'Nb',  (230, 140, 0)
-            elif r==6: bc, lbl, glow = (130,0,240), '6',   (180, 80, 255)
-            elif r==4: bc, lbl, glow = (0,120,240), '4',   (70, 185, 255)
-            elif r==0: bc, lbl, glow = (25,30,65),  '·',   (40, 50, 100)
-            else:    bc, lbl, glow = (30,160,70),   str(r),(50, 220, 110)
-
-            bx = start_cx + idx * tile_gap
-            by = row_y + 140
-
-            # Glow circle
-            for gr2 in range(40, 0, -10):
-                ga = gr2 / 40 * 0.4
-                gc3 = tuple(max(0, min(255, int(glow[i]*ga))) for i in range(3))
-                if any(c > 0 for c in gc3):
-                    draw.ellipse([(bx-tile_r-gr2, by-tile_r-gr2), (bx+tile_r+gr2, by+tile_r+gr2)], fill=gc3)
-
-            # Tile background & highlight
-            draw.ellipse([(bx-tile_r, by-tile_r), (bx+tile_r, by+tile_r)], fill=bc)
-            draw.ellipse([(bx-tile_r+10, by-tile_r+10), (bx+tile_r-10, by-tile_r+20)],
-                         fill=tuple(min(255, c+40) for c in bc))
-            
-            # Label
-            bbox = draw.textbbox((0,0), lbl, font=f_med)
-            lw, lh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            draw.text((bx - lw//2, by - lh//2 - 5), lbl, font=f_med, fill=C_WHITE)
-
-        # Current score stat strip
-        bat = match.current_batting_team or match.team_x
-        bwl = match.current_bowling_team or match.team_y
-        ovs = format_overs(bat.balls) if bat else "→"
-        rr  = round(bat.score / max(bat.balls / 6, 0.1), 2) if bat.balls > 0 else 0.0
-        
-        stats_txt = f"SCORE  {bat.score}/{bat.wickets}  ({ovs} ov)    RR {rr}"
-        if match.innings == 2 and match.target > 0:
-            needed = match.target - bat.score
-            bl = (match.total_overs * 6) - bwl.balls
-            rrr = round(needed/bl*6, 2) if bl > 0 else 0
-            stats_txt += f"    NEED  {needed}  OFF  {bl}  (RRR {rrr})"
-            
-        _draw_text_centered_glow(draw, stats_txt, W // 2 + 650, row_y + 120, f_med, C_WHITE)
-
-        # ═══════════════════════════════
-        # 4.  PREMIUM FOOTER with Branding
-        # ═══════════════════════════════
-        # ADJUSTED Y-COORDINATES (moved from 2220 to 1950)
-        footer_y = 1950
-        for fi in range(60):
-            t = fi / 60
-            draw.line([(0, footer_y+fi), (W, footer_y+fi)], fill=(int(8+t*4), int(10+t*4), int(20+t*8)))
-        draw.line([(0, footer_y), (W, footer_y)], fill=C_GOLD, width=3)
-
-        # Particle dots decoration
-        import random as _rnd
-        _rnd.seed(42)
-        for _ in range(80):
-            px2 = _rnd.randint(0, W)
-            py2 = _rnd.randint(footer_y+5, footer_y+55)
-            pr  = _rnd.randint(2, 6)
-            pc  = _rnd.choice([C_GOLD, C_X, C_Y, C_CYAN, C_PURPLE])
-            draw.ellipse([(px2-pr, py2-pr), (px2+pr, py2+pr)], fill=pc)
-
-        # Updated Branding text
-        _draw_text_centered_glow(draw, f"⚡ Cricora  |  {match.group_name[:30]}  |  Ultra Analytics",
-                                 W//2, footer_y + 5, f_xs, C_GRAY)
-
-        # Optionally crop the image so you don't have empty space at the very bottom
-        img = img.crop((0, 0, W, footer_y + 60))
-
-        bio = BytesIO()
-        img.save(bio, 'PNG', optimize=False)
-        bio.seek(0)
-        return bio
-
-    except Exception as e:
-        logger.error(f"generate_momentum_image error: {e}")
-        import traceback; logger.error(traceback.format_exc())
-        return None
-
-# ─────────────────────────────────────────────────────────────────
-#  STRIKE MAP  (4K wagon-wheel style)
-# ─────────────────────────────────────────────────────────────────
-def generate_strikemap_image(match) -> Optional[BytesIO]:
-    """
-    🗺️ GOD-TIER 4K Wagon-Wheel Strike Map → Ultra Enhanced:
-    • Lush premium cricket field with realistic texture rings & thick boundary rope
-    • Intense neon glowing spoke lines per ball with golden-angle spread
-    • Premium Glassmorphism stats panel with perfectly aligned typography
-    • Modern rounded legend badges with immersive glows
-    • Crease markings, pitch highlight, compass rose
-    • Cricora premium footer
-    """
-    try:
-        import math, hashlib
-        from io import BytesIO
-        from PIL import Image, ImageDraw
-
-        W, H = _IMG4K_W, _IMG4K_H
-
-        # ── Premium deep-space background ──
-        img = Image.new('RGB', (W, H), (4, 5, 14))
-        _draw_multi_gradient_bg(img, [
-            (4,   6,  16),
-            (8,  12,  32),
-            (5,   8,  22),
-            (10, 15,  40),
-        ])
-        draw = ImageDraw.Draw(img)
-
-        # Subtle dynamic grid
-        for gx in range(0, W, 240):
-            draw.line([(gx, 0), (gx, H)], fill=(18, 26, 55), width=1)
-        for gy in range(0, H, 240):
-            draw.line([(0, gy), (W, gy)], fill=(18, 26, 55), width=1)
-
-        # ── Ultimate Color Palette ──
-        C_BG      = (4,   5,  14)
-        C_PANEL   = (12, 16, 38)
-        C_GLASS   = (18, 24, 55)
-        C_BORDER  = (45, 60, 120)
-        C_BORDER2 = (80, 120, 220) # Brighter border accent
-        C_GOLD    = (255, 215, 70)
-        C_GOLD2   = (255, 175, 30)
-        C_WHITE   = (245, 250, 255)
-        C_GRAY    = (160, 175, 210)
-        C_GREEN   = (55, 240, 120)
-        C_FIELD   = (10, 42, 15)   # Richer field green
-        C_FIELD2  = (16, 58, 22)
-        C_PITCH   = (158, 128, 82)
-        C_PITCH2  = (178, 148, 100)
-        
-        # Action Colors (Neon Enhanced)
-        C_DOT     = (70,  75, 115)
-        C_4       = (30, 160, 255)
-        C_4g      = (100, 200, 255)
-        C_6       = (180, 70, 255)
-        C_6g      = (220, 140, 255)
-        C_WKT     = (240, 50, 50)
-        C_WKTg    = (255, 110, 110)
-        C_SINGLE  = (40, 220, 100)
-        C_2_3     = (210, 210, 50)
-
-        f_hdr  = _get_font(True,  128)
-        f_sub  = _get_font(False, 76)
-        f_med  = _get_font(True,  92)
-        f_sml  = _get_font(False, 66)
-        f_xs   = _get_font(False, 54)
-        f_num  = _get_font(True,  168)
-        f_tiny = _get_font(False, 44)
-
-        # ══════════════════════════════════════════════════════
-        # PREMIUM HEADER 
-        # ══════════════════════════════════════════════════════
-        _draw_rounded_rect(draw, (40, 18, W-40, 200), radius=35, fill=(16, 22, 52))
-        _draw_rounded_rect(draw, (40, 18, W-40, 200), radius=35, outline=C_BORDER2, width=4)
-        draw.line([(40, 198), (W-40, 198)], fill=C_GOLD, width=4)
-
-        bat_team  = match.current_batting_team  or match.batting_first or match.team_x
-        bowl_team = match.current_bowling_team or match.team_y
-        
-        _draw_text_centered_glow(draw, "🏏  STRIKE  MAP", W//2, 22, f_hdr, C_GOLD, glow_color=(180, 120, 0))
-        _draw_text_centered(draw,
-            f"{bat_team.name}  batting  ·  {format_overs(bat_team.balls)} overs  ·  {bat_team.score}/{bat_team.wickets}",
-            W//2, 110, f_sub, C_GRAY)
-
-        # ══════════════════════════════════════════════════════
-        # PREMIUM WAGON WHEEL (Left 60%)
-        # ══════════════════════════════════════════════════════
-        ww_cx = int(W * 0.37)
-        ww_cy = H // 2 + 50
-        field_r   = 900          # outer boundary
-        inner_r   = 270          # 30-yard circle
-        pitch_hw  = 48
-
-        # Outer boundary intense glow
-        for gr_glow in range(50, 0, -10):
-            ga = gr_glow / 50 * 0.35
-            gc = (int(30*ga), int(100*ga), int(40*ga))
-            draw.ellipse([(ww_cx-field_r-gr_glow, ww_cy-field_r-gr_glow),
-                          (ww_cx+field_r+gr_glow, ww_cy+field_r+gr_glow)],
-                         outline=gc, width=4)
-
-        # Field → realistic alternating stripe rings
-        for ring_r in range(field_r, 0, -60):
-            ring_idx = (field_r - ring_r) // 60
-            fc = C_FIELD if ring_idx % 2 == 0 else C_FIELD2
-            draw.ellipse([(ww_cx-ring_r, ww_cy-ring_r), (ww_cx+ring_r, ww_cy+ring_r)], fill=fc)
-
-        # Boundary rope (Thick and 3D effect)
-        draw.ellipse([(ww_cx-field_r, ww_cy-field_r), (ww_cx+field_r, ww_cy+field_r)], outline=(240, 240, 240), width=12)
-        draw.ellipse([(ww_cx-field_r+8, ww_cy-field_r+8), (ww_cx+field_r-8, ww_cy+field_r-8)], outline=(160, 160, 160), width=4)
-
-        # 30-yard circle
-        draw.ellipse([(ww_cx-inner_r, ww_cy-inner_r), (ww_cx+inner_r, ww_cy+inner_r)], outline=(220, 220, 220), width=6)
-        draw.ellipse([(ww_cx-inner_r+6, ww_cy-inner_r+6), (ww_cx+inner_r-6, ww_cy+inner_r-6)], outline=(120, 150, 120), width=3)
-
-        # Pitch strip with texture
-        draw.rectangle([(ww_cx-pitch_hw, ww_cy-inner_r+40), (ww_cx+pitch_hw, ww_cy+inner_r-40)], fill=C_PITCH)
-        for pi in range(ww_cy-inner_r+40, ww_cy+inner_r-40, 30):
-            draw.line([(ww_cx-pitch_hw, pi), (ww_cx+pitch_hw, pi)], fill=C_PITCH2, width=2)
-
-        # Crease lines (Crisper)
-        draw.line([(ww_cx-pitch_hw-25, ww_cy-inner_r+90), (ww_cx+pitch_hw+25, ww_cy-inner_r+90)], fill=C_WHITE, width=10)
-        draw.line([(ww_cx-pitch_hw-25, ww_cy+inner_r-90), (ww_cx+pitch_hw+25, ww_cy+inner_r-90)], fill=C_WHITE, width=10)
-        draw.line([(ww_cx-pitch_hw-10, ww_cy-inner_r+120), (ww_cx+pitch_hw+10, ww_cy-inner_r+120)], fill=(210, 210, 210), width=6)
-
-        # ── Ultimate Neon Spokes ──
-        balls = match.ball_by_ball_log or []
-        for idx, b in enumerate(balls):
-            r_val = b.get('runs', 0)
-            w     = b.get('wicket', False) or b.get('is_wicket', False)
-            wd    = b.get('wide', False)
-            nb    = b.get('noball', False)
-
-            if w:
-                color, glow_c, line_w, spoke_r = C_WKT, C_WKTg, 18, inner_r * 0.82
-            elif r_val == 6:
-                color, glow_c, line_w, spoke_r = C_6, C_6g, 22, field_r * 0.98
-            elif r_val == 4:
-                color, glow_c, line_w, spoke_r = C_4, C_4g, 20, field_r * 0.88
-            elif r_val in (2, 3):
-                color, glow_c, line_w, spoke_r = C_2_3, (240,240,100), 14, field_r * 0.58
-            elif r_val == 1:
-                color, glow_c, line_w, spoke_r = C_SINGLE, (100,255,140), 10, field_r * 0.44
-            else:
-                color, glow_c, line_w, spoke_r = C_DOT, (90, 100, 160), 8, inner_r * 0.55
-
-            seed = idx * 37 + r_val * 13 + (7 if w else 0)
-            angle_deg = (seed * 137.5) % 360
-            angle_rad = math.radians(angle_deg - 90)
-
-            ex = ww_cx + int(spoke_r * math.cos(angle_rad))
-            ey = ww_cy + int(spoke_r * math.sin(angle_rad))
-
-            # Layered Neon Glow Effect
-            for gw in range(8, 0, -2):
-                ga = gw / 8 * 0.4
-                gc2 = tuple(max(0, min(255, int(glow_c[i]*ga))) for i in range(3))
-                if any(c > 0 for c in gc2):
-                    draw.line([(ww_cx, ww_cy), (ex, ey)], fill=gc2, width=line_w + gw*3)
-            # Bright Core
-            draw.line([(ww_cx, ww_cy), (ex, ey)], fill=color, width=line_w)
-
-        # Batsman dot at centre (gold star effect)
-        draw.ellipse([(ww_cx-30, ww_cy-30), (ww_cx+30, ww_cy+30)], fill=C_GOLD)
-        draw.ellipse([(ww_cx-16, ww_cy-16), (ww_cx+16, ww_cy+16)], fill=(255, 255, 220))
-
-        # Compass rose labels with glows
-        for label, angle, color in [("N", -90, C_GRAY), ("E", 0, C_GRAY), ("S", 90, C_GRAY), ("W", 180, C_GRAY)]:
-            ax = ww_cx + int((field_r+80) * math.cos(math.radians(angle)))
-            ay = ww_cy + int((field_r+80) * math.sin(math.radians(angle)))
-            _draw_text_centered(draw, label, ax, ay-32, f_xs, color)
-
-        # ══════════════════════════════════════════════════════
-        # PREMIUM GLASSMORPHISM STATS PANEL (Right 38%)
-        # ══════════════════════════════════════════════════════
-        px1 = int(W * 0.66)
-        px2 = W - 80
-        py1 = 220
-        py2 = H - 240 # Adjusted for legend space
-
-        # Panel Background & Border
-        _draw_rounded_rect(draw, (px1-30, py1-30, px2+30, py2+30), radius=50, fill=(10, 14, 35))
-        _draw_rounded_rect(draw, (px1-30, py1-30, px2+30, py2+30), radius=50, outline=C_BORDER, width=4)
-        _draw_rounded_rect(draw, (px1-30, py1-30, px2+30, py1+140), radius=50, fill=(20, 28, 62)) # Header area
-        
-        pcx = (px1 + px2) // 2
-        _draw_text_centered_glow(draw, "MATCH STATISTICS", pcx, py1-10, f_med, C_GOLD, glow_color=(140, 90, 0))
-
-        # Stats Calculation
-        total_balls = len(balls)
-        sixes       = sum(1 for b in balls if b.get('runs',0) == 6)
-        fours       = sum(1 for b in balls if b.get('runs',0) == 4)
-        dots        = sum(1 for b in balls if b.get('runs',0)==0 and not b.get('wide') and not b.get('noball'))
-        wickets     = sum(1 for b in balls if b.get('wicket') or b.get('is_wicket'))
-        singles     = sum(1 for b in balls if b.get('runs',0) == 1)
-        twos_threes = sum(1 for b in balls if b.get('runs',0) in (2,3))
-        
-        boundaries_pct = round((fours + sixes) / max(total_balls, 1) * 100, 1)
-        dot_pct        = round(dots / max(total_balls, 1) * 100, 1)
-
-        striker = bat_team.players[bat_team.current_batsman_idx] if bat_team.current_batsman_idx is not None else None
-        non_striker = bat_team.players[bat_team.current_non_striker_idx] if bat_team.current_non_striker_idx is not None else None
-
-        rows = [
-            ("TEAM SCORE",   f"{bat_team.score}/{bat_team.wickets}", C_WHITE),
-            ("OVERS",        f"{format_overs(bat_team.balls)} / {match.total_overs}", C_WHITE),
-            ("RUN RATE",     f"{bat_team.score/max(bat_team.balls/6,0.1):.2f}", C_GREEN),
-            (None, None, None),
-            ("TOTAL BALLS",  str(total_balls), C_WHITE),
-            ("SIXES  🚀",    str(sixes),   C_6),
-            ("FOURS  🔥",    str(fours),   C_4),
-            ("SINGLES",      str(singles), C_SINGLE),
-            ("2s & 3s",      str(twos_threes), C_2_3),
-            ("DOTS  ⚫",      f"{dots}  ({dot_pct}%)", C_GRAY),
-            ("WICKETS  ❌",  str(wickets), C_WKT),
-            (None, None, None),
-            ("BOUNDARY %",   f"{boundaries_pct}%", C_GOLD),
-        ]
-        
-        if match.innings == 2 and match.target > 0:
-            needed2 = match.target - bat_team.score
-            bl_left = match.total_overs * 6 - bat_team.balls
-            rrr = round(needed2 / max(bl_left, 1) * 6, 2)
-            rows += [
-                (None, None, None),
-                ("TARGET",    str(match.target), C_GOLD),
-                ("NEEDED",    f"{needed2} off {bl_left}", C_WHITE),
-                ("REQ. RR",   str(rrr), C_WKT if rrr > 12 else C_GOLD if rrr > 8 else C_GREEN),
-            ]
-
-        row_h = 92
-        cur_y = py1 + 155
-        for label, val, col in rows:
-            if label is None:
-                draw.line([(px1+10, cur_y+15), (px2-10, cur_y+15)], fill=C_BORDER, width=2)
-                cur_y += 45
-                continue
-            draw.text((px1+35, cur_y), label, font=f_sml, fill=C_GRAY)
-            bbox = draw.textbbox((0, 0), val, font=f_med)
-            vw = bbox[2] - bbox[0]
-            draw.text((px2-vw-25, cur_y-8), val, font=f_med, fill=col)
-            cur_y += row_h
-
-        if striker:
-            sy = cur_y + 20
-            draw.line([(px1+10, sy), (px2-10, sy)], fill=C_BORDER, width=2)
-            sy += 40
-            _draw_text_centered(draw, "AT THE CREASE", pcx, sy, f_xs, C_GRAY)
-            sy += 75
-            sr_sr = f"{striker.get_strike_rate():.0f}"
-            draw.text((px1+35, sy),    f"★ {striker.first_name[:14]}", font=f_sml, fill=C_WHITE)
-            draw.text((px1+35, sy+75), f"   {striker.runs} ({striker.balls_faced}b)  SR {sr_sr}", font=f_xs, fill=C_GREEN)
-            if non_striker:
-                draw.text((px1+35, sy+155), f"  {non_striker.first_name[:14]}", font=f_sml, fill=C_GRAY)
-                draw.text((px1+35, sy+230), f"   {non_striker.runs} ({non_striker.balls_faced}b)", font=f_xs, fill=C_GRAY)
-
-        # ══════════════════════════════════════════════════════
-        # MODERN GLOW LEGEND ROW (UI Button Style)
-        # ══════════════════════════════════════════════════════
-        legend_y = H - 195
-        draw.line([(0, legend_y), (W, legend_y)], fill=C_BORDER2, width=4)
-        
-        items2 = [
-            ("SIX", C_6, (210,130,255)), 
-            ("FOUR", C_4, (120,195,255)), 
-            ("1-3", C_SINGLE, (80,240,120)), 
-            ("DOT", C_DOT, (65,70,130)), 
-            ("WICKET", C_WKT, (255,100,100))
-        ]
-        
-        lx3 = 180
-        badge_w = 140
-        for lbl2, lc2, lg2 in items2:
-            # Subtle glow behind badge
-            for gr4 in range(30, 0, -10):
-                ga3 = gr4/30 * 0.25
-                gc5 = tuple(max(0, min(255, int(lg2[i]*ga3))) for i in range(3))
-                if any(c > 0 for c in gc5):
-                    _draw_rounded_rect(draw, (lx3-gr4, legend_y+35-gr4//2, lx3+badge_w+gr4, legend_y+100+gr4//2), radius=15, fill=gc5)
-            
-            # Badge Fill & Text
-            _draw_rounded_rect(draw, (lx3, legend_y+35, lx3+badge_w, legend_y+100), radius=15, fill=lc2)
-            _draw_text_centered(draw, lbl2, lx3 + badge_w//2, legend_y+48, f_xs, (10,10,20))
-            lx3 += 380
-
-        # ══════════════════════════════════════════════════════
-        # CRICORA BRANDING FOOTER
-        # ══════════════════════════════════════════════════════
-        _draw_text_centered_glow(draw, f"⚡ Cricoverse  |  {match.group_name[:30]}  |  Strike Analytics",
-                                  W//2, H-60, f_xs, C_GRAY)
-
-        bio = BytesIO()
-        img.save(bio, 'PNG', optimize=False)
-        bio.seek(0)
-        return bio
-
-    except Exception as e:
-        logger.error(f"generate_strikemap_image error: {e}")
-        import traceback; logger.error(traceback.format_exc())
-        return None
-
-
-# ═══════════════════════════════════════════════════════════════
-# 🎤 MOM ACCEPTANCE SPEECH GENERATOR
-# ═══════════════════════════════════════════════════════════════
-_MOM_SPEECHES = [
-    "First of all, I'd like to thank my fingers for being so talented. "
-    "The bowlers tried everything → fast balls, slow balls, even confused balls → "
-    "and honestly? I felt bad for them. Just a little. 🙏",
-
-    "I want to dedicate this award to my phone screen, because without you, "
-    "I couldn't have sent those numbers in DM. Also to the bowlers → you were "
-    "almost threatening. Almost. 😂",
-
-    "Honestly, I had no idea what I was doing. I was just pressing numbers and "
-    "hoping for the best. Turns out 'hope' is a valid cricket strategy. "
-    "Thank you, random number generation! 🎲",
-
-    "To the opposing team → you gave your best. Your best just wasn't good enough today. "
-    "No offence. Okay, a little offence. That's how cricket works. 💪",
-
-    "People ask me what my secret is. I eat well, I sleep well, and I pick numbers "
-    "that the bowler doesn't expect. Simple. Also I got a bit lucky. Don't tell anyone. 🤫",
-
-    "I'd thank my captain but honestly they just said 'do your best.' "
-    "I did better than my best. Where's MY trophy? Oh wait, this IS my trophy. 🏆",
-
-    "Some say cricket is 90% mental and 10% skill. Today I had 200% mental and "
-    "the opposition had 0% clue what hit them. A privilege, truly. 🧠",
-
-    "My grandmother always said → 'beta, pick a number and believe in it.' "
-    "Today I believed in 6 three times in a row. Dadi was right. 🙌",
-
-    "I want to be humble about this but honestly I think I'm just built different. "
-    "Please quote me on that. Put it on a banner in the group. Thank you. 😎",
-
-    "The bowlers kept changing their strategy → first fast, then slow, then mixing it up. "
-    "I respected the effort. I did not, however, respect the results for them. 🫠",
-]
-
-def generate_mom_speech(player_name: str, runs: int, wickets: int, match_name: str = "") -> str:
-    """Generate a random funny MOM acceptance speech personalised to the player."""
-    speech = random.choice(_MOM_SPEECHES)
-    intro = f"🎤 <b>{player_name}'s Acceptance Speech</b>\n"
-    intro += "─────────────────\n\n"
-    intro += f"<i>\"{speech}\"</i>\n\n"
-    intro += "─────────────────\n"
-    intro += f"🌟 <b>Man of the Match</b> → {player_name}\n"
-    if runs > 0:
-        intro += f"🏏 {runs} runs"
-    if wickets > 0:
-        intro += f"  ⚾ {wickets} wickets"
-    return intro
-
-import random
-import math
-from datetime import datetime
-from io import BytesIO
-from typing import Optional
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
-
-# ═══════════════════════════════════════════════════════════════
-# 📰 NEWSPAPER HEADLINE TEMPLATES (EXPANDED)
-# ═══════════════════════════════════════════════════════════════
-_HEADLINE_TEMPLATES = [
-    # Original
-    "{winner} OBLITERATE {loser} BY {margin} → EXPERTS SUGGEST {loser} TAKE A LONG BREAK",
-    "{top_scorer} SINGLE-HANDEDLY DESTROYS {opponent_team} → {opponent_team} BOWLERS 'RECONSIDERING CAREER CHOICES'",
-    "STUNNING VICTORY: {winner} WIN BY {margin} → {loser} FANS SPOTTED LEAVING CHAT",
-    "{top_scorer}'S {runs}-RUN MASTERCLASS LEAVES {opponent_team} SHELL-SHOCKED AND SPEECHLESS",
-    "{winner} HAMMER {loser} → LOCAL SOURCES REPORT {loser} STILL PROCESSING WHAT HAPPENED",
-    "DOMINANT DISPLAY: {winner} CRUSH {loser} BY {margin} IN WHAT ANALYSTS CALL 'NOT EVEN CLOSE'",
-    "{top_scorer} TERRORISES BOWLERS WITH {runs} RUNS → {opponent_team} CAPTAIN 'UNAVAILABLE FOR COMMENT'",
-    "HISTORIC WIN: {winner} DEFEAT {loser} → {loser} BOWLERS SEEN WEEPING IN DRESSING ROOM",
-    
-    # New & Enhanced
-    "ABSOLUTE CARNAGE: {winner} DISMANTLE {loser} BY {margin} IN ONE-SIDED AFFAIR",
-    "{top_scorer} PUTS ON A CLINIC! {runs} RUNS OF PURE MAGIC DESTROY {opponent_team}",
-    "TOTAL ANNIHILATION: {winner} SHOW NO MERCY TO A HELPLESS {loser} SIDE",
-    "THE {winner} JUGGERNAUT ROLLS ON: {loser} FLATTENED BY {margin}",
-    "A DAY TO FORGET FOR {loser}: {top_scorer} RUNS RIOT IN BRUTAL {runs}-RUN ASSAULT",
-    "MASTERCLASS! {winner} HUMILIATE {loser} → OPPOSITION COACH CANCELS PRESS CONFERENCE",
-    "CLINICAL, RUTHLESS, UNSTOPPABLE: {winner} SEAL {margin} WIN OVER {loser}",
-    "WAKE UP CALL FOR {loser}: {top_scorer} EXPOSES BOWLING ATTACK WITH SENSATIONAL KNOCK",
-    "RECORD BOOKS REWRITTEN: {top_scorer} SCORES {runs} AS {winner} MOCK THE RUN CHASE",
-    "PITCH INVASION AVERTED BUT {loser} DREAMS CRUSHED BY {winner} IN {margin} ROUT"
-]
-
-_SUBHEADLINES = [
-    # Original
-    "Match report: The bowlers tried. They really did. It just wasn't enough.",
-    "Sources close to the losing team say 'we thought we had it' → they did not.",
-    "Post-match analysis: Outstanding batting, questionable bowling, peak entertainment.",
-    "The {loser} management has called an emergency meeting. Topic: Everything.",
-    "Witnesses describe the chase as 'one-sided' → the side that mattered won.",
-    "Cricket experts agree: {winner} played. {loser} also played. But differently.",
-    "More at 9: How {top_scorer} made the impossible look embarrassingly easy.",
-    
-    # New & Enhanced
-    "Statisticians are still crunching the numbers, but the eye-test confirms: {loser} were outclassed.",
-    "A tactical masterclass from {winner} leaves {loser} searching for answers and a new game plan.",
-    "Fans who left early missed nothing. The match was decided the moment {top_scorer} took guard.",
-    "In a game of fine margins, {winner} decided to ignore the margins and just take everything.",
-    "Damage control: {loser} captain insists 'there are positives to take' despite overwhelming evidence.",
-    "The scoreboard doesn't lie, but it might need to be checked for overheating after {top_scorer}'s innings.",
-    "Anatomy of a demolition: Breaking down how {winner} dismantled the {loser} game plan piece by piece.",
-    "Weather report: Heavy rain of boundaries courtesy of {top_scorer}. Umbrellas useless."
-]
-
-# Helper function to mock fonts if actual TTF files aren't provided
-
-
-def add_vintage_texture(img: Image.Image) -> Image.Image:
-    """Applies an ultimate level newspaper texture: grain, scanlines, and vignette."""
-    W, H = img.size
-    
-    # 1. Base aged paper color overlay
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    
-    # 2. Add horizontal print scanlines
-    for y in range(0, H, 3):
-        alpha = random.randint(5, 20)
-        draw.line([(0, y), (W, y)], fill=(150, 140, 120, alpha), width=1)
-        
-    # 3. Add paper impurities (speckles/grain)
-    for _ in range(8000):
-        x = random.randint(0, W - 1)
-        y = random.randint(0, H - 1)
-        alpha = random.randint(10, 40)
-        draw.point((x, y), fill=(80, 70, 50, alpha))
-        
-    # 4. Vignette effect (darker edges for aged look)
-    center_x, center_y = W / 2, H / 2
-    max_dist = math.hypot(center_x, center_y)
-    
-    for y in range(0, H, 5):
-        for x in range(0, W, 5):
-            dist = math.hypot(x - center_x, y - center_y)
-            intensity = (dist / max_dist) ** 2.5  # Non-linear scaling for edge focus
-            if intensity > 0.2:
-                alpha = int(min(200, 150 * intensity))
-                draw.rectangle([x, y, x+5, y+5], fill=(50, 40, 20, alpha))
-
-    # Composite the texture over the original image
-    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-
-def generate_newspaper_image(match, winner, loser, top_scorer_name: str,
-                               top_scorer_runs: int, mom_name: str, margin: str) -> Optional[BytesIO]:
-    """Generate a high-fidelity, vintage newspaper-style post-match summary image."""
-    try:
-        W, H = 1080, 1080  # Increased height for a more authentic front-page feel
-        # Base cream paper
-        img = Image.new("RGBA", (W, H), (235, 226, 205, 255))
-        draw = ImageDraw.Draw(img)
-
-        # ── Color palette ──
-        C_INK    = (25, 22, 18, 255)       # Soft off-black for ink
-        C_RED    = (160, 40, 40, 255)      # Faded vintage red
-        C_GOLD   = (165, 125, 50, 255)
-        C_GRAY   = (90, 85, 80, 255)
-        C_LIGHT  = (180, 170, 150, 255)
-        C_DIVIDER = (100, 90, 80, 255)
-
-        fn_masthead = _get_font(True,  78)
-        fn_headline = _get_font(True,  52)
-        fn_subhead  = _get_font(False, 28)
-        fn_body     = _get_font(False, 24)
-        fn_caption  = _get_font(False, 18)
-        fn_small    = _get_font(False, 16)
-
-        # ── MASTHEAD ──
-        draw.rectangle([0, 0, W, 100], fill=C_INK)
-        
-        # Center helper
-        def draw_text_centered(txt, cx, cy, fnt, col):
-            bbox = draw.textbbox((0, 0), txt, font=fnt)
-            w = bbox[2] - bbox[0]
-            draw.text((cx - w//2, cy), txt, font=fnt, fill=col)
-
-        draw_text_centered("THE CRICOVERSE TIMES", W//2, 10, fn_masthead, (245, 235, 215, 255))
-
-        # Date & Edition strip
-        draw.rectangle([0, 100, W, 125], fill=C_GOLD)
-        now_str = datetime.now().strftime("%A, %B %d, %Y")
-        edition = f"SPORTS FINAL EDITION  ·  {now_str}  ·  VOL. XCIII"
-        draw.text((30, 103), edition, font=fn_small, fill=C_INK)
-        draw.text((W - 140, 103), "PRICE: 2 PENCE", font=fn_small, fill=C_INK)
-        
-        # Double line underneath date
-        draw.line([(0, 128), (W, 128)], fill=C_INK, width=3)
-        draw.line([(0, 133), (W, 133)], fill=C_INK, width=1)
-
-        # ── MAIN HEADLINE ──
-        headline_tmpl = random.choice(_HEADLINE_TEMPLATES)
-        headline = headline_tmpl.format(
-            winner=winner.name.upper(),
-            loser=loser.name.upper(),
-            margin=margin.upper(),
-            top_scorer=top_scorer_name.upper(),
-            runs=top_scorer_runs,
-            opponent_team=loser.name.upper()
-        )
-        
-        # Smart word-wrap for headline
-        words = headline.split()
-        lines, cur = [], ""
-        for w in words:
-            test = (cur + " " + w).strip()
-            if draw.textlength(test, font=fn_headline) < W - 60:
-                cur = test
-            else:
-                if cur: lines.append(cur)
-                cur = w
-        if cur: lines.append(cur)
-
-        y_head = 155
-        for line in lines[:4]:
-            draw_text_centered(line, W//2, y_head, fn_headline, C_RED)
-            y_head += 60
-
-        y_head += 10
-        draw.line([(40, y_head), (W - 40, y_head)], fill=C_INK, width=4)
-        draw.line([(40, y_head+6), (W - 40, y_head+6)], fill=C_INK, width=1)
-        y_head += 25
-
-        # ── THREE-COLUMN LAYOUT (More authentic newspaper style) ──
-        col1_x, col2_x, col3_x = 40, W // 3 + 20, (W // 3) * 2
-        col_w = W // 3 - 40
-        y_col = y_head
-
-        # ── Column 1: Match Result & Details ──
-        draw.text((col1_x, y_col), "THE SCORECARD", font=_get_font(True, 24), fill=C_INK)
-        y_col += 30
-        draw.line([(col1_x, y_col), (col1_x + col_w, y_col)], fill=C_DIVIDER, width=2)
-        y_col += 10
-
-        score_lines = [
-            f"{winner.name.upper()}",
-            f"{winner.score}/{winner.wickets} ({winner.balls // 6}.{winner.balls % 6} OV)",
-            "",
-            f"{loser.name.upper()}",
-            f"{loser.score}/{loser.wickets} ({loser.balls // 6}.{loser.balls % 6} OV)",
-            "",
-            "MARGIN OF VICTORY:",
-            f"{margin.upper()}",
-        ]
-        
-        for i, sl in enumerate(score_lines):
-            fnt = _get_font(True, 22) if i in [0, 3, 6] else fn_body
-            draw.text((col1_x, y_col), sl, font=fnt, fill=C_INK)
-            y_col += 30
-
-        y_col += 10
-        draw.line([(col1_x, y_col), (col1_x + col_w, y_col)], fill=C_DIVIDER, width=1)
-        y_col += 15
-        
-        draw.text((col1_x, y_col), "HERO OF THE MATCH", font=_get_font(True, 22), fill=C_INK)
-        y_col += 30
-        draw.text((col1_x, y_col), f"⭐ {mom_name.upper()}", font=fn_body, fill=C_RED)
-
-        # ── Column 2: Simulated "Photo" & Report ──
-        # Draw a vintage photo placeholder box
-        photo_h = 220
-        draw.rectangle([col2_x, y_head, col3_x - 20, y_head + photo_h], fill=(200, 190, 170, 255), outline=C_INK, width=2)
-        
-        # Add some inner halftone/sketch lines to simulate a printed photo
-        for py in range(y_head + 5, y_head + photo_h, 8):
-            draw.line([(col2_x + 5, py), (col3_x - 25, py)], fill=(180, 170, 150, 255), width=2)
-            
-        draw_text_centered("[ ACTION SHOT ]", col2_x + col_w//2, y_head + photo_h//2 - 10, _get_font(True, 20), C_INK)
-        
-        y_col2 = y_head + photo_h + 10
-        draw.text((col2_x, y_col2), "MATCH REPORT", font=_get_font(True, 24), fill=C_INK)
-        y_col2 += 30
-        draw.line([(col2_x, y_col2), (col3_x - 20, y_col2)], fill=C_DIVIDER, width=2)
-        y_col2 += 10
-
-        sub = random.choice(_SUBHEADLINES).format(winner=winner.name, loser=loser.name, top_scorer=top_scorer_name)
-        
-        sub_words = sub.split()
-        sub_lines, sub_cur = [], ""
-        for sw in sub_words:
-            test = (sub_cur + " " + sw).strip()
-            if draw.textlength(test, font=fn_subhead) < col_w + 20:
-                sub_cur = test
-            else:
-                if sub_cur: sub_lines.append(sub_cur)
-                sub_cur = sw
-        if sub_cur: sub_lines.append(sub_cur)
-        
-        for sl2 in sub_lines[:6]:
-            draw.text((col2_x, y_col2), sl2, font=fn_subhead, fill=C_INK)
-            y_col2 += 34
-
-        # ── Column 3: The Write-Up ──
-        y_col3 = y_head
-        draw.text((col3_x, y_col3), "EXPERT ANALYSIS", font=_get_font(True, 24), fill=C_INK)
-        y_col3 += 30
-        draw.line([(col3_x, y_col3), (W - 40, y_col3)], fill=C_DIVIDER, width=2)
-        y_col3 += 10
-        
-        filler = (
-            f"Spectators gathered in their thousands to witness what was billed as a clash of titans, "
-            f"but ultimately transformed into a masterclass by {winner.name}. "
-            f"From the very first delivery, the intent was clear. {top_scorer_name} stepped up to the crease "
-            f"and immediately dictated the pace of the game, bludgeoning the ball to all corners of the ground. "
-            f"The {loser.name} bowling attack looked entirely bereft of ideas. "
-            f"Their fielding unravelled under the immense pressure, leading to a crushing {margin} victory. "
-            f"Management will have serious questions to answer before their next outing."
-        )
-        filler_words = filler.split()
-        f_lines, f_cur = [], ""
-        for fw in filler_words:
-            test = (f_cur + " " + fw).strip()
-            if draw.textlength(test, font=fn_caption) < col_w + 10:
-                f_cur = test
-            else:
-                if f_cur: f_lines.append(f_cur)
-                f_cur = fw
-        if f_cur: f_lines.append(f_cur)
-        
-        for fl in f_lines[:25]:
-            draw.text((col3_x, y_col3), fl, font=fn_caption, fill=C_GRAY)
-            y_col3 += 24
-
-        # ── Vertical Column Dividers ──
-        draw.line([(col2_x - 15, y_head), (col2_x - 15, H - 70)], fill=C_LIGHT, width=1)
-        draw.line([(col3_x - 15, y_head), (col3_x - 15, H - 70)], fill=C_LIGHT, width=1)
-
-        # ── APPLY VINTAGE TEXTURE ──
-        img = add_vintage_texture(img)
-        draw = ImageDraw.Draw(img) # Re-init draw on the final flattened RGB image
-
-        # ── FOOTER ──
-        draw.rectangle([0, H - 50, W, H], fill=C_INK)
-        footer = f"© The Cricoverse Times Publishing Co.  ·  All rights reserved  ·  {match.group_name.upper()}"
-        draw_text_centered(footer, W//2, H - 35, fn_small, (200, 190, 170))
-
-        # Save to buffer
-        bio = BytesIO()
-        img.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-
-    except Exception as e:
-        print(f"generate_newspaper_image error: {e}") # Replace with logger.error in production
-        return None
-
-async def send_potm_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
-    """
-    🌟 PLAYER OF THE MATCH - DB update + DM only (group announcement now in win message)
-    Bug 4 fix: MOM no longer announced separately in group; it's integrated in the victory message.
-    """
-    try:
-        all_players = match.batting_first.players + match.bowling_first.players
-        if not all_players: 
-            return 
-
-        # Calculate MVP Score (Improved Formula)
-        best_player = None
-        best_score = -1
-
-        for p in all_players:
-            # Advanced scoring: Runs + Wickets*25 + SR_bonus + Economy_bonus + Impact
-            score = p.runs + (p.wickets * 25)
-            
-            # Strike Rate Bonus
-            if p.balls_faced > 10:
-                sr = p.get_strike_rate()
-                if sr > 150:
-                    score += 20
-                elif sr > 120:
-                    score += 10
-            
-            # Economy Bonus
-            if p.balls_bowled > 12:
-                econ = p.get_economy()
-                if econ < 5:
-                    score += 20
-                elif econ < 7:
-                    score += 10
-            
-            # Boundaries Bonus
-            score += (p.sixes * 3) + (p.boundaries * 1)
-            
-            if score > best_score:
-                best_score = score
-                best_player = p
-
-        if not best_player: 
-            return
-
-        # ✅ FIX: Save player_of_match on match object so DB update captures it
-        match.player_of_match = best_player.user_id
-
-        # ✅ FIX: Also increment mom in in-memory player_stats team dict
-        init_player_stats(best_player.user_id)
-        _mom_stats = player_stats[best_player.user_id]
-        _mom_t = _mom_stats.setdefault("team", {})
-        _mom_t["mom"] = _mom_t.get("mom", 0) + 1
-        _mom_stats["team"] = _mom_t
-        player_stats[best_player.user_id] = _mom_stats
-
-        # ✅ FIX: Also update DB directly right here
+        base = Image.open(TEMPLATE_PATH).convert("RGBA")
+        W, H = base.size  # 1024 x 682
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # ── FONTS ──
         try:
-            _mom_conn = sqlite3.connect(DB_PATH)
-            _mom_c = _mom_conn.cursor()
-            _mom_c.execute(
-                "INSERT INTO user_stats (user_id, player_of_match_count) VALUES (?, 1) "
-                "ON CONFLICT(user_id) DO UPDATE SET player_of_match_count = player_of_match_count + 1",
-                (best_player.user_id,)
-            )
-            _mom_conn.commit()
-            _mom_conn.close()
-        except Exception as _mom_e:
-            logger.error(f"MOM DB update error: {_mom_e}")
+            f_name  = ImageFont.truetype("Roboto-Bold.ttf", 36)
+            f_val   = ImageFont.truetype("Roboto-Bold.ttf", 30)
+            f_label = ImageFont.truetype("Roboto-Regular.ttf", 22)
+        except Exception:
+            f_name  = ImageFont.load_default(size=36)
+            f_val   = ImageFont.load_default(size=30)
+            f_label = ImageFont.load_default(size=22)
 
-        player_tag = get_user_tag(best_player)
-        
-        # Build MOM group announcement
-        msg = f"🌟 <b>MAN OF THE MATCH</b> 🌟\n"
-        msg += "─────────────────\n\n"
-        msg += f"👑 <b>{player_tag}</b>\n\n"
-        
-        if best_player.balls_faced > 0:
-            sr = best_player.get_strike_rate()
-            msg += f"🏏 <b>BATTING</b>\n"
-            msg += f"   📊 {best_player.runs} ({best_player.balls_faced})\n"
-            msg += f"   ⚡ Strike Rate: {sr}\n"
-            if best_player.boundaries > 0 or best_player.sixes > 0:
-                msg += f"   💥 {best_player.boundaries}×4, {best_player.sixes}×6\n"
-            msg += "\n"
-        
-        if best_player.balls_bowled > 0:
-            econ = best_player.get_economy()
-            msg += f"⚾ <b>BOWLING</b>\n"
-            msg += f"   🎯 {best_player.wickets} Wickets\n"
-            msg += f"   📉 {best_player.runs_conceded} Runs ({format_overs(best_player.balls_bowled)})\n"
-            msg += f"   📊 Economy: {econ}\n\n"
-        
-        msg += "─────────────────\n"
-        msg += "👏 <i>Outstanding Performance!</i>"
+        WHITE  = (255, 255, 255, 255)
+        YELLOW = (255, 230, 60, 255)
+        GREEN  = (100, 255, 140, 255)
 
-        # Bug 4 fix: MOM is now shown in the win message → skip the group announcement here.
-        # Only send the DM acceptance speech to the MOM player.
+        # ── 1. PLAYER NAME — below the crown (top-center of left panel) ──
+        safe_name = (name or "Player")[:18]
+        nb = draw.textbbox((0, 0), safe_name, font=f_name)
+        nw = nb[2] - nb[0]
+        # Crown is roughly at x=90, y=10 on the left panel
+        # Name goes roughly at x=90 center, y=58
+        name_cx = 90
+        draw.text((name_cx - nw // 2, 52), safe_name, font=f_name, fill=YELLOW)
 
-        # ── Send funny acceptance speech to player DM ──
-        try:
-            speech_dm = generate_mom_speech(
-                best_player.first_name,
-                best_player.runs,
-                best_player.wickets,
-                getattr(match, 'group_name', '')
-            )
-            speech_dm += f"\n\n🏟️ <i>Congratulations from the whole Cricoverse!</i>"
-            await context.bot.send_message(
-                best_player.user_id,
-                speech_dm,
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as dm_err:
-            logger.warning(f"MOM speech DM failed: {dm_err}")
+        # ── 2. STAT VALUES — match the icon+label positions from template ──
+        # Template left panel layout (approx pixel positions for value text):
+        # MATCHES      → y ≈ 172,  label at x≈130
+        # RUNS         → y ≈ 233
+        # WICKETS      → y ≈ 293
+        # 50 / 100     → y ≈ 352
+        # STRIKE RATE  → y ≈ 412
+        # HIGHEST SCORE→ y ≈ 471
+        val_x = 200  # right of the icon+label area
 
-    except Exception as e:
-        logger.error(f"POTM Error: {e}")
-
-
-async def send_victory_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, winner: Team, loser: Team, margin: str):
-    """
-    🏆 ENHANCED VICTORY MESSAGE - Clean & Impactful
-    Includes Man of the Match integrated directly (Bug 4 fix)
-    """
-    
-    # Get MVP from each team
-    def get_star(team):
-        try:
-            best = max(team.players, key=lambda p: p.runs + (p.wickets * 25))
-            if best.wickets > 0 and best.runs > 10:
-                return f"{best.first_name} ({best.wickets}W, {best.runs}R)"
-            elif best.wickets > 0:
-                return f"{best.first_name} ({best.wickets}W)"
-            else:
-                return f"{best.first_name} ({best.runs}R)"
-        except:
-            return "Team Effort"
-    
-    w_star = get_star(winner)
-    l_star = get_star(loser)
-    
-    # Run rates
-    w_rr = round(winner.score / max(winner.overs, 0.1), 2)
-    l_rr = round(loser.score / max(loser.overs, 0.1), 2)
-
-    # Bug 4: Compute Man of the Match here and integrate into win message
-    all_players_mom = winner.players + loser.players
-    best_player = None
-    best_score = -1
-    for p in all_players_mom:
-        score = p.runs + (p.wickets * 25)
-        if p.balls_faced > 10:
-            sr = p.get_strike_rate()
-            if sr > 150: score += 20
-            elif sr > 120: score += 10
-        if p.balls_bowled > 12:
-            econ = p.get_economy()
-            if econ < 5: score += 20
-            elif econ < 7: score += 10
-        score += (p.sixes * 3) + (p.boundaries * 1)
-        if score > best_score:
-            best_score = score
-            best_player = p
-
-    # Save on match for later DB update (send_potm_message still runs for DB but won't announce)
-    if best_player:
-        match.player_of_match = best_player.user_id
-    
-    msg = f"╭━━ 🏆 Match Result ━━━━\n"
-    msg += f"┃ 🎉 {html.escape(winner.name.upper())} WIN!\n"
-    msg += f"┃ 👑 Victory by {margin}\n"
-    msg += f"┣━─────────────────\n"
-    msg += f"┃ 🔵 {html.escape(winner.name)}\n"
-    msg += f"┃ ↳ {winner.score}/{winner.wickets} ({format_overs(winner.balls)} ov) | 📈 RR: {w_rr}\n"
-    msg += f"┃ 👤 {w_star}\n"
-    msg += f"┃\n"
-    msg += f"┃ 🔴 {html.escape(loser.name)}\n"
-    msg += f"┃ ↳ {loser.score}/{loser.wickets} ({format_overs(loser.balls)} ov) | 📈 RR: {l_rr}\n"
-    msg += f"┃ 👤 {l_star}\n"
-    msg += f"╰━━━━━━━━━━━━━━━━━\n"
-    
-    if match.game_mode == "MAGICBALL":
-        msg += "🔮 <i>Magic Ball power made all the difference!</i> ✨\n"
-
-    # Bug 4: Add MOM to the win message
-    if best_player:
-        mom_tag = get_user_tag(best_player)
-        msg += f"╭━─────────────────\n"
-        msg += f"┃ 🏅 MAN OF THE MATCH: {mom_tag}\n"
-        mom_detail = ""
-        if best_player.balls_faced > 0:
-            mom_detail += f"{best_player.runs} ({best_player.balls_faced}b)"
-        if best_player.balls_bowled > 0:
-            mom_detail += f" | 🥎 {best_player.wickets}W / {best_player.runs_conceded}R"
-        if mom_detail:
-            msg += f"┃ ↳ {mom_detail}\n"
-        msg += f"╰━━━━━━━━━━━━━━━━━\n"
-    
-    # ── Rematch button ──
-    rematch_data = f"rematch_{group_id}_{match.total_overs}_{match.game_mode or 'TEAM'}"
-    rematch_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔁 Rematch!", callback_data=rematch_data)
-    ]])
-
-    # Try sending with photo first
-    try:
-        await context.bot.send_photo(
-            chat_id=group_id,
-            photo=MATCH_END_PHOTO,
-            caption=msg,
-            parse_mode=ParseMode.HTML,
-            reply_markup=rematch_markup
-        )
-        return
-    except Exception as e:
-        logger.error(f"Error sending match end photo: {e}")
-    
-    # Fallback to GIF if photo fails
-    victory_gif = get_random_gif(MatchEvent.VICTORY)
-    try:
-        await context.bot.send_animation(
-            chat_id=group_id,
-            animation=victory_gif,
-            caption=msg,
-            parse_mode=ParseMode.HTML,
-            reply_markup=rematch_markup
-        )
-    except:
-        # Final fallback to text
-        await context.bot.send_message(
-            chat_id=group_id,
-            text=msg,
-            parse_mode=ParseMode.HTML,
-            reply_markup=rematch_markup
-        )
-
-# ═══════════════════════════════════════════════════════════════
-# 🔁 REMATCH CALLBACK
-# ═══════════════════════════════════════════════════════════════
-async def rematch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle rematch button → starts a new game with same overs and mode."""
-    query = update.callback_query
-    await query.answer("🔁 Starting rematch!", show_alert=False)
-    chat = update.effective_chat
-    user = update.effective_user
-
-    try:
-        parts = query.data.split("_")
-        # format: rematch_{group_id}_{overs}_{mode}
-        group_id = int(parts[1])
-        overs = int(parts[2])
-        mode = parts[3] if len(parts) > 3 else "TEAM"
-    except Exception:
-        await query.answer("❌ Rematch data invalid.", show_alert=True)
-        return
-
-    if chat.id != group_id:
-        await query.answer("❌ This button is for that group only.", show_alert=True)
-        return
-
-    if group_id in active_matches:
-        await query.answer("⚠️ A match is already in progress!", show_alert=True)
-        return
-
-    # Create new match object
-    new_match = Match(group_id, chat.title or "Group")
-    new_match.total_overs = overs
-    new_match.game_mode = mode
-    if mode == "MAGICBALL":
-        new_match.magic_ball_mode = True
-    new_match.phase = GamePhase.TEAM_JOINING
-    active_matches[group_id] = new_match
-
-    msg = f"🔁 <b>REMATCH STARTING!</b>\n"
-    msg += f"─────────────────\n"
-    msg += f"📋 <b>Overs:</b> {overs}  ·  <b>Mode:</b> {mode}\n"
-    msg += f"─────────────────\n"
-    msg += f"👥 <b>Join your team below!</b>\n"
-    msg += f"⏳ <i>Lobby opens now → tap to join!</i>"
-
-    join_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-        [InlineKeyboardButton("🚪 Leave", callback_data="leave_team")]
-    ])
-
-    try:
-        sent = await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML, reply_markup=join_markup)
-        new_match.main_message_id = sent.message_id
-    except Exception as e:
-        logger.error(f"Rematch start error: {e}")
-
-
-async def start_super_over(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
-    """
-    ⚡ SUPER OVER MECHANICS
-    - Each team gets 1 over (6 balls)
-    - NO DRS
-    - Highest score wins
-    """
-    match.is_super_over = True
-    match.phase = GamePhase.SUPER_OVER
-    
-    # Toss for Super Over
-    toss_winner = random.choice([match.team_x, match.team_y])
-    toss_loser = match.get_other_team(toss_winner)
-    
-    # Toss winner chooses bat/bowl
-    decision = random.choice(["bat", "bowl"])
-    
-    if decision == "bat":
-        match.super_over_batting_first = toss_winner
-        match.super_over_bowling_first = toss_loser
-    else:
-        match.super_over_batting_first = toss_loser
-        match.super_over_bowling_first = toss_winner
-    
-    # Announcement
-    msg = f"⚡〔 <b>SUPER OVER!</b> 〕⚡\n"
-    msg += "─────────────────\n"
-    msg += f"  🪙 Toss: {toss_winner.name} won  \n"
-    msg += f"  👉 Decision: {decision.upper()} first  \n"
-    msg += "─────────────────\n\n"
-    msg += f"🏏 <b>{match.super_over_batting_first.name}</b> → BATTING\n"
-    msg += f"⚾ <b>{match.super_over_bowling_first.name}</b> → BOWLING\n\n"
-    msg += "📜 <b>RULES:</b>\n"
-    msg += "🔸 1 Over (6 balls) per team\n"
-    msg += "🔸 No DRS available\n"
-    msg += "🔸 Highest score wins!\n\n"
-    msg += "⏳ <i>Buckle up! Starting in 10 seconds...</i>"
-    
-    await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-    await asyncio.sleep(10)
-    
-    # Reset teams for Super Over
-    await reset_teams_for_super_over(match)
-    
-    # Start 1st Super Over Innings
-    match.innings = 1
-    match.total_overs = 1  # Only 1 over
-    match.current_batting_team = match.super_over_batting_first
-    match.current_bowling_team = match.super_over_bowling_first
-    match.target = 0
-    
-    # Request openers
-    match.waiting_for_batsman = True
-    match.waiting_for_bowler = False
-    
-    captain = match.get_captain(match.current_batting_team)
-    captain_tag = get_user_tag(captain)
-    
-    msg = f"⚔️ <b>SELECT STRIKER</b>\n"
-    msg += f"👮‍♂️👉 <b>{captain_tag}</b>, select STRIKER:\n"
-    msg += f"⌨️ <code>/batting [serial]</code>"
-    
-    await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-    
-    match.batsman_selection_time = time.time()
-    match.batsman_selection_task = asyncio.create_task(
-        batsman_selection_timeout(context, group_id, match)
-    )
-
-async def reset_teams_for_super_over(match: Match):
-    """
-    🔄 Reset team stats for Super Over
-    """
-    for team in [match.team_x, match.team_y]:
-        team.score = 0
-        team.wickets = 0
-        team.balls = 0
-        team.overs = 0.0
-        team.extras = 0
-        team.current_batsman_idx = None
-        team.current_non_striker_idx = None
-        team.current_bowler_idx = None
-        team.out_players_indices = set()
-        team.bowler_history = []
-        team.drs_remaining = 0  # NO DRS in Super Over
-        
-        # Reset player stats
-        for player in team.players:
-            player.runs = 0
-            player.balls_faced = 0
-            player.wickets = 0
-            player.balls_bowled = 0
-            player.runs_conceded = 0
-            player.is_out = False
-            player.boundaries = 0
-            player.sixes = 0
-
-async def end_super_over_innings(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
-    """
-    🛑 Handle end of Super Over innings
-    """
-    bat_team = match.current_batting_team
-    bowl_team = match.current_bowling_team
-    
-    first_innings_score = bat_team.score
-    match.target = first_innings_score + 1
-    
-    msg = f"⚡〔 <b>SUPER OVER → HALF TIME</b> 〕⚡\n"
-    msg += "─────────────────\n"
-    msg += f"  🏏 {bat_team.name}: {bat_team.score}/{bat_team.wickets}  \n"
-    msg += "─────────────────\n\n"
-    msg += f"🎯 <b>{bowl_team.name}</b> needs <b>{match.target}</b> to win!\n\n"
-    msg += "⏳ <i>2nd super over innings in 20 seconds...</i>"
-    
-    await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-    await asyncio.sleep(20)
-    
-    # Start 2nd innings
-    match.innings = 2
-    match.current_batting_team = bowl_team
-    match.current_bowling_team = bat_team
-    
-    # Reset for 2nd inningsS
-    await reset_teams_for_super_over(match)
-    match.current_batting_team.score = 0
-    match.current_batting_team.wickets = 0
-    match.current_batting_team.balls = 0
-    
-    # Request openers
-    match.waiting_for_batsman = True
-    
-    captain = match.get_captain(match.current_batting_team)
-    captain_tag = get_user_tag(captain)
-    
-    msg = f"🔥 <b>SUPER OVER - 2ND INNINGS</b>\n"
-    msg += f"👮‍♂️👉 <b>{captain_tag}</b>, select STRIKER:\n"
-    msg += f"⌨️ <code>/batting [serial]</code>"
-    
-    await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-    
-    match.batsman_selection_time = time.time()
-    match.batsman_selection_task = asyncio.create_task(
-        batsman_selection_timeout(context, group_id, match)
-    )
-
-async def determine_super_over_winner(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
-    """
-    🏆 Decide Super Over winner
-    """
-    first = match.super_over_batting_first
-    second = match.get_other_team(first)
-    
-    if second.score > first.score:
-        winner = second
-        loser = first
-        margin = f"{second.score - first.score} runs"
-    elif first.score > second.score:
-        winner = first
-        loser = second
-        wickets_left = len(second.players) - second.wickets - len(second.out_players_indices)
-        margin = f"{max(0, wickets_left)} wickets"
-    else:
-        # Still tied - Boundary count or wickets
-        await context.bot.send_message(
-            group_id,
-            "🤝😱 <b>SUPER OVER ALSO TIED!</b>\n"
-            "⚖️ <i>Result will be decided by boundary count...</i>",
-            parse_mode=ParseMode.HTML
-        )
-        await asyncio.sleep(3)
-        
-        # Count boundaries
-        first_boundaries = sum(p.boundaries + p.sixes for p in first.players)
-        second_boundaries = sum(p.boundaries + p.sixes for p in second.players)
-        
-        if second_boundaries > first_boundaries:
-            winner = second
-            loser = first
-            margin = f"{second_boundaries} boundaries"
-        else:
-            winner = first
-            loser = second
-            margin = f"{first_boundaries} boundaries"
-    
-    # Victory Message
-    victory_gif = get_random_gif(MatchEvent.VICTORY)
-    
-    msg = f"🏆✨ <b>SUPER OVER CHAMPION!</b> ✨🏆\n"
-    msg += "─────────────────\n"
-    msg += f"🥇 <b>WINNER: {winner.name}</b>\n"
-    msg += f"📊 Won by: {margin}\n\n"
-    msg += f"🔥 {first.name}: {first.score}/{first.wickets}\n"
-    msg += f"🧊 {second.name}: {second.score}/{second.wickets}\n"
-    msg += "─────────────────\n"
-    msg += f"🔥 <i>What a thriller! Absolute edge-of-the-seat finish!</i>"
-    
-    try:
-        await context.bot.send_animation(group_id, animation=victory_gif, caption=msg, parse_mode=ParseMode.HTML)
-    except:
-        await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-    
-    # Update stats
-    try:
-        await update_player_stats_after_match(match, winner, loser)
-        await save_match_to_history(match, winner.name)
-    except: pass
-    
-    await asyncio.sleep(3)
-    
-    # POTM
-    try:
-        await send_potm_message(context, group_id, match)
-    except: pass
-    
-    # Cleanup
-    try:
-        if match.main_message_id:
-            await context.bot.unpin_chat_message(chat_id=group_id, message_id=match.main_message_id)
-    except: pass
-    
-    if group_id in active_matches:
-        del active_matches[group_id]
-
-async def send_match_summary(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, winner: Team, loser: Team):
-    """Send detailed match summary with player statistics"""
-    
-    # Batting summary for both teams
-    summary_text = "Match Summary\n"
-    summary_text += "=" * 40 + "\n\n"
-    
-    # First innings batting
-    summary_text += f"{match.batting_first.name} Batting\n"
-    summary_text += "-" * 40 + "\n"
-    for player in match.batting_first.players:
-        if player.balls_faced > 0 or player.is_out:
-            status = "out" if player.is_out else "not out"
-            sr = player.get_strike_rate()
-            summary_text += f"{player.first_name}: {player.runs} ({player.balls_faced}) - {status}"
-            if player.boundaries > 0:
-                summary_text += f" [{player.boundaries}x4"
-                if player.sixes > 0:
-                    summary_text += f", {player.sixes}x6"
-                summary_text += "]"
-            summary_text += f" SR: {sr}\n"
-    
-    summary_text += f"\nTotal: {match.batting_first.score}/{match.batting_first.wickets}\n"
-    summary_text += f"Overs: {format_overs(match.batting_first.balls)}\n"
-    summary_text += f"Extras: {match.batting_first.extras}\n\n"
-    
-    # Second innings batting
-    summary_text += f"{match.bowling_first.name} Batting\n"
-    summary_text += "-" * 40 + "\n"
-    for player in match.bowling_first.players:
-        if player.balls_faced > 0 or player.is_out:
-            status = "out" if player.is_out else "not out"
-            sr = player.get_strike_rate()
-            summary_text += f"{player.first_name}: {player.runs} ({player.balls_faced}) - {status}"
-            if player.boundaries > 0:
-                summary_text += f" [{player.boundaries}x4"
-                if player.sixes > 0:
-                    summary_text += f", {player.sixes}x6"
-                summary_text += "]"
-            summary_text += f" SR: {sr}\n"
-    
-    summary_text += f"\nTotal: {match.bowling_first.score}/{match.bowling_first.wickets}\n"
-    summary_text += f"Overs: {format_overs(match.bowling_first.balls)}\n"
-    summary_text += f"Extras: {match.bowling_first.extras}\n\n"
-    
-    await context.bot.send_message(
-        chat_id=group_id,
-        text=summary_text
-    )
-    
-    await asyncio.sleep(1)
-    
-    # Bowling summary
-    bowling_summary = "Bowling Figures\n"
-    bowling_summary += "=" * 40 + "\n\n"
-    
-    # First innings bowling
-    bowling_summary += f"{match.bowling_first.name} Bowling\n"
-    bowling_summary += "-" * 40 + "\n"
-    for player in match.bowling_first.players:
-        if player.balls_bowled > 0:
-            overs = format_overs(player.balls_bowled)
-            economy = player.get_economy()
-            bowling_summary += f"{player.first_name}: {overs} overs, {player.wickets}/{player.runs_conceded}"
-            bowling_summary += f" Econ: {economy}"
-            if player.maiden_overs > 0:
-                bowling_summary += f" M: {player.maiden_overs}"
-            bowling_summary += "\n"
-    
-    bowling_summary += "\n"
-    
-    # Second innings bowling
-    bowling_summary += f"{match.batting_first.name} Bowling\n"
-    bowling_summary += "-" * 40 + "\n"
-    for player in match.batting_first.players:
-        if player.balls_bowled > 0:
-            overs = format_overs(player.balls_bowled)
-            economy = player.get_economy()
-            bowling_summary += f"{player.first_name}: {overs} overs, {player.wickets}/{player.runs_conceded}"
-            bowling_summary += f" Econ: {economy}"
-            if player.maiden_overs > 0:
-                bowling_summary += f" M: {player.maiden_overs}"
-            bowling_summary += "\n"
-    
-    await context.bot.send_message(
-        chat_id=group_id,
-        text=bowling_summary
-    )
-    
-    await asyncio.sleep(1)
-    
-    # Player of the Match
-    potm_text = "Player of the Match\n"
-    potm_text += "=" * 40 + "\n\n"
-    
-    # Calculate POTM based on performance
-    all_players = match.batting_first.players + match.bowling_first.players
-    best_player = None
-    best_score = 0
-    
-    for player in all_players:
-        # Score calculation: runs + (wickets * 20) + (boundaries * 2)
-        performance_score = player.runs + (player.wickets * 20) + (player.boundaries * 2)
-        if performance_score > best_score:
-            best_score = performance_score
-            best_player = player
-    
-    if best_player:
-        potm_text += f"{best_player.first_name}\n\n"
-        if best_player.balls_faced > 0:
-            potm_text += f"Batting: {best_player.runs} ({best_player.balls_faced}) SR: {best_player.get_strike_rate()}\n"
-        if best_player.balls_bowled > 0:
-            potm_text += f"Bowling: {best_player.wickets}/{best_player.runs_conceded} Econ: {best_player.get_economy()}\n"
-    
-    await context.bot.send_message(
-        chat_id=group_id,
-        text=potm_text
-    )
-
-async def update_player_stats_after_match(match: Match, winner: Team, loser: Team):
-    """Update global player statistics after match → writes BOTH flat + team/solo dicts."""
-    all_players = match.batting_first.players + match.bowling_first.players
-
-    for player in all_players:
-        user_id = player.user_id
-        init_player_stats(user_id)          # ensures all keys exist
-        stats    = player_stats[user_id]
-        is_winner = bool(winner and player in winner.players)
-
-        # ── flat legacy keys (kept for backward compat) ──
-        stats["matches_played"]     = stats.get("matches_played", 0) + 1
-        if winner and is_winner:
-            stats["matches_won"]    = stats.get("matches_won", 0) + 1
-
-        # ── Form guide: last 5 W/L results ──
-        _result_char = "W" if is_winner else "L"
-        _last5 = stats.get("last_5_results", []) + [_result_char]
-        stats["last_5_results"] = _last5[-5:]
-        # Also mirror into team dict early (will be overwritten later but sets key)
-        _t_early = stats.setdefault("team", {})
-        _t_early["last_5_results"] = (_t_early.get("last_5_results", []) + [_result_char])[-5:]
-
-        if player.balls_faced > 0:
-            stats["total_runs"]         = stats.get("total_runs", 0) + player.runs
-            stats["total_balls_faced"]  = stats.get("total_balls_faced", 0) + player.balls_faced
-            stats["dot_balls_faced"]    = stats.get("dot_balls_faced", 0) + getattr(player, 'dot_balls_faced', 0)
-            stats["boundaries"]         = stats.get("boundaries", 0) + getattr(player, 'boundaries', 0)
-            stats["sixes"]              = stats.get("sixes", 0) + getattr(player, 'sixes', 0)
-            if player.runs >= 100: stats["centuries"]       = stats.get("centuries", 0) + 1
-            elif player.runs >= 50: stats["half_centuries"] = stats.get("half_centuries", 0) + 1
-            if player.runs > stats.get("highest_score", 0): stats["highest_score"] = player.runs
-            if player.runs == 0 and player.is_out: stats["ducks"] = stats.get("ducks", 0) + 1
-            ls = stats.get("last_5_scores", []) + [player.runs]
-            stats["last_5_scores"] = ls[-5:]
-
-        if player.balls_bowled > 0:
-            stats["total_wickets"]        = stats.get("total_wickets", 0) + player.wickets
-            stats["total_balls_bowled"]   = stats.get("total_balls_bowled", 0) + player.balls_bowled
-            stats["total_runs_conceded"]  = stats.get("total_runs_conceded", 0) + player.runs_conceded
-            stats["dot_balls_bowled"]     = stats.get("dot_balls_bowled", 0) + getattr(player, 'dot_balls_bowled', 0)
-            bb = stats.get("best_bowling")
-            if not isinstance(bb, dict): bb = {"wickets": 0, "runs": 999}
-            if player.wickets > bb["wickets"] or (player.wickets == bb["wickets"] and player.runs_conceded < bb.get("runs", 999)):
-                bb = {"wickets": player.wickets, "runs": player.runs_conceded}
-            stats["best_bowling"] = bb
-            lw = stats.get("last_5_wickets", []) + [player.wickets]
-            stats["last_5_wickets"] = lw[-5:]
-
-        # ══════════════════════════════════════════════
-        # ✅ TEAM DICT → this is what /mystats reads
-        # ══════════════════════════════════════════════
-        t = stats.setdefault("team", {})
-        t["matches"]        = t.get("matches", 0) + 1
-        t["matches_played"] = t.get("matches_played", 0) + 1
-        if is_winner:
-            t["wins"]       = t.get("wins", 0) + 1
-        t["runs"]           = t.get("runs", 0)  + player.runs
-        t["balls"]          = t.get("balls", 0) + player.balls_faced
-        t["wickets"]        = t.get("wickets", 0) + player.wickets
-        t["balls_bowled"]   = t.get("balls_bowled", 0) + player.balls_bowled
-        t["runs_conceded"]  = t.get("runs_conceded", 0) + player.runs_conceded
-        t["fours"]          = t.get("fours", 0) + getattr(player, 'boundaries', 0)
-        t["sixes"]          = t.get("sixes", 0) + getattr(player, 'sixes', 0)
-        t["dots"]           = t.get("dots", 0) + getattr(player, 'dot_balls_faced', 0)
-        if player.runs > t.get("highest", 0):      t["highest"] = player.runs
-        if player.runs >= 100:                     t["centuries"] = t.get("centuries", 0) + 1
-        elif player.runs >= 50:                    t["fifties"]   = t.get("fifties", 0) + 1
-        if player.runs == 0 and player.balls_faced > 0 and player.is_out:
-            t["ducks"] = t.get("ducks", 0) + 1
-        if not player.is_out and player.balls_faced > 0:
-            t["times_not_out"] = t.get("times_not_out", 0) + 1
-        # best bowling
-        cb_w = t.get("best_bowling_wickets", 0)
-        cb_r = t.get("best_bowling_runs", 999)
-        if player.balls_bowled > 0 and (player.wickets > cb_w or (player.wickets == cb_w and player.runs_conceded < cb_r)):
-            t["best_bowling_wickets"] = player.wickets
-            t["best_bowling_runs"]    = player.runs_conceded
-        stats["team"] = t
-
-        # ✅ FIX: Save captaincy stats in team dict
-        # Check if this player is captain of team_x or team_y
-        _is_cap = False
-        if hasattr(match, 'team_x') and match.team_x.captain_id == player.user_id:
-            _is_cap = True
-        elif hasattr(match, 'team_y') and match.team_y.captain_id == player.user_id:
-            _is_cap = True
-        if _is_cap:
-            t["cap_matches"] = t.get("cap_matches", 0) + 1
-            if is_winner:
-                t["cap_wins"] = t.get("cap_wins", 0) + 1
-            stats["team"] = t
-
-        player_stats[user_id] = stats
-
-    # ── sync to DB ──
-    try:
-        conn_s = sqlite3.connect(DB_PATH)
-        cs = conn_s.cursor()
-        for player in all_players:
-            uid   = player.user_id
-            is_w  = 1 if (winner and player in winner.players) else 0
-            _sixes    = getattr(player, 'sixes', 0)
-            _fours    = getattr(player, 'boundaries', 0)
-            _dots     = getattr(player, 'dot_balls_faced', 0)
-            _is_duck  = 1 if (player.runs == 0 and player.balls_faced > 0 and player.is_out) else 0
-            _is_100   = 1 if player.runs >= 100 else 0
-            _is_50    = 1 if 50 <= player.runs < 100 else 0
-            _is_fifer = 1 if player.balls_bowled > 0 and player.wickets >= 5 else 0
-
-            cs.execute("""
-                INSERT INTO user_stats
-                    (user_id, username, first_name,
-                     matches_played, matches_won,
-                     total_runs, total_balls_faced,
-                     total_wickets, total_balls_bowled,
-                     total_sixes, total_fours,
-                     highest_score, total_hundreds,
-                     total_fifties, total_ducks, total_dots,
-                     best_bowling_wickets, best_bowling_runs,
-                     five_wicket_hauls,
-                     team_matches_played, team_matches_won,
-                     team_total_runs, team_total_balls_faced,
-                     team_total_wickets, team_total_balls_bowled,
-                     team_total_sixes, team_total_fours,
-                     team_highest_score, team_total_hundreds,
-                     team_total_fifties, team_total_ducks, team_total_dots)
-                VALUES (?,?,?,
-                        1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                        1,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    username              = excluded.username,
-                    first_name            = excluded.first_name,
-                    matches_played        = matches_played + 1,
-                    matches_won           = matches_won + ?,
-                    total_runs            = total_runs + ?,
-                    total_balls_faced     = total_balls_faced + ?,
-                    total_wickets         = total_wickets + ?,
-                    total_balls_bowled    = total_balls_bowled + ?,
-                    total_sixes           = total_sixes + ?,
-                    total_fours           = total_fours + ?,
-                    highest_score         = MAX(highest_score, ?),
-                    total_hundreds        = total_hundreds + ?,
-                    total_fifties         = total_fifties + ?,
-                    total_ducks           = total_ducks + ?,
-                    total_dots            = total_dots + ?,
-                    best_bowling_wickets  = CASE WHEN ? > best_bowling_wickets THEN ? ELSE best_bowling_wickets END,
-                    best_bowling_runs     = CASE WHEN ? > best_bowling_wickets THEN ? WHEN ? = best_bowling_wickets THEN MIN(best_bowling_runs, ?) ELSE best_bowling_runs END,
-                    five_wicket_hauls     = five_wicket_hauls + ?,
-                    team_matches_played   = team_matches_played + 1,
-                    team_matches_won      = team_matches_won + ?,
-                    team_total_runs       = team_total_runs + ?,
-                    team_total_balls_faced= team_total_balls_faced + ?,
-                    team_total_wickets    = team_total_wickets + ?,
-                    team_total_balls_bowled=team_total_balls_bowled + ?,
-                    team_total_sixes      = team_total_sixes + ?,
-                    team_total_fours      = team_total_fours + ?,
-                    team_highest_score    = MAX(team_highest_score, ?),
-                    team_total_hundreds   = team_total_hundreds + ?,
-                    team_total_fifties    = team_total_fifties + ?,
-                    team_total_ducks      = team_total_ducks + ?,
-                    team_total_dots       = team_total_dots + ?
-            """, (
-                # INSERT values
-                uid, player.username or "", player.first_name,
-                # flat insert
-                is_w, player.runs, player.balls_faced,
-                player.wickets, player.balls_bowled,
-                _sixes, _fours,
-                player.runs, _is_100, _is_50, _is_duck, _dots,
-                player.wickets, player.runs_conceded,
-                _is_fifer,
-                # team insert
-                is_w, player.runs, player.balls_faced,
-                player.wickets, player.balls_bowled,
-                _sixes, _fours,
-                player.runs, _is_100, _is_50, _is_duck, _dots,
-                # ON CONFLICT flat update params
-                is_w, player.runs, player.balls_faced,
-                player.wickets, player.balls_bowled,
-                _sixes, _fours,
-                player.runs, _is_100, _is_50, _is_duck, _dots,
-                # best bowling update (needs wickets x3, runs x2)
-                player.wickets, player.wickets,
-                player.wickets, player.runs_conceded, player.wickets, player.runs_conceded,
-                _is_fifer,
-                # ON CONFLICT team update params
-                is_w, player.runs, player.balls_faced,
-                player.wickets, player.balls_bowled,
-                _sixes, _fours,
-                player.runs, _is_100, _is_50, _is_duck, _dots,
-            ))
-        conn_s.commit()
-        conn_s.close()
-    except Exception as db_e:
-        logger.error(f"DB sync error in update_player_stats: {db_e}")
-
-    save_data()
-
-
-def update_h2h_stats(match: Match):
-    """
-    Update Head-to-Head stats using REAL match data
-    """
-
-    all_players = []
-
-    all_players.extend(match.team_x.players)
-    all_players.extend(match.team_y.players)
-
-    for p1 in all_players:
-        init_player_stats(p1.user_id)
-
-        for p2 in all_players:
-            if p1.user_id == p2.user_id:
-                continue
-
-            vs = player_stats[p1.user_id].setdefault("vs_player_stats", {})
-            record = vs.setdefault(str(p2.user_id), {
-                "matches": 0,
-                "runs_scored": 0,
-                "balls_faced": 0,
-                "dismissals": 0,
-                "wickets_taken": 0
-            })
-
-            # Played together in same match
-            record["matches"] += 1
-
-            # Batting vs opponent
-            record["runs_scored"] += p1.runs
-            record["balls_faced"] += p1.balls_faced
-
-            # If p1 got out & p2 was bowler
-            if p1.is_out and match.current_bowling_team.get_player(p2.user_id):
-                record["dismissals"] += 1
-
-            # Bowling vs opponent
-            record["wickets_taken"] += p1.wickets
-
-    # 🔮 Save Magic Ball mode match stats
-    if getattr(match, "magic_ball_mode", False) or getattr(match, "game_mode", "") == "MAGICBALL":
-        all_mb_players = list(match.team_x.players) + list(match.team_y.players)
-        for p in all_mb_players:
-            uid = p.user_id
-            init_player_stats(uid)
-            mb = player_stats[uid].setdefault("magicball", {})
-            mb["matches"] = mb.get("matches", 0) + 1
-            is_win = winner and p in winner.players
-            mb["wins"] = mb.get("wins", 0) + (1 if is_win else 0)
-            mb["runs"] = mb.get("runs", 0) + p.runs
-            if p.runs > mb.get("high_score", 0):
-                mb["high_score"] = p.runs
-
-    save_data()
-
-
-def check_achievements(player: Player):
-    """Check and award achievements to player"""
-    user_id = player.user_id
-    stats = player_stats.get(user_id)
-    
-    if not stats:
-        return
-    
-    if user_id not in achievements:
-        achievements[user_id] = []
-    
-    user_achievements = achievements[user_id]
-    
-    # Century Maker
-    if stats["centuries"] >= 1 and "Century Maker" not in user_achievements:
-        user_achievements.append("Century Maker")
-    
-    # Hat-trick Hero (3 wickets in match)
-    if player.wickets >= 3 and "Hat-trick Hero" not in user_achievements:
-        user_achievements.append("Hat-trick Hero")
-    
-    # Diamond Hands (50+ matches)
-    if stats["matches_played"] >= 50 and "Diamond Hands" not in user_achievements:
-        user_achievements.append("Diamond Hands")
-    
-    # Speed Demon (Strike Rate > 200 in a match with 10+ runs)
-    if player.runs >= 10 and player.get_strike_rate() > 200 and "Speed Demon" not in user_achievements:
-        user_achievements.append("Speed Demon")
-    
-    # Economical (Economy < 5 in a match with 12+ balls bowled)
-    if player.balls_bowled >= 12 and player.get_economy() < 5 and "Economical" not in user_achievements:
-        user_achievements.append("Economical")
-
-async def save_match_to_history(match, winner_team: str):
-    """Save team match stats to database"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Determine scores
-    team_x_score = match.team_x_runs
-    team_y_score = match.team_y_runs
-    
-    # Save match history
-    c.execute("""
-        INSERT INTO match_history 
-        (group_id, match_type, winner_team, runner_up_team, total_overs, 
-         team_x_score, team_y_score, player_of_match)
-        VALUES (?, 'TEAM', ?, ?, ?, ?, ?, ?)
-    """, (match.group_id, winner_team, 
-          'Team Y' if winner_team == 'Team X' else 'Team X',
-          match.total_overs, team_x_score, team_y_score, 
-          match.player_of_match))
-    
-    # Update player stats for both teams
-    all_players = list(match.team_x_players.keys()) + list(match.team_y_players.keys())
-    
-    for user_id in all_players:
-        player = match.players.get(user_id)
-        if not player:
-            continue
-        
-        username = player.get('username', 'Unknown')
-        first_name = player.get('first_name', 'Player')
-        
-        batting_stats = match.batting_stats.get(user_id, {})
-        bowling_stats = match.bowling_stats.get(user_id, {})
-        
-        runs = batting_stats.get('runs', 0)
-        balls_faced = batting_stats.get('balls', 0)
-        wickets = bowling_stats.get('wickets', 0)
-        balls_bowled = bowling_stats.get('balls', 0)
-        runs_conceded = bowling_stats.get('runs', 0)
-        
-        # Check if user exists
-        c.execute("SELECT user_id FROM user_stats WHERE user_id = ?", (user_id,))
-        exists = c.fetchone()
-        
-        # Determine if player's team won
-        player_team = 'X' if user_id in match.team_x_players else 'Y'
-        won = 1 if (player_team == 'X' and winner_team == 'Team X') or \
-                   (player_team == 'Y' and winner_team == 'Team Y') else 0
-        
-        if not exists:
-            c.execute("""
-                INSERT INTO user_stats 
-                (user_id, username, first_name, total_runs, total_balls_faced,
-                 total_wickets, total_balls_bowled, total_runs_conceded,
-                 matches_played, matches_won, highest_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-            """, (user_id, username, first_name, runs, balls_faced, 
-                  wickets, balls_bowled, runs_conceded, won, runs))
-        else:
-            c.execute("""
-                UPDATE user_stats 
-                SET total_runs = total_runs + ?,
-                    total_balls_faced = total_balls_faced + ?,
-                    total_wickets = total_wickets + ?,
-                    total_balls_bowled = total_balls_bowled + ?,
-                    total_runs_conceded = total_runs_conceded + ?,
-                    matches_played = matches_played + 1,
-                    matches_won = matches_won + ?,
-                    highest_score = MAX(highest_score, ?),
-                    username = ?,
-                    first_name = ?
-                WHERE user_id = ?
-            """, (runs, balls_faced, wickets, balls_bowled, runs_conceded,
-                  won, runs, username, first_name, user_id))
-        
-        # Update fifties/hundreds
-        if runs >= 100:
-            c.execute("UPDATE user_stats SET total_hundreds = total_hundreds + 1 WHERE user_id = ?", (user_id,))
-        elif runs >= 50:
-            c.execute("UPDATE user_stats SET total_fifties = total_fifties + 1 WHERE user_id = ?", (user_id,))
-        
-        # Update bowling best figures
-        if wickets > 0:
-            c.execute("""
-                UPDATE user_stats 
-                SET best_bowling_wickets = MAX(best_bowling_wickets, ?),
-                    best_bowling_runs = CASE 
-                        WHEN ? > best_bowling_wickets THEN ?
-                        WHEN ? = best_bowling_wickets THEN MIN(best_bowling_runs, ?)
-                        ELSE best_bowling_runs
-                    END
-                WHERE user_id = ?
-            """, (wickets, wickets, runs_conceded, wickets, runs_conceded, user_id))
-            
-            if wickets >= 5:
-                c.execute("UPDATE user_stats SET five_wicket_hauls = five_wicket_hauls + 1 WHERE user_id = ?", (user_id,))
-    
-    # Update player of match
-    if match.player_of_match:
-        c.execute("UPDATE user_stats SET player_of_match_count = player_of_match_count + 1 WHERE user_id = ?", 
-                  (match.player_of_match,))
-    
-    conn.commit()
-    conn.close()
-
-
-async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🏏 Interactive cricket stats → per-mode with photo card"""
-    query = update.callback_query
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
-
-    if query is None:
-        # ── Image cooldown check for groups ──
-        group_id = update.effective_chat.id
-        if update.effective_chat.type != "private":
-            remaining = check_image_cooldown(group_id)
-            if remaining is not None:
-                await send_cooldown_warning(update, remaining)
-                return
-        keyboard = [
-            [
-                InlineKeyboardButton("📊 Overall", callback_data=f"mystats_overall_{user_id}"),
-                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}")
-            ],
-            [
-                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}"),
-                InlineKeyboardButton("🤖 AI", callback_data=f"mystats_ai_{user_id}")
-            ],
-            [
-                InlineKeyboardButton("🔮 Magic Ball", callback_data=f"mystats_magicball_{user_id}")
-            ]
+        stat_rows = [
+            (stats.get("matches", 0),    172),
+            (stats.get("runs", 0),       233),
+            (stats.get("wickets", 0),    293),
+            (f"{stats.get('fifties',0)} / {stats.get('hundreds',0)}", 352),
+            (f"{stats.get('strike_rate', 0.0)}%", 412),
+            (stats.get("highest", 0),    471),
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        caption = f"─────────────────\n"
-        caption += f"  🏏  C R I C K E T  C A R D  \n"
-        caption += f"─────────────────\n"
-        caption += f"👤 <b>{user_name}</b>\n"
-        caption += f"─────────────────\n"
-        caption += "👇 <i>Select a mode to view your stats!</i>"
-        
-        try:
-            # Use scorecard photo (already available in MEDIA_ASSETS)
-            stats_photo = MEDIA_ASSETS.get("botstats")
-            if stats_photo:
-                await update.message.reply_photo(
-                    photo=stats_photo,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=reply_markup
-                )
-                if update.effective_chat.type != "private":
-                    set_image_cooldown(update.effective_chat.id)
-            else:
-                await update.message.reply_text(
-                    caption,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=reply_markup
-                )
-        except Exception as e:
-            logger.error(f"mystats send error: {e}")
-            await update.message.reply_text("🏏 Error loading stats. Try again!")
-    else:
-        await query.answer()
+        for val, y in stat_rows:
+            val_str = str(val)
+            vb = draw.textbbox((0, 0), val_str, font=f_val)
+            vw = vb[2] - vb[0]
+            draw.text((val_x - vw // 2, y - 14), val_str, font=f_val, fill=WHITE)
 
-async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Optional[bytes] = None, mode: str = "overall") -> Optional[BytesIO]:
-    """
-    Cricket-theme player profile card — GOD-LEVEL ULTIMATE PREMIUM design.
-    Features: Obsidian space gradient with radial stadium blooms, glowing neon rings around DP,
-    carbon-fiber pinstripes, frosted glass capsule badges, and modern glassmorphism grid tiles.
-    """
-    try:
-        from PIL import Image, ImageDraw, ImageFont, ImageFilter
-        import math
-        
-        # SC=3 generates a massive 3600x2220 canvas for extreme crispness, downscaled at the end
-        SC = 3 
-        W, H = 1200 * SC, 740 * SC
-        img = Image.new("RGBA", (W, H))
-        draw = ImageDraw.Draw(img)
+        # ── 3. PLAYER PFP — in the big white circle on the right ──
+        # Circle center approx: cx=730, cy=341, radius≈185px (based on 1024x682 template)
+        pfp_cx, pfp_cy, pfp_r = 730, 341, 185
+        pfp_size = pfp_r * 2
 
-        # ── 1. PREMIUM GRADIENT & NEON STADIUM BLOOM BACKGROUND ──
-        # Radial/Vertical gradient
-        for y in range(H):
-            ratio = y / H
-            # Dark navy-indigo at top, pure black at bottom
-            r = int(10 + (2 - 10) * ratio)
-            g = int(14 + (4 - 14) * ratio)
-            b = int(24 + (8 - 24) * ratio)
-            draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
-
-        # Carbon fiber pinstripes (subtle opacity)
-        stripe_gap = 45 * SC
-        for d in range(-H, W + H, stripe_gap):
-            draw.line([(d, 0), (d + H, H)], fill=(255, 255, 255, 5), width=2 * SC)
-
-        # Stadium lighting glow blooms (spotlights)
-        glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow_layer)
-        # Spotlight 1 (Cyan top-left behind avatar)
-        glow_draw.ellipse([-300*SC, -300*SC, 600*SC, 600*SC], fill=(0, 229, 255, 35))
-        # Spotlight 2 (Gold top-right corner)
-        glow_draw.ellipse([W - 300*SC, -300*SC, W + 300*SC, 300*SC], fill=(255, 215, 0, 20))
-        # Spotlight 3 (Neon Green bottom-right)
-        glow_draw.ellipse([W - 500*SC, H - 500*SC, W + 400*SC, H + 400*SC], fill=(57, 255, 20, 20))
-        
-        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(120 * SC // 3))
-        img.paste(glow_layer, (0, 0), glow_layer)
-
-        # ── COLOR PALETTE (Neon & Gold on Black) ──
-        WHITE = (255, 255, 255, 255)
-        MUTED = (140, 150, 165, 255)     # Sleeker silver-gray
-        GOLD  = (255, 215, 0, 255)       # Pure Gold
-        BLUE  = (0, 229, 255, 255)       # Neon Cyber Cyan
-        GREEN = (57, 255, 20, 255)       # Neon Emerald Green
-        RED   = (255, 60, 90, 255)       # Neon Coral Red
-
-        # Fonts
-        f_title = _get_font(True, 42*SC)
-        f_name  = _get_font(True, 62*SC)
-        f_label = _get_font(False, 22*SC)
-        f_value = _get_font(True, 40*SC)
-        f_small = _get_font(False, 21*SC)
-        f_mode  = _get_font(True, 26*SC)
-
-        # ── 2. OUTER CARD FRAME (Translucent panel with frosted border) ──
-        # Outer soft glow shadow for the main panel
-        for r in range(12, 0, -1):
-            alpha = int(35 * (r / 12))
-            draw.rounded_rectangle(
-                [36*SC - r*SC, 30*SC - r*SC, W - 36*SC + r*SC, H - 30*SC + r*SC],
-                radius=34*SC, fill=(0, 0, 0, alpha)
-            )
-            
-        draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, H-30*SC],
-                                radius=30*SC, fill=(12, 16, 28, 200),
-                                outline=(255, 255, 255, 20), width=1*SC)
-
-        # ── 3. CROSSED BATS WATERMARK (Subtle Gold behind details) ──
-        def _draw_crossed_bats_watermark(cx, cy, size, alpha):
-            w_color = (255, 215, 0, alpha)
-            hw = int(4 * SC)
-            bw = int(12 * SC)
-            # Bat 1
-            draw.line([(cx - size//2, cy - size//2), (cx - size//8, cy - size//8)], fill=w_color, width=hw)
-            draw.line([(cx - size//8, cy - size//8), (cx + size//2, cy + size//2)], fill=w_color, width=bw)
-            draw.rectangle([cx + size//2 - bw//2, cy + size//2 - bw//2, cx + size//2 + bw//2, cy + size//2 + bw//2], fill=w_color)
-            # Bat 2
-            draw.line([(cx + size//2, cy - size//2), (cx + size//8, cy - size//8)], fill=w_color, width=hw)
-            draw.line([(cx + size//8, cy - size//8), (cx - size//2, cy + size//2)], fill=w_color, width=bw)
-            draw.rectangle([cx - size//2 - bw//2, cy + size//2 - bw//2, cx - size//2 + bw//2, cy + size//2 + bw//2], fill=w_color)
-
-        _draw_crossed_bats_watermark(W - 240*SC, 240*SC, 240*SC, 10)
-
-        # ── 4. HEADER STRIP (Frosted Cyber Header with neon gradient accents) ──
-        draw.rounded_rectangle([36*SC, 30*SC, W-36*SC, 115*SC],
-                                radius=30*SC, fill=(6, 8, 14, 230))
-        # Draw a glowing gradient line under the header
-        for i in range(3 * SC):
-            y_line = 115*SC + i
-            alpha = int(255 * (1 - i / (3*SC)))
-            draw.line([(36*SC, y_line), (W-36*SC, y_line)], fill=(0, 229, 255, alpha))
-
-        header_txt = "🏏  C R I C O V E R S E   S P E C I A L   E D I T I O N  🏏"
-        _draw_text_centered_glow(draw, header_txt, W//2, 50*SC, f_mode, GOLD, glow_color=(255, 215, 0))
-
-        # ── 5. AVATAR WITH MULTI-LAYERED CYBER GLOW ──
-        initials = "".join(part[:1] for part in (name or "Player").split()[:2])
-        avatar = _circle_avatar(avatar_bytes, 180*SC, initials)
-        
-        av_cx, av_cy = 175*SC, 260*SC
-        av_r = 90*SC
-        
-        # Draw glowing neon backdrops for avatar
-        for r in range(15, 0, -1):
-            g_alpha = int(60 * (1 - r/15))
-            draw.ellipse([av_cx - av_r - r*SC, av_cy - av_r - r*SC, av_cx + av_r + r*SC, av_cy + av_r + r*SC],
-                         outline=(0, 229, 255, g_alpha), width=2*SC)
-                         
-        img.alpha_composite(avatar, (av_cx - av_r, av_cy - av_r))
-        
-        # Double rings on top of the avatar border
-        draw.ellipse([av_cx - av_r, av_cy - av_r, av_cx + av_r, av_cy + av_r], outline=GOLD, width=3*SC)
-        draw.ellipse([av_cx - av_r - 4*SC, av_cy - av_r - 4*SC, av_cx + av_r + 4*SC, av_cy + av_r + 4*SC], outline=(0, 229, 255, 120), width=1*SC)
-
-        # ── 6. PLAYER NAME & DETAILS ──
-        text_x = 295 * SC
-        safe_name = _clean_display_name(name or "Player", 16).upper()
-        
-        _draw_glowing_text(draw, safe_name, text_x, 155*SC, f_name, WHITE, glow_color=(0, 229, 255), glow_radius=8)
-        draw.text((text_x, 230*SC), f"PLAYER ID: {user_id}", font=f_small, fill=MUTED)
-
-        # ── 7. WIN/LOSS SUMMARY CARD ──
-        matches = stats.get("matches", 0)
-        wins    = stats.get("wins", 0)
-        losses  = stats.get("losses", max(matches - wins, 0))
-        win_rate= stats.get("win_rate", 0)
-        form    = stats.get("form", [])
-
-        # Capsule shape for Win/Loss record
-        wl_rect = [295*SC, 280*SC, 580*SC, 340*SC]
-        draw.rounded_rectangle(wl_rect, radius=18*SC, fill=(255, 255, 255, 10), outline=(255, 255, 255, 20), width=1*SC)
-        
-        wl_accent_color = GREEN if wins >= losses else RED
-        draw.rounded_rectangle([295*SC, 280*SC, 305*SC, 340*SC], radius=6*SC, fill=wl_accent_color)
-        
-        draw.text((325*SC, 290*SC), f"{wins}W - {losses}L", font=f_value, fill=wl_accent_color)
-        draw.text((475*SC, 296*SC), f"{win_rate}% WR", font=f_label, fill=MUTED)
-
-        # ── 8. Recent Form dots (glowing circular badges) ──
-        if form:
-            form_x = 295*SC
+        pfp_img = Image.new("RGBA", (pfp_size, pfp_size), (200, 200, 200, 255))
+        if avatar_bytes:
             try:
-                f_mini = ImageFont.truetype("Roboto-Bold.ttf", 10 * SC)
-            except:
-                f_mini = ImageFont.load_default(size=10 * SC)
-            for r in form[-5:]:
-                fc = GREEN if r == "W" else (RED if r == "L" else GOLD)
-                for w in range(1, 4):
-                    draw.ellipse([form_x - w*SC, 360*SC - w*SC, form_x + 24*SC + w*SC, 384*SC + w*SC], outline=(*fc[:3], 50), width=1*SC)
-                draw.ellipse([form_x, 360*SC, form_x + 24*SC, 384*SC], fill=fc)
-                txt = str(r)
-                tb = draw.textbbox((0, 0), txt, font=f_mini)
-                tw = tb[2] - tb[0]
-                th = tb[3] - tb[1]
-                draw.text((form_x + 12*SC - tw//2, 372*SC - th//2 - 2*SC), txt, font=f_mini, fill=(10, 12, 18, 255))
-                form_x += 36*SC
+                src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
+                src = ImageOps.fit(src, (pfp_size, pfp_size), method=Image.Resampling.LANCZOS)
+                pfp_img = src
+            except Exception:
+                pass
+        else:
+            # Draw initials
+            init_draw = ImageDraw.Draw(pfp_img)
+            init_draw.rectangle([0, 0, pfp_size, pfp_size], fill=(30, 45, 90, 255))
+            initials = "".join(p[:1] for p in (name or "PL").split()[:2]).upper()
+            try:
+                fi = ImageFont.truetype("Roboto-Bold.ttf", pfp_size // 3)
+            except Exception:
+                fi = ImageFont.load_default(size=pfp_size // 3)
+            ib = init_draw.textbbox((0, 0), initials, font=fi)
+            init_draw.text(
+                ((pfp_size - (ib[2]-ib[0])) // 2, (pfp_size - (ib[3]-ib[1])) // 2),
+                initials, font=fi, fill=(255, 255, 255, 255)
+            )
 
-        # ── 9. SMOKED GLASS STATS GRID (4x2 layout) ──
-        stat_cards = [
-            ("MATCHES",     stats.get("matches", 0),                 BLUE),
-            ("RUNS",        stats.get("runs", 0),                    GREEN),
-            ("HIGH SCORE",  stats.get("highest", 0),                 GOLD),
-            ("STRIKE RATE", str(stats.get("strike_rate", 0)) + "%",  BLUE),
-            ("AVERAGE",     stats.get("average", 0),                 GREEN),
-            ("WICKETS",     stats.get("wickets", 0),                 RED),
-            ("4s / 6s",     str(stats.get("fours",0)) + " / " + str(stats.get("sixes",0)), GOLD),
-            ("POTM AWARDS", stats.get("mom", 0),                     BLUE),
-        ]
+        # Circular mask
+        mask = Image.new("L", (pfp_size, pfp_size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, pfp_size - 1, pfp_size - 1), fill=255)
+        pfp_circle = Image.new("RGBA", (pfp_size, pfp_size), (0, 0, 0, 0))
+        pfp_circle.paste(pfp_img, (0, 0), mask)
 
-        sx, sy = 68*SC, 432*SC
-        card_w, card_h = 256*SC, 98*SC
-        gap_x, gap_y   = 18*SC, 16*SC
-        for idx, (label, value, color) in enumerate(stat_cards):
-            col = idx % 4; row = idx // 4
-            x1 = sx + col * (card_w + gap_x)
-            y1 = sy + row * (card_h + gap_y)
-            
-            draw.rounded_rectangle([x1, y1, x1+card_w, y1+card_h],
-                                   radius=20*SC, fill=(20, 26, 42, 210),
-                                   outline=(255, 255, 255, 15), width=1*SC)
-            
-            draw.rounded_rectangle([x1, y1, x1+8*SC, y1+card_h], radius=8*SC, fill=color)
-            draw.ellipse([x1+2*SC, y1+4*SC, x1+6*SC, y1+8*SC], fill=WHITE)
-            
-            val_str = str(value)
-            if len(val_str) > 10:
-                try:
-                    f_val_small = ImageFont.truetype("Roboto-Bold.ttf", 30 * SC)
-                except:
-                    f_val_small = ImageFont.load_default(size=30 * SC)
-                draw.text((x1+26*SC, y1+18*SC), val_str, font=f_val_small, fill=WHITE)
-            else:
-                draw.text((x1+26*SC, y1+12*SC), val_str, font=f_value, fill=WHITE)
-                
-            draw.text((x1+26*SC, y1+64*SC), label, font=f_label, fill=MUTED)
+        paste_x = pfp_cx - pfp_r
+        paste_y = pfp_cy - pfp_r
+        overlay.alpha_composite(pfp_circle, (paste_x, paste_y))
 
-        # ── 10. FOOTER BRANDING ──
-        py2 = sy + 2*(card_h + gap_y) + 20*SC
-        draw.line([(68*SC, py2), (W-68*SC, py2)], fill=(255, 255, 255, 15), width=1*SC)
-
-        brand = "⚡  C R I C O V E R S E   C L U B   ·   U L T I M A T E   S T A T I S T I C S  ⚡"
-        bb = draw.textbbox((0,0), brand, font=f_small)
-        draw.text(((W - (bb[2]-bb[0]))//2, py2 + 15*SC), brand, font=f_small, fill=MUTED)
-
-        # ── 11. DOWNSCALE FOR GOD-LEVEL CRISPNESS ──
-        final = img.convert("RGB").resize((1200, 740), Image.Resampling.LANCZOS)
-        
+        # ── 4. COMPOSITE ──
+        final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()
-        final.save(bio, "PNG", optimize=True)
+        final.save(bio, "JPEG", quality=92)
         bio.seek(0)
         return bio
-        
+
     except Exception as e:
         logger.error("Stats image generation error: " + str(e))
         return None
+
 
 
 def fetch_overall_stats(user_id: int) -> dict:
@@ -24014,6 +21058,94 @@ async def bug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
 
+async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /refresh — Admin only. Resends the main setup/lobby button message
+    if the original was accidentally deleted.
+    """
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type == "private":
+        await update.message.reply_text("❌ Use this in a group!")
+        return
+
+    # Admin or host check
+    is_admin = False
+    try:
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        if member.status in ("administrator", "creator"):
+            is_admin = True
+    except Exception:
+        pass
+
+    match = active_matches.get(chat.id)
+
+    if match and user.id == match.host_id:
+        is_admin = True
+
+    if not is_admin:
+        await update.message.reply_text("🚫 Only admins or the host can use /refresh.")
+        return
+
+    if not match:
+        await update.message.reply_text("❌ No active match to refresh!")
+        return
+
+    # Clear stale message id so refresh_game_message sends a fresh one
+    match.main_message_id = None
+
+    phase = match.phase
+
+    try:
+        if phase == GamePhase.TEAM_JOINING:
+            await update_joining_board(context, chat.id, match)
+            # update_joining_board checks main_message_id; since it's None, it won't edit.
+            # Instead call the full refresh path:
+            text = get_team_join_message(match)
+            keyboard = [
+                [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
+                 InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
+                [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")]
+            ]
+            await refresh_game_message(context, chat.id, match, text, InlineKeyboardMarkup(keyboard), media_key="joining")
+
+        elif phase == GamePhase.TEAM_EDIT:
+            await update_team_edit_message(context, chat.id, match)
+
+        elif phase == GamePhase.TOSS:
+            # Rebuild toss message
+            toss_text = (
+                f"╭━━ 🪙 TOSS TIME ━━╮\n"
+                f"┃ Host is flipping the coin!\n"
+                f"┃ Waiting for toss decision...\n"
+                f"╰━━━━━━━━━━━━━━━━━╯"
+            )
+            keyboard = [
+                [InlineKeyboardButton("🧊 Heads (Team X)", callback_data="toss_heads"),
+                 InlineKeyboardButton("🔥 Tails (Team Y)", callback_data="toss_tails")]
+            ]
+            await refresh_game_message(context, chat.id, match, toss_text, InlineKeyboardMarkup(keyboard), media_key="toss")
+
+        elif phase in (GamePhase.SOLO_JOINING,):
+            # Solo lobby refresh
+            from_text = get_team_join_message(match) if hasattr(match, 'team_x') else "Solo lobby active."
+            keyboard = [[InlineKeyboardButton("🏏 Join Solo Match", callback_data="solo_join")]]
+            await refresh_game_message(context, chat.id, match, from_text, InlineKeyboardMarkup(keyboard), media_key="joining")
+
+        else:
+            await update.message.reply_text(
+                f"♻️ Refresh sent! (Match phase: {phase.value if phase else 'unknown'})\n"
+                "Note: During live match, only lobby/setup messages can be refreshed."
+            )
+            return
+
+        await update.message.reply_text("✅ Setup message has been refreshed and pinned!")
+    except Exception as e:
+        logger.error(f"refresh_command error: {e}")
+        await update.message.reply_text(f"⚠️ Could not refresh: {e}")
+
+
 async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """End the current match (host/admin only) → auto-detects Team/Solo mode"""
 
@@ -25116,10 +22248,13 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(match["user_bat_history"]) > 10:
                 match["user_bat_history"].pop(0)
             
-            # Check if this number has been sent 3 times (cumulative) in the match
+            # Check last 3 numbers for spam
             is_spam = False
-            if match["user_spam_history"].count(num) % 3 == 0:
-                is_spam = True
+            if len(match["user_spam_history"]) >= 3:
+                if (match["user_spam_history"][-1] == match["user_spam_history"][-2] == 
+                    match["user_spam_history"][-3]):
+                    is_spam = True
+                    match["user_spam_history"] = []  # Reset
             
             if is_spam:
                 # WIDE BALL - Don't count ball, AI gets 1 free run
@@ -25346,10 +22481,13 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(match["user_bowl_history"]) > 10:
                 match["user_bowl_history"].pop(0)
             
-            # Check if this number has been sent 3 times (cumulative) in the match
+            # Check last 3 numbers for spam
             is_spam = False
-            if match["user_spam_history"].count(num) % 3 == 0:
-                is_spam = True
+            if len(match["user_spam_history"]) >= 3:
+                if (match["user_spam_history"][-1] == match["user_spam_history"][-2] == 
+                    match["user_spam_history"][-3]):
+                    is_spam = True
+                    match["user_spam_history"] = []  # Reset
             
             if is_spam:
                 # WIDE BALL - Don't count ball, user gets 1 free run to AI
@@ -25451,7 +22589,21 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      if match.current_ball_data.get("bowler_number") is None:
                         
                         # 🚫 WIDE BALL CHECK LOGIC STARTS
-                        is_wide = await check_wide_condition(match, num, user.id, add_to_history=True)
+                        # Initialize history list if not exists
+                        if not hasattr(bowler, 'spam_history'):
+                            bowler.spam_history = []
+                        
+                        # Add current number
+                        bowler.spam_history.append(num)
+                        
+                        # Check last 3 numbers
+                        is_wide = False
+                        if len(bowler.spam_history) >= 3:
+                            # Check if last 3 are same (e.g. 4, 4, 4)
+                            if bowler.spam_history[-1] == bowler.spam_history[-2] == bowler.spam_history[-3]:
+                                is_wide = True
+                                # Reset history so 4th ball counts as fresh start
+                                bowler.spam_history = [] 
 
                         if is_wide:
                             # 🚫 IT IS A WIDE!
@@ -26334,7 +23486,7 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         
         # Generate summary image (optional, no stats saved)
         try:
-            await asyncio.to_thread(generate_solo_top3_image, sorted_players)
+            await generate_solo_top3_image(sorted_players, context)
 
         except Exception as e:
             logger.error(f"Error generating solo end image: {e}")
@@ -29578,6 +26730,135 @@ def generate_mid_match_image(match) -> Optional[BytesIO]:
         logger.error(f"Enhanced mid match image error: {e}")
         return None
 
+
+async def generate_solo_top3_image(sorted_players, context=None) -> Optional[BytesIO]:
+    """
+    ✅ TEMPLATE-BASED solo podium card.
+    Uses solo_podium_template.jpg (1024x682).
+    Pastes:
+      - 1st place pfp in CENTER circle
+      - 2nd place pfp in LEFT circle
+      - 3rd place pfp in RIGHT circle
+    """
+    try:
+        import os
+        from PIL import Image, ImageDraw, ImageFont, ImageOps
+        from io import BytesIO
+
+        if not sorted_players:
+            return None
+
+        TEMPLATE_PATH = "solo_podium_template.jpg"
+        if not os.path.exists(TEMPLATE_PATH):
+            TEMPLATE_PATH = "/home/cricoverse/solo_podium_template.jpg"
+
+        base = Image.open(TEMPLATE_PATH).convert("RGBA")
+        W, H = base.size  # 1024 x 682
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # ── Fetch pfp bytes ──
+        async def get_pfp(uid):
+            if context is None or uid is None:
+                return None
+            try:
+                return await fetch_user_avatar_bytes(context, uid)
+            except Exception:
+                return None
+
+        top3 = sorted_players[:3]
+        pfp_bytes = []
+        for p in top3:
+            pfp_bytes.append(await get_pfp(getattr(p, "user_id", None)))
+        while len(pfp_bytes) < 3:
+            pfp_bytes.append(None)
+
+        # ── Circle paste helper ──
+        def paste_circle(img_overlay, avatar_bytes, cx, cy, r, initials="?"):
+            size = r * 2
+            pfp = Image.new("RGBA", (size, size), (80, 80, 80, 200))
+            if avatar_bytes:
+                try:
+                    src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
+                    src = ImageOps.fit(src, (size, size), method=Image.Resampling.LANCZOS)
+                    pfp = src
+                except Exception:
+                    pass
+            else:
+                d = ImageDraw.Draw(pfp)
+                d.ellipse([0, 0, size-1, size-1], fill=(30, 30, 80, 255))
+                try:
+                    fi = ImageFont.truetype("Roboto-Bold.ttf", size // 3)
+                except Exception:
+                    fi = ImageFont.load_default(size=size // 3)
+                ib = d.textbbox((0, 0), initials[:2], font=fi)
+                d.text(((size-(ib[2]-ib[0]))//2, (size-(ib[3]-ib[1]))//2),
+                       initials[:2], font=fi, fill=(255, 255, 255, 255))
+            mask = Image.new("L", (size, size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, size-1, size-1), fill=255)
+            circle = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            circle.paste(pfp, (0, 0), mask)
+            img_overlay.alpha_composite(circle, (cx - r, cy - r))
+
+        # Template layout (1024 x 682):
+        # CENTER (1st) : cx≈512, cy≈285, r≈120
+        # LEFT   (2nd) : cx≈188, cy≈315, r≈105
+        # RIGHT  (3rd) : cx≈836, cy≈330, r≈100
+
+        def get_init(p):
+            return (getattr(p, "first_name", "P") or "P")[:2].upper()
+
+        paste_circle(overlay, pfp_bytes[0], 512, 285, 120, get_init(top3[0]))  # 1st center
+        if len(top3) > 1:
+            paste_circle(overlay, pfp_bytes[1], 188, 315, 105, get_init(top3[1]))  # 2nd left
+        if len(top3) > 2:
+            paste_circle(overlay, pfp_bytes[2], 836, 330, 100, get_init(top3[2]))  # 3rd right
+
+        # ── Player names on podium ──
+        try:
+            f_name = ImageFont.truetype("Roboto-Bold.ttf", 26)
+            f_score = ImageFont.truetype("Roboto-Bold.ttf", 22)
+        except Exception:
+            f_name = ImageFont.load_default(size=26)
+            f_score = ImageFont.load_default(size=22)
+
+        WHITE = (255, 255, 255, 255)
+        GOLD  = (255, 215, 0, 255)
+
+        name_positions = [
+            (512, 420),  # 1st
+            (188, 435),  # 2nd
+            (836, 445),  # 3rd
+        ]
+        score_positions = [
+            (512, 452),  # 1st
+            (188, 467),  # 2nd
+            (836, 477),  # 3rd
+        ]
+
+        for i, p in enumerate(top3):
+            nx, ny = name_positions[i]
+            pname = (getattr(p, "first_name", "Player") or "Player")[:14]
+            nb = draw.textbbox((0, 0), pname, font=f_name)
+            draw.text((nx - (nb[2]-nb[0])//2, ny), pname, font=f_name, fill=GOLD if i == 0 else WHITE)
+
+            sx, sy = score_positions[i]
+            score_str = f"{getattr(p, 'runs', 0)} ({getattr(p, 'balls_faced', 0)})"
+            sb = draw.textbbox((0, 0), score_str, font=f_score)
+            draw.text((sx - (sb[2]-sb[0])//2, sy), score_str, font=f_score, fill=WHITE)
+
+        final = Image.alpha_composite(base, overlay).convert("RGB")
+        bio = BytesIO()
+        final.save(bio, "JPEG", quality=92)
+        bio.seek(0)
+        return bio
+
+    except Exception as e:
+        logger.error(f"Solo podium template error: {e}")
+        return None
+
+
+
 def generate_newspaper_image(match, winner: "Team", loser: "Team", top_scorer_name: str,
                                top_scorer_runs: int, mom_name: str, margin: str) -> Optional[BytesIO]:
     """Premium newspaper headline card for post-match sharing."""
@@ -30043,6 +27324,7 @@ def main():
     application.add_handler(CommandHandler("game", game_command))
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CommandHandler("endmatch", endmatch_command))
+    application.add_handler(CommandHandler("refresh", refresh_command))
     application.add_handler(CommandHandler("timeout", timeout_command))
 
     application.add_handler(CommandHandler("add", add_command))
@@ -30081,7 +27363,6 @@ def main():
 
     application.add_handler(CommandHandler("cheer", cheer_command))
     application.add_handler(CommandHandler("celebrate", celebrate_command))
-    application.add_handler(CommandHandler("refresh", refresh_command))
     application.add_handler(CommandHandler("huddle", huddle_command))
 
     # ================== SOLO MODE ==================

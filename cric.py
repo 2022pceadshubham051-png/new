@@ -12497,15 +12497,15 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
             circle.paste(pfp, (0, 0), mask)
             img_overlay.alpha_composite(circle, (cx - r, cy - r))
 
-        # Template layout (1024 x 639):
-        # LEFT circle  (Team X cap)  : cx≈202, cy≈330, r≈155
-        # RIGHT circle (Team Y cap)  : cx≈822, cy≈330, r≈155
-        # CENTER small (Host)        : cx≈512, cy≈215, r≈72
-        paste_circle(overlay, cap_x_bytes,  202, 330, 155,
+        # Template layout (1024 x 639) — pixel-calibrated:
+        # LEFT  circle (Team X cap) : cx=238, cy=359, inner_r=115
+        # RIGHT circle (Team Y cap) : cx=775, cy=359, inner_r=115
+        # CENTER small (Host)       : cx=510, cy=235, inner_r=58
+        paste_circle(overlay, cap_x_bytes,  238, 359, 115,
                      initials=(match.team_x.name or "X")[:2].upper())
-        paste_circle(overlay, cap_y_bytes,  822, 330, 155,
+        paste_circle(overlay, cap_y_bytes,  775, 359, 115,
                      initials=(match.team_y.name or "Y")[:2].upper())
-        paste_circle(overlay, host_bytes,   512, 215,  72,
+        paste_circle(overlay, host_bytes,   510, 235,  58,
                      initials=(getattr(match, "host_name", "H") or "H")[:2].upper())
 
         # ── Team name labels ──
@@ -12516,15 +12516,15 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
             f_team = ImageFont.load_default(size=34)
 
         WHITE = (255, 255, 255, 255)
-        # Team X label (bottom-left banner area ~y=565)
+        # Team X label — centred on Team X circle x=238, banner y=562
         tx_name = (match.team_x.name or "TEAM X")[:14].upper()
         tb = draw.textbbox((0, 0), tx_name, font=f_team)
-        draw.text((202 - (tb[2]-tb[0])//2, 562), tx_name, font=f_team, fill=WHITE)
+        draw.text((238 - (tb[2]-tb[0])//2, 562), tx_name, font=f_team, fill=WHITE)
 
-        # Team Y label (bottom-right)
+        # Team Y label — centred on Team Y circle x=775, banner y=562
         ty_name = (match.team_y.name or "TEAM Y")[:14].upper()
         tb = draw.textbbox((0, 0), ty_name, font=f_team)
-        draw.text((822 - (tb[2]-tb[0])//2, 562), ty_name, font=f_team, fill=WHITE)
+        draw.text((775 - (tb[2]-tb[0])//2, 562), ty_name, font=f_team, fill=WHITE)
 
         # Host label (small, above host circle)
         host_name = (getattr(match, "host_name", "Host") or "Host")[:16]
@@ -12533,7 +12533,7 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
         except Exception:
             f_host = ImageFont.load_default(size=20)
         hb = draw.textbbox((0, 0), host_name, font=f_host)
-        draw.text((512 - (hb[2]-hb[0])//2, 140), host_name, font=f_host, fill=WHITE)
+        draw.text((510 - (hb[2]-hb[0])//2, 156), host_name, font=f_host, fill=WHITE)
 
         final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()
@@ -16164,17 +16164,17 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         # ── 1. PLAYER NAME ──
         # Pixel-measured position from rendered output (1024x682)
         safe_name = (name or "Player")[:20]
-        draw.text((38, 28), safe_name, font=f_name, fill=YELLOW)
+        draw.text((25, 55), safe_name, font=f_name, fill=YELLOW)
 
         # ── 2. STAT VALUES ──
         # Right edge at x=462 (just inside panel border at x=468).
         # Y centres pixel-measured from rendered output:
-        #   MATCHES       cy=215
-        #   RUNS          cy=270
-        #   WICKETS       cy=325
-        #   50/100        cy=380
-        #   STRIKE RATE   cy=435
-        #   HIGHEST SCORE cy=490
+        #   MATCHES       cy=229
+        #   RUNS          cy=289
+        #   WICKETS       cy=359
+        #   50/100        cy=435
+        #   STRIKE RATE   cy=488
+        #   HIGHEST SCORE cy=550
         VAL_RIGHT_X   = 462
         ROW_FONT_SIZE = 26
 
@@ -16184,12 +16184,12 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
             f_val = ImageFont.load_default(size=ROW_FONT_SIZE)
 
         stat_rows = [
-            (str(stats.get("matches", 0)),                               215),
-            (str(stats.get("runs", 0)),                                  270),
-            (str(stats.get("wickets", 0)),                               325),
-            (f"{stats.get('fifties',0)} / {stats.get('hundreds',0)}",    380),
-            (f"{stats.get('strike_rate', 0.0):.1f}%",                    435),
-            (str(stats.get("highest", 0)),                               490),
+            (str(stats.get("matches", 0)),                               229),
+            (str(stats.get("runs", 0)),                                  289),
+            (str(stats.get("wickets", 0)),                               359),
+            (f"{stats.get('fifties',0)} / {stats.get('hundreds',0)}",    435),
+            (f"{stats.get('strike_rate', 0.0):.1f}%",                    488),
+            (str(stats.get("highest", 0)),                               550),
         ]
         for val_str, cy in stat_rows:
             vb  = draw.textbbox((0, 0), val_str, font=f_val)
@@ -16200,11 +16200,9 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
             draw.text((tx, ty), val_str, font=f_val, fill=WHITE)
 
         # ── 3. PLAYER PFP ──
-        # Pixel-measured from rendered output:
-        #   white ring cx=744, cy=341, outer_r=198, inner photo r=174
-        #   photo vertical centre cy=354
-        # Use r=172 to stay well within the ring border.
-        pfp_cx, pfp_cy, pfp_r = 744, 354, 172
+        # Pixel-measured from rendered output (1024x682):
+        #   white ring cx=743, cy=340, inner photo r=188
+        pfp_cx, pfp_cy, pfp_r = 743, 340, 188
         pfp_size = pfp_r * 2
         hq_size = pfp_size * 3  # render at 3x for crisp quality
 
@@ -26823,11 +26821,11 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
         def get_init(p):
             return (getattr(p, "first_name", "P") or "P")[:2].upper()
 
-        paste_circle(overlay, pfp_bytes[0], 514, 295, 120, get_init(top3[0]))   # 1st – center gold
+        paste_circle(overlay, pfp_bytes[0], 515, 297,  92, get_init(top3[0]))   # 1st – centre gold ring
         if len(top3) > 1:
-            paste_circle(overlay, pfp_bytes[1], 195, 300, 146, get_init(top3[1]))  # 2nd – left silver
+            paste_circle(overlay, pfp_bytes[1], 227, 357,  80, get_init(top3[1]))  # 2nd – left silver ring
         if len(top3) > 2:
-            paste_circle(overlay, pfp_bytes[2], 838, 363, 108, get_init(top3[2]))  # 3rd – right bronze
+            paste_circle(overlay, pfp_bytes[2], 797, 375, 108, get_init(top3[2]))  # 3rd – right bronze ring
 
         final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()

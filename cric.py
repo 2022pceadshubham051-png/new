@@ -71,9 +71,9 @@ logger = logging.getLogger(__name__)
 
 
 BOT_TOKEN = "8428604292:AAFkxmwj0_2wRm5DcsG6Kdw6p93ydzh3-cM"
-OWNER_ID = 8702369452  # Replace with your Telegram user ID
+OWNER_ID = 8619946084  # Replace with your Telegram user ID
 SECOND_APPROVER_ID = 7343683772 
-SUPPORT_GROUP_ID = -1003740536853  # Replace with your support group ID
+SUPPORT_GROUP_ID = -5126977365  # Replace with your support group ID
 
 auction_locks = defaultdict(asyncio.Lock)
 

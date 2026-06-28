@@ -977,6 +977,7 @@ USERS_FILE = os.path.join(DATA_DIR, "users.json")
 MATCHES_FILE = os.path.join(DATA_DIR, "matches.json")
 STATS_FILE = os.path.join(DATA_DIR, "stats.json")
 ACHIEVEMENTS_FILE = os.path.join(DATA_DIR, "achievements.json")
+FANTASY_FILE = os.path.join(DATA_DIR, "fantasy.json")
 BANNED_GROUPS_FILE = os.path.join(DATA_DIR, "banned_groups.json")
 GROUPS_FILE = os.path.join(DATA_DIR, "groups.json")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
@@ -1001,6 +1002,25 @@ gc_settings: Dict[int, Dict] = {}  # Per-GC admin settings
 banned_groups: Set[int] = set()
 bot_start_time = time.time()
 
+# ══════════════════════════════════════════════
+# 🏆 FANTASY DREAM XI — pre-match fantasy squads
+# ══════════════════════════════════════════════
+fantasy_data: Dict[int, Dict] = {}  # {user_id: {"points", "title", "titles_owned", ...}} — persistent, all-time
+
+FANTASY_SQUAD_SIZE = 11          # Hard cap — never more than a real Dream XI
+FANTASY_PTS_PER_RUN = 1          # +1 point for every run scored
+FANTASY_PTS_PER_SIX_BONUS = 10   # +10 BONUS on top of the run points for a six
+FANTASY_PTS_PER_WICKET = 30      # +30 points per wicket taken
+
+# Title shop — prices are intentionally steep so a title is a genuine flex
+FANTASY_TITLES = [
+    {"key": "rookie",     "name": "🥉 Fantasy Rookie",     "price": 50_000},
+    {"key": "strategist", "name": "🥈 Fantasy Strategist", "price": 100_000},
+    {"key": "maestro",    "name": "🥇 Fantasy Maestro",    "price": 250_000},
+    {"key": "legend",     "name": "💎 Fantasy Legend",     "price": 500_000},
+    {"key": "goat",       "name": "👑 Fantasy GOAT",       "price": 1_000_000},
+]
+
 # --- DUAL STORAGE MANAGER (SQL + JSON) ---
 def init_db():
     """Initialize SQL Tables"""
@@ -1022,6 +1042,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS matches (match_id TEXT PRIMARY KEY, data TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS groups (group_id INTEGER PRIMARY KEY, data TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS achievements (user_id INTEGER PRIMARY KEY, data TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS fantasy_stats (user_id INTEGER PRIMARY KEY, data TEXT)''')
     
     # Create user_stats table for detailed statistics
     c.execute('''CREATE TABLE IF NOT EXISTS user_stats (
@@ -1275,6 +1296,8 @@ def save_data():
             c.execute("INSERT OR REPLACE INTO groups (group_id, data) VALUES (?, ?)", (gid, json.dumps(data)))
         for uid, data in achievements.items():
             c.execute("INSERT OR REPLACE INTO achievements (user_id, data) VALUES (?, ?)", (uid, json.dumps(data)))
+        for uid, data in fantasy_data.items():
+            c.execute("INSERT OR REPLACE INTO fantasy_stats (user_id, data) VALUES (?, ?)", (uid, json.dumps(data)))
 
         conn.commit()
         conn.close()
@@ -1285,13 +1308,14 @@ def save_data():
         with open(MATCHES_FILE, 'w') as f: json.dump(match_history, f, indent=2)
         with open(GROUPS_FILE, 'w') as f: json.dump(registered_groups, f, indent=2)
         with open(ACHIEVEMENTS_FILE, 'w') as f: json.dump(achievements, f, indent=2)
+        with open(FANTASY_FILE, 'w') as f: json.dump(fantasy_data, f, indent=2)
 
     except Exception as e:
         logger.error(f"Error saving data: {e}")
 
 def load_data():
     """Load all data (Try SQL first, Fallback to JSON)"""
-    global user_data, match_history, player_stats, achievements, registered_groups, banned_groups
+    global user_data, match_history, player_stats, achievements, registered_groups, banned_groups, fantasy_data
     
     # Initialize DB if missing
     if not os.path.exists(DB_FILE):
@@ -1315,6 +1339,16 @@ def load_data():
             c.execute('''CREATE TABLE IF NOT EXISTS achievements (user_id INTEGER PRIMARY KEY, data TEXT)''')
             conn.commit()
             logger.info("✅ Tables created successfully")
+
+        # ✅ MIGRATION: fantasy_stats table was added later — make sure it exists
+        # on databases created before this feature existed (independent check so
+        # it self-heals even if the block above never ran).
+        try:
+            c.execute("SELECT user_id FROM fantasy_stats LIMIT 1")
+        except Exception:
+            c.execute('''CREATE TABLE IF NOT EXISTS fantasy_stats (user_id INTEGER PRIMARY KEY, data TEXT)''')
+            conn.commit()
+            logger.info("✅ fantasy_stats table created (migration)")
         
         c.execute("SELECT count(*) FROM users")
         if c.fetchone()[0] > 0:
@@ -1332,6 +1366,9 @@ def load_data():
 
             c.execute("SELECT user_id, data FROM achievements")
             achievements = {row[0]: json.loads(row[1]) for row in c.fetchall()}
+
+            c.execute("SELECT user_id, data FROM fantasy_stats")
+            fantasy_data = {row[0]: json.loads(row[1]) for row in c.fetchall()}
             
             data_loaded_from_sql = True
             logger.info("✅ Data loaded from SQL Database.")
@@ -1359,6 +1396,9 @@ def load_data():
             if os.path.exists(ACHIEVEMENTS_FILE):
                 with open(ACHIEVEMENTS_FILE, 'r') as f: 
                     achievements = {int(k): v for k, v in json.load(f).items()}
+            if os.path.exists(FANTASY_FILE):
+                with open(FANTASY_FILE, 'r') as f: 
+                    fantasy_data = {int(k): v for k, v in json.load(f).items()}
             
             # JSON se load hone ke baad turant SQL me sync kar do
             save_data()
@@ -1515,7 +1555,81 @@ def init_player_stats(user_id: int):
 
         if changed: save_data()
 
-# Player class to track individual player performance in a match
+
+# ══════════════════════════════════════════════
+# 🏆 FANTASY DREAM XI — helper functions
+# ══════════════════════════════════════════════
+
+def init_fantasy_data(user_id: int, first_name: str = "", username: str = ""):
+    """Ensure a persistent fantasy profile exists for this user."""
+    if user_id not in fantasy_data:
+        fantasy_data[user_id] = {
+            "points": 0,
+            "first_name": first_name or "Player",
+            "username": username or "",
+            "matches_played": 0,
+            "best_match_points": 0,
+            "title": None,          # currently equipped title key
+            "titles_owned": [],     # list of purchased title keys
+        }
+    else:
+        if first_name:
+            fantasy_data[user_id]["first_name"] = first_name
+        if username:
+            fantasy_data[user_id]["username"] = username
+        # Backfill any missing keys (e.g. profiles saved before a field existed)
+        fantasy_data[user_id].setdefault("points", 0)
+        fantasy_data[user_id].setdefault("matches_played", 0)
+        fantasy_data[user_id].setdefault("best_match_points", 0)
+        fantasy_data[user_id].setdefault("title", None)
+        fantasy_data[user_id].setdefault("titles_owned", [])
+
+
+def get_fantasy_title_info(key: str):
+    """Look up a title's display name/price by its key."""
+    for t in FANTASY_TITLES:
+        if t["key"] == key:
+            return t
+    return None
+
+
+def get_fantasy_squad_cap(match: 'Match') -> int:
+    """
+    Dream XI size for this match's combined player pool.
+    Mirrors real Dream11 ratio (pick ~half the combined pool, capped at 11)
+    so picking is still a genuine choice even in small lobbies.
+    """
+    pool_size = len(match.team_x.players) + len(match.team_y.players)
+    return max(2, min(FANTASY_SQUAD_SIZE, pool_size // 2))
+
+
+def award_fantasy_wicket(match: 'Match', bowler: 'Player'):
+    """Credit +30 fantasy points to every squad owner who picked this bowler."""
+    squads = getattr(match, "fantasy_squads", None)
+    if not squads:
+        return
+    for squad in squads.values():
+        if bowler.user_id in squad.get("players", []):
+            squad["match_points"] = squad.get("match_points", 0) + FANTASY_PTS_PER_WICKET
+            squad.setdefault("log", []).append(f"🎯 +{FANTASY_PTS_PER_WICKET} · {bowler.first_name} took a wicket")
+
+
+def award_fantasy_runs(match: 'Match', striker: 'Player', runs: int):
+    """Credit run points (+ six bonus) to every squad owner who picked this batsman."""
+    if runs <= 0:
+        return
+    squads = getattr(match, "fantasy_squads", None)
+    if not squads:
+        return
+    is_six = (runs == 6)
+    pts = (runs * FANTASY_PTS_PER_RUN) + (FANTASY_PTS_PER_SIX_BONUS if is_six else 0)
+    for squad in squads.values():
+        if striker.user_id in squad.get("players", []):
+            squad["match_points"] = squad.get("match_points", 0) + pts
+            if is_six:
+                squad.setdefault("log", []).append(f"🚀 +{pts} · {striker.first_name} smashed a SIX")
+
+
 class Player:
     """Represents a player in the match"""
     def __init__(self, user_id: int, username: str, first_name: str):
@@ -1809,6 +1923,11 @@ class Match:
         self.retire_hurt_pending = False      # A batsman requested retire hurt
         self.retire_hurt_batsman_id: Optional[int] = None   # who wants to retire
         self.retire_hurt_message_id: Optional[int] = None
+
+        # ── FANTASY DREAM XI feature (TEAM / TOURNAMENT only) ──
+        self.fantasy_squads: Dict[int, Dict] = {}   # {owner_user_id: {"name", "players":[...], "match_points", "log":[...]}}
+        self.fantasy_window_open = False            # True only while picking is allowed (TOSS phase)
+        self.fantasy_announce_message_id: Optional[int] = None
     
     def get_team_by_name(self, name: str) -> Optional[Team]:
         """Get team by name"""
@@ -3601,6 +3720,13 @@ def get_help_team_text():
         "┃ ├ Bowler sends 0–6 in BOT DM\n"
         "┃ ├ Same number = ❌ WICKET\n"
         "┃ └ Different = Batter scores that many\n"
+        "┃\n"
+        "┃ 🏆 FANTASY DREAM XI\n"
+        "┃ ├ Pick your squad right after toss starts\n"
+        "┃ ├ +1/run · +10 bonus/six · +30/wicket\n"
+        "┃ ├ /mysquad     ➔ Your current picks\n"
+        "┃ ├ /fantasylb   ➔ Global leaderboard\n"
+        "┃ └ /fantasyshop ➔ Buy a title with points\n"
         "╰━━━━━━━━"
     )
 
@@ -5402,6 +5528,53 @@ async def host_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     await refresh_game_message(context, chat.id, match, msg, reply_markup, media_key="host")
 
 # Captain selection callback
+async def open_fantasy_squad_window(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
+    """
+    🏆 Announce + open the Pre-Match Fantasy Dream XI picking window.
+    Anyone in the group can tap player buttons below to build a fantasy
+    squad before the match starts — picks lock automatically once toss
+    decision is made and the match moves to MATCH_IN_PROGRESS.
+    """
+    if match.game_mode not in ("TEAM", "TOURNAMENT"):
+        return
+
+    pool = match.team_x.players + match.team_y.players
+    if len(pool) < 4:
+        return  # Not enough players for a meaningful fantasy contest
+
+    match.fantasy_squads = {}
+    match.fantasy_window_open = True
+
+    cap = get_fantasy_squad_cap(match)
+
+    lines = [
+        f"🎮 Tap players below to build your squad (max <b>{cap}</b>).",
+        f"🏃 <b>+1</b> pt/run · 🚀 <b>+{FANTASY_PTS_PER_SIX_BONUS}</b> bonus/six · 🎯 <b>+{FANTASY_PTS_PER_WICKET}</b>/wicket",
+        f"🙋 <i>Anyone in the group can play — you don't need to be in the match!</i>",
+        f"⏰ Squad locks automatically once the toss is done.",
+        f"📋 Tap <b>My Squad</b> anytime to check your picks.",
+    ]
+    msg = themed("🏆 PRE-MATCH FANTASY — PICK YOUR DREAM XI", lines, "🏏")
+
+    keyboard = []
+    row = []
+    for p in pool:
+        team_emoji = "🧊" if p in match.team_x.players else "🔥"
+        row.append(InlineKeyboardButton(f"{team_emoji} {p.first_name}", callback_data=f"fpick_{group_id}_{p.user_id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("📋 My Squad", callback_data=f"fmysquad_{group_id}")])
+
+    try:
+        sent = await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+        match.fantasy_announce_message_id = sent.message_id
+    except Exception as e:
+        logger.error(f"Error sending fantasy squad window: {e}")
+
+
 async def captain_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle Captain Selection and move to Toss safely"""
     query = update.callback_query
@@ -5447,6 +5620,11 @@ async def captain_selection_callback(update: Update, context: ContextTypes.DEFAU
         # ✅ FLOW FIX: Captains ke baad Toss aayega
         match.phase = GamePhase.TOSS
         await start_toss(query, context, match)
+        # 🏆 FANTASY: open the pre-match Dream XI picking window (Team/Tournament only)
+        try:
+            await open_fantasy_squad_window(context, chat.id, match)
+        except Exception as e:
+            logger.error(f"Error opening fantasy squad window: {e}")
         
     else:
         # Update Message (Show who is selected)
@@ -6049,6 +6227,9 @@ async def start_match(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
     match.current_batting_team = match.batting_first
     match.current_bowling_team = match.bowling_first
     match.innings = 1
+    
+    # 🏆 FANTASY: lock Dream XI picks — the match is starting now
+    match.fantasy_window_open = False
     
     # ✅ CRITICAL: Reset Batsmen & Bowler indices to None (Fresh Start)
     match.current_batting_team.current_batsman_idx = None
@@ -8070,61 +8251,6 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     bowler = bowl_team.players[bowl_team.current_bowler_idx]
     
     # ============================================
-    # 🚨 WIDE BALL CHECK (3 Same Numbers)
-    # ============================================
-    if bowler_num is not None:
-        is_wide = await check_wide_condition(match, bowler_num)
-        if is_wide:
-            bat_team.score += 1
-            bat_team.extras += 1
-            
-            commentary = await get_ai_commentary_async("wide", gc_settings.get(group_id, {}).get("commentary_style", registered_groups.get(group_id, {}).get("commentary_style", "english")))
-            
-            wide_lines = [
-                f"⚠ {html.escape(bowler.first_name if 'bowler' in dir() else 'Bowler')} bowled the same number 3 times in a row!",
-                f"🏏 <b>Score:</b> {bat_team.score}/{bat_team.wickets}",
-                f"💬 <i>{commentary}</i>",
-                f"➕ <b>+1 Wide run</b> added!",
-            ]
-            msg = themed("🚨 WIDE BALL", wide_lines, "〰️")
-            
-            gif_url = get_random_gif(MatchEvent.WIDE)
-            try:
-                await context.bot.send_animation(group_id, animation=gif_url, caption=msg, parse_mode=ParseMode.HTML)
-            except:
-                await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-            
-            # ✅ LOG WIDE BALL
-            match.ball_by_ball_log.append({
-                "over": format_overs(bat_team.balls),
-                "batsman": striker.first_name,
-                "bowler": bowler.first_name,
-                "batting_team": bat_team.name,
-                "runs": 1,
-                "wicket": False,
-                "is_wicket": False,
-                "wide": True,
-                "noball": False,
-            })
-            match.current_ball_data = {}
-            await asyncio.sleep(2)
-            
-            # ✅ CHECK IF TARGET CHASED AFTER WIDE
-            if match.innings == 2 and bat_team.score >= match.target:
-                logger.info("🏆 TARGET CHASED AFTER WIDE!")
-                await end_innings(context, group_id, match)
-                return
-            
-            # ✅ CHECK IF OVERS COMPLETE AFTER WIDE
-            if bat_team.balls >= match.total_overs * 6:
-                logger.info("⏱ OVERS COMPLETE AFTER WIDE!")
-                await end_innings(context, group_id, match)
-                return
-            
-            await execute_ball(context, group_id, match)
-            return
-    
-    # ============================================
     # 🎯 WICKET LOGIC
     # ============================================
     if bowler_num == batsman_num:
@@ -8279,6 +8405,9 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             striker.boundaries += 1
         elif runs == 6:
             striker.sixes += 1
+        
+        # 🏆 FANTASY: credit run + six-bonus points to any squad owner who picked this batsman
+        award_fantasy_runs(match, striker, runs)
         
         # 🎯 TRACK STRIKE ZONE (NEW)
         zone = determine_strike_zone(runs)
@@ -8523,45 +8652,6 @@ async def commentary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception:
             pass
 
-
-async def check_wide_condition(match: Match, current_number: int) -> bool:
-    """
-    ✅ UPDATED: Wide if the CURRENT BOWLER sends the SAME number 3 times
-    in the ENTIRE MATCH (not necessarily consecutive).
-    📌 Example: Bowler sends 4, 2, 4, 1, 4 → WIDE on the 5th ball (3rd time '4')
-    🚫 Different bowlers do NOT share counts
-    """
-    # Check if wides are disabled for this group
-    group_id = getattr(match, 'group_id', None)
-    if group_id and not get_gc_setting(group_id, "wide_enabled", True):
-        return False
-
-    # Get current bowler id
-    bowl_team = match.current_bowling_team
-    bowler_id = None
-    if bowl_team and bowl_team.current_bowler_idx is not None:
-        try:
-            bowler_id = bowl_team.players[bowl_team.current_bowler_idx].user_id
-        except (IndexError, AttributeError):
-            bowler_id = None
-
-    # Initialize per-bowler tracking dict if not exists
-    if not hasattr(match, 'bowler_number_counts'):
-        match.bowler_number_counts = {}  # {bowler_id: {number: count}}
-
-    if bowler_id is not None:
-        if bowler_id not in match.bowler_number_counts:
-            match.bowler_number_counts[bowler_id] = {}
-        counts = match.bowler_number_counts[bowler_id]
-        counts[current_number] = counts.get(current_number, 0) + 1
-
-        if counts[current_number] >= 3:
-            # ✅ WIDE CONFIRMED — reset this number's count for this bowler
-            logger.info(f"🚨 WIDE DETECTED! Bowler {bowler_id} sent {current_number} x{counts[current_number]} times")
-            counts[current_number] = 0
-            return True
-
-    return False
 
 async def offer_drs_to_captain(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
@@ -8887,6 +8977,8 @@ async def confirm_wicket_and_continue(context: ContextTypes.DEFAULT_TYPE, group_
     out_player.is_out = True
     bat_team.wickets += 1  # ✅ INCREMENT TEAM WICKET COUNT
     bowler.wickets += 1    # ✅ INCREMENT BOWLER WICKET COUNT
+    # 🏆 FANTASY: credit +30 to any squad owner who picked this bowler
+    award_fantasy_wicket(match, bowler)
     # Save & reset partnership on wicket
     if match.current_partnership_runs > 0:
         _batsman_name = match.current_batting_team.players[match.current_batting_team.current_batsman_idx].first_name if match.current_batting_team.current_batsman_idx is not None else '?'
@@ -9318,6 +9410,8 @@ async def confirm_wicket(context: ContextTypes.DEFAULT_TYPE, group_id: int, matc
     batsman.dismissal_type = "Bowled"
     match.current_batting_team.wickets += 1
     bowler.wickets += 1
+    # 🏆 FANTASY: credit +30 to any squad owner who picked this bowler
+    award_fantasy_wicket(match, bowler)
     
     # ✅ FIX: Update player_stats dismissal field
     if batsman.user_id in match.current_batting_team.player_stats:
@@ -11834,6 +11928,54 @@ async def end_innings(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
         await determine_match_winner(context, group_id, match)
 
 
+async def finalize_fantasy_results(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
+    """
+    🏆 Commit this match's fantasy points to each squad owner's permanent
+    balance and announce the top fantasy managers. Called once the match
+    has a final result (normal finish OR super over) — never on a manual abort.
+    """
+    if match.game_mode not in ("TEAM", "TOURNAMENT"):
+        return
+    squads = getattr(match, "fantasy_squads", None)
+    if not squads:
+        return
+
+    results = []  # (owner_id, name, match_points)
+    for owner_id, squad in squads.items():
+        if not squad.get("players"):
+            continue
+        pts = squad.get("match_points", 0)
+        init_fantasy_data(owner_id, squad.get("name", "Player"))
+        fantasy_data[owner_id]["points"] += pts
+        fantasy_data[owner_id]["matches_played"] += 1
+        if pts > fantasy_data[owner_id].get("best_match_points", 0):
+            fantasy_data[owner_id]["best_match_points"] = pts
+        results.append((owner_id, squad.get("name", "Player"), pts))
+
+    if not results:
+        return
+
+    save_data()
+    results.sort(key=lambda r: r[2], reverse=True)
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (oid, name, pts) in enumerate(results[:10]):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        lines.append(f"{medal} {html.escape(name)} — <b>{pts}</b> pts")
+    if len(results) > 10:
+        lines.append(f"…and {len(results) - 10} more fantasy managers")
+    lines.append("")
+    lines.append("📊 <code>/fantasylb</code> → all-time leaderboard")
+    lines.append("🛍️ <code>/fantasyshop</code> → spend points on a title")
+
+    msg = themed("🏆 FANTASY DREAM XI — MATCH RESULTS", lines, "🎮")
+    try:
+        await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error sending fantasy results: {e}")
+
+
 async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
     ✅ COMPLETE FIX: Proper winner determination with guaranteed message delivery
@@ -12116,6 +12258,13 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
     
     await asyncio.sleep(2)
 
+    # ==========================================
+    # 🏆 FANTASY DREAM XI — FINALIZE RESULTS
+    # ==========================================
+    try:
+        await finalize_fantasy_results(context, group_id, match)
+    except Exception as e:
+        logger.error(f"❌ Fantasy results error: {e}")
     
     # ==========================================
     # 🧹 CLEANUP
@@ -15538,6 +15687,12 @@ async def determine_super_over_winner(context: ContextTypes.DEFAULT_TYPE, group_
     try:
         await send_potm_message(context, group_id, match)
     except: pass
+    
+    # 🏆 Fantasy Dream XI — finalize results
+    try:
+        await finalize_fantasy_results(context, group_id, match)
+    except Exception as e:
+        logger.error(f"❌ Fantasy results error (super over): {e}")
     
     # Cleanup
     try:
@@ -22596,21 +22751,22 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      if match.current_ball_data.get("bowler_number") is None:
                         
                         # 🚫 WIDE BALL CHECK LOGIC STARTS
-                        # Initialize history list if not exists
-                        if not hasattr(bowler, 'spam_history'):
-                            bowler.spam_history = []
-                        
-                        # Add current number
-                        bowler.spam_history.append(num)
-                        
-                        # Check last 3 numbers
                         is_wide = False
-                        if len(bowler.spam_history) >= 3:
-                            # Check if last 3 are same (e.g. 4, 4, 4)
-                            if bowler.spam_history[-1] == bowler.spam_history[-2] == bowler.spam_history[-3]:
-                                is_wide = True
-                                # Reset history so 4th ball counts as fresh start
-                                bowler.spam_history = [] 
+                        if get_gc_setting(gid, "wide_enabled", True):
+                            # Initialize history list if not exists
+                            if not hasattr(bowler, 'spam_history'):
+                                bowler.spam_history = []
+                            
+                            # Add current number
+                            bowler.spam_history.append(num)
+                            
+                            # Check last 3 numbers
+                            if len(bowler.spam_history) >= 3:
+                                # Check if last 3 are same (e.g. 4, 4, 4)
+                                if bowler.spam_history[-1] == bowler.spam_history[-2] == bowler.spam_history[-3]:
+                                    is_wide = True
+                                    # Reset history so 4th ball counts as fresh start
+                                    bowler.spam_history = [] 
 
                         if is_wide:
                             # 🚫 IT IS A WIDE!
@@ -25334,6 +25490,215 @@ async def tourlb_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+# ══════════════════════════════════════════════════════
+# 🏆 FANTASY DREAM XI — commands & callback handlers
+# ══════════════════════════════════════════════════════
+
+async def fantasy_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle a player in/out of the tapping user's Fantasy Dream XI."""
+    query = update.callback_query
+    user = query.from_user
+    data = query.data  # fpick_{group_id}_{player_user_id}
+
+    try:
+        _, gid_str, pid_str = data.split("_", 2)
+        group_id = int(gid_str)
+        player_id = int(pid_str)
+    except Exception:
+        await query.answer("⚠️ Invalid selection.", show_alert=True)
+        return
+
+    match = active_matches.get(group_id)
+    if not match or match.game_mode not in ("TEAM", "TOURNAMENT"):
+        await query.answer("⚠️ This fantasy window is no longer active.", show_alert=True)
+        return
+
+    if not getattr(match, "fantasy_window_open", False) or match.phase != GamePhase.TOSS:
+        await query.answer("⏰ Fantasy squad picks are locked — the match has already started!", show_alert=True)
+        return
+
+    pool = match.team_x.players + match.team_y.players
+    player_obj = next((p for p in pool if p.user_id == player_id), None)
+    if not player_obj:
+        await query.answer("⚠️ That player isn't part of this match.", show_alert=True)
+        return
+
+    cap = get_fantasy_squad_cap(match)
+    squad = match.fantasy_squads.setdefault(user.id, {
+        "name": user.first_name, "players": [], "match_points": 0, "log": []
+    })
+    squad["name"] = user.first_name
+
+    if player_id in squad["players"]:
+        squad["players"].remove(player_id)
+        await query.answer(f"➖ Removed {player_obj.first_name}. ({len(squad['players'])}/{cap})")
+    else:
+        if len(squad["players"]) >= cap:
+            await query.answer(f"🚫 Your Dream XI is full ({cap}/{cap})! Remove someone first.", show_alert=True)
+            return
+        squad["players"].append(player_id)
+        await query.answer(f"✅ Added {player_obj.first_name}! ({len(squad['players'])}/{cap})")
+
+
+async def fantasy_mysquad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the tapping user their current Dream XI picks via popup alert."""
+    query = update.callback_query
+    user = query.from_user
+    data = query.data  # fmysquad_{group_id}
+    try:
+        group_id = int(data.split("_", 1)[1])
+    except Exception:
+        await query.answer()
+        return
+
+    match = active_matches.get(group_id)
+    if not match:
+        await query.answer("⚠️ No active match.", show_alert=True)
+        return
+
+    squad = match.fantasy_squads.get(user.id)
+    if not squad or not squad.get("players"):
+        await query.answer("📭 You haven't picked anyone yet! Tap player names to build your Dream XI.", show_alert=True)
+        return
+
+    pool = match.team_x.players + match.team_y.players
+    names = [p.first_name for p in pool if p.user_id in squad["players"]]
+    cap = get_fantasy_squad_cap(match)
+    await query.answer(f"Your Dream XI ({len(names)}/{cap}): " + ", ".join(names), show_alert=True)
+
+
+async def mysquad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the caller's fantasy Dream XI for the active match in this chat."""
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    match = active_matches.get(chat_id)
+    if not match or match.game_mode not in ("TEAM", "TOURNAMENT"):
+        await update.message.reply_text("⚠️ No Team/Tournament match with fantasy squads active here.")
+        return
+
+    squad = getattr(match, "fantasy_squads", {}).get(user.id)
+    if not squad or not squad.get("players"):
+        await update.message.reply_text("📭 You haven't picked your Fantasy Dream XI yet! Tap a player in the fantasy message above to build your squad.")
+        return
+
+    pool = match.team_x.players + match.team_y.players
+    names = [p.first_name for p in pool if p.user_id in squad["players"]]
+    cap = get_fantasy_squad_cap(match)
+
+    lines = [f"👤 {html.escape(n)}" for n in names]
+    lines.append(f"\n📊 <b>Squad Size:</b> {len(names)}/{cap}")
+    if getattr(match, "fantasy_window_open", False) and match.phase == GamePhase.TOSS:
+        lines.append("🔓 Picks are still OPEN — tap more players above!")
+    else:
+        lines.append(f"🔒 Picks are LOCKED · <b>{squad.get('match_points', 0)}</b> pts so far this match")
+    msg = themed("🏆 YOUR FANTASY DREAM XI", lines, "🏏")
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def fantasylb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the global, all-time Fantasy Dream XI leaderboard."""
+    ranked = sorted(fantasy_data.items(), key=lambda kv: kv[1].get("points", 0), reverse=True)
+    ranked = [r for r in ranked if r[1].get("points", 0) > 0][:15]
+
+    if not ranked:
+        await update.message.reply_text(
+            "📭 No fantasy points on the board yet!\nPlay a Team or Tournament match and pick your Dream XI before it starts."
+        )
+        return
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (uid, d) in enumerate(ranked):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        title_key = d.get("title")
+        title_info = get_fantasy_title_info(title_key) if title_key else None
+        title_tag = f" {title_info['name']}" if title_info else ""
+        lines.append(f"{medal} {html.escape(d.get('first_name', 'Player'))}{title_tag} — <b>{d.get('points', 0):,}</b> pts")
+
+    lines.append("")
+    lines.append("🛍️ <code>/fantasyshop</code> → spend points on a title")
+    msg = themed("🏆 FANTASY DREAM XI — GLOBAL LEADERBOARD", lines, "🎮")
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def fantasyshop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the fantasy title shop — buy titles using accumulated fantasy points."""
+    user = update.effective_user
+    init_fantasy_data(user.id, user.first_name, user.username or "")
+    save_data()
+    profile = fantasy_data[user.id]
+    bal = profile["points"]
+    owned = profile.get("titles_owned", [])
+    equipped = profile.get("title")
+
+    lines = [f"💰 <b>Your Balance:</b> {bal:,} pts\n"]
+    keyboard = []
+    for t in FANTASY_TITLES:
+        tag = " ✅ Owned" if t["key"] in owned else ""
+        equip_tag = " 🟢 Equipped" if equipped == t["key"] else ""
+        lines.append(f"{t['name']} — <b>{t['price']:,}</b> pts{tag}{equip_tag}")
+        if t["key"] not in owned:
+            keyboard.append([InlineKeyboardButton(f"🛒 Buy {t['name']} ({t['price']:,})", callback_data=f"fbuytitle_{t['key']}")])
+        elif equipped != t["key"]:
+            keyboard.append([InlineKeyboardButton(f"🎽 Equip {t['name']}", callback_data=f"fequiptitle_{t['key']}")])
+
+    msg = themed("🛍️ FANTASY TITLE SHOP", lines, "👑")
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+
+async def fantasy_buytitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Purchase a fantasy title with accumulated fantasy points."""
+    query = update.callback_query
+    user = query.from_user
+    key = query.data.split("_", 1)[1]
+    title = get_fantasy_title_info(key)
+    if not title:
+        await query.answer("⚠️ Unknown title.", show_alert=True)
+        return
+
+    init_fantasy_data(user.id, user.first_name)
+    profile = fantasy_data[user.id]
+
+    if key in profile.get("titles_owned", []):
+        await query.answer("✅ You already own this title!", show_alert=True)
+        return
+    if profile.get("points", 0) < title["price"]:
+        short = title["price"] - profile.get("points", 0)
+        await query.answer(f"🚫 Not enough points! You need {short:,} more.", show_alert=True)
+        return
+
+    profile["points"] -= title["price"]
+    profile.setdefault("titles_owned", []).append(key)
+    profile["title"] = key  # auto-equip the newest purchase
+    save_data()
+
+    await query.answer(f"🎉 Purchased {title['name']}!", show_alert=True)
+    try:
+        await query.edit_message_text(
+            f"🎉 <b>{html.escape(user.first_name)}</b> just bought <b>{title['name']}</b> for {title['price']:,} fantasy points!\n\nUse /fantasyshop to see what's next.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+
+async def fantasy_equiptitle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Equip an already-owned fantasy title so it shows on /fantasylb."""
+    query = update.callback_query
+    user = query.from_user
+    key = query.data.split("_", 1)[1]
+    init_fantasy_data(user.id, user.first_name)
+    profile = fantasy_data[user.id]
+    if key not in profile.get("titles_owned", []):
+        await query.answer("⚠️ You don't own this title yet.", show_alert=True)
+        return
+    profile["title"] = key
+    save_data()
+    title = get_fantasy_title_info(key)
+    await query.answer(f"🎽 Equipped {title['name']}!", show_alert=True)
+
+
 async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏆 Show global leaderboard with tabs and pagination"""
     group_id = update.effective_chat.id
@@ -27232,6 +27597,18 @@ async def strikemap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_public_bot_commands(application: Application):
     """Keep Telegram's command menu focused on user-facing commands."""
+    # ✅ FIX: Make sure no webhook is left active before we start polling.
+    # If a webhook was ever set (e.g. from a previous deployment) and we then
+    # call run_polling() / getUpdates(), Telegram raises:
+    #   "Conflict: can't use getUpdates method while webhook is active"
+    # Deleting the webhook here (it runs once, right before polling starts)
+    # makes startup self-healing regardless of how the bot was run before.
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=False)
+        logger.info("✅ Webhook cleared (if any) — safe to start polling.")
+    except Exception as e:
+        logger.warning(f"Could not delete webhook (continuing anyway): {e}")
+
     commands = [
         BotCommand("game", "Start a cricket match"),
         BotCommand("help", "Rules, modes, and quick guide"),
@@ -27241,6 +27618,7 @@ async def setup_public_bot_commands(application: Application):
         BotCommand("momentum", "Momentum dashboard image"),
         BotCommand("strikemap", "Strike map image"),
         BotCommand("lb", "Global leaderboard"),
+        BotCommand("fantasylb", "Fantasy Dream XI leaderboard"),
         BotCommand("gcsettings", "Group settings for admins"),
         BotCommand("endmatch", "End the current match"),
     ]
@@ -27330,6 +27708,11 @@ def main():
     application.add_handler(CommandHandler("momentum", momentum_command))
     application.add_handler(CommandHandler("leaderboard", leaderboard_command))
     application.add_handler(CommandHandler("lb", leaderboard_command))
+
+    # 🏆 Fantasy Dream XI
+    application.add_handler(CommandHandler("mysquad", mysquad_command))
+    application.add_handler(CommandHandler("fantasylb", fantasylb_command))
+    application.add_handler(CommandHandler("fantasyshop", fantasyshop_command))
 
     application.add_handler(CommandHandler("commentary", commentary_command))
     application.add_handler(CommandHandler("players", players_command))
@@ -27450,6 +27833,12 @@ def main():
     application.add_handler(CallbackQueryHandler(rematch_callback, pattern="^rematch_"))
     application.add_handler(CallbackQueryHandler(leaderboard_callback, pattern="^lb_"))
     application.add_handler(CallbackQueryHandler(tourlb_callback, pattern="^tourlb_"))
+
+    # 🏆 Fantasy Dream XI
+    application.add_handler(CallbackQueryHandler(fantasy_pick_callback, pattern="^fpick_"))
+    application.add_handler(CallbackQueryHandler(fantasy_mysquad_callback, pattern="^fmysquad_"))
+    application.add_handler(CallbackQueryHandler(fantasy_buytitle_callback, pattern="^fbuytitle_"))
+    application.add_handler(CallbackQueryHandler(fantasy_equiptitle_callback, pattern="^fequiptitle_"))
     application.add_handler(CallbackQueryHandler(drs_callback, pattern="^drs_(take|reject)$"))
     application.add_handler(
         CallbackQueryHandler(mode_selection_callback, pattern="^mode_")

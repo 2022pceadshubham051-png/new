@@ -27930,6 +27930,18 @@ def main():
     _load_clone_bots_meta()  # Restore clone bot tracking from disk
     
     logger.info("Cricoverse bot starting...")
+
+    # ✅ FIX: Delete any active webhook before polling starts
+    # This prevents: "Conflict: can't use getUpdates while webhook is active"
+    import asyncio as _asyncio
+    async def _delete_webhook():
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=False)
+            logger.info("✅ Webhook deleted — polling safe to start.")
+        except Exception as e:
+            logger.warning(f"Could not delete webhook: {e}")
+    _asyncio.get_event_loop().run_until_complete(_delete_webhook())
+
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

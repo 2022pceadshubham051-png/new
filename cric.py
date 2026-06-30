@@ -58,7 +58,7 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode
-from telegram.error import TelegramError, Forbidden
+from telegram.error import TelegramError, Forbidden, Conflict
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 3: Configure logging AFTER all imports
@@ -357,6 +357,10 @@ class MatchEvent(Enum):
     RUNS_5 = "5runs"
     RUNS_6 = "6runs"
     WICKET = "wicket"
+    DUCK = "duck"
+    FIFTY = "fifty"
+    HUNDRED = "hundred"
+    HAT_TRICK = "hattrick"
     NO_BALL = "noball"
     WIDE = "wide"
     FREE_HIT = "freehit"
@@ -505,6 +509,20 @@ GIFS = {
         "CgACAgUAAyEGAATYx4tPAAJHa2lL_VmXp7nhZMuNPVRgbDmv54uXAAKQCAACBRCRVj5VjvOl6j21NgQ",
         "CgACAgUAAyEGAAShX2HTAAIh3WlM785mkSB-K9myKNbS1lfWmB6fAAKRBgAC_DYZVhtRUsAAAW_fvzYE"
     ],
+    # 🦆 Sent in addition to the WICKET gif whenever a batsman is out on 0.
+    MatchEvent.DUCK: [
+        "https://media1.tenor.com/m/-LxfcQEJWgQAAAAC/cricket-ricky-ponting.gif"
+    ],
+    # 🌟 Milestone gifs (50 / 100 / hat-trick) — used in both team & solo mode.
+    MatchEvent.FIFTY: [
+        "https://media1.tenor.com/m/oAAukmbjid0AAAAC/half-century-celebration-vishnu-vishal.gif"
+    ],
+    MatchEvent.HUNDRED: [
+        "https://media1.tenor.com/m/PPVnOgORE-4AAAAC/cricket-ton.gif"
+    ],
+    MatchEvent.HAT_TRICK: [
+        "https://media1.tenor.com/m/aWN-Ig7G4RMAAAAC/hat-trick-gif.gif"
+    ],
     MatchEvent.NO_BALL: [
         "https://tenor.com/bBvYA.gif"
     ],
@@ -536,6 +554,77 @@ GIFS = {
         "auction_unsold": "BAACAgUAAxkBAAJnZWlrYqZkyh9qAAFZXggueErKDJKlnAAC9h8AAqURuVZM9Yj2pY2qpzgE",
     "auction_countdown": "BAACAgUAAxkBAAJnY2lrYlqWBnK_1iVKqcuWYF6UJPo0AAIuGwACb3lYVzOFYEj5-RphOAQ",
 }
+
+# ═══════════════════════════════════════════════════════════════
+# 🎨 CUSTOM EMOJI + BUTTON COLORS  (Bot API 9.4, Feb 2026)
+# ═══════════════════════════════════════════════════════════════
+# Telegram now lets bots:
+#   1. Use real custom (Premium) emoji INSIDE message text via the
+#      HTML tag  <tg-emoji emoji-id="ID">fallback</tg-emoji>
+#   2. Give InlineKeyboardButton / KeyboardButton a `style` of
+#      "primary" (blue) / "success" (green) / "danger" (red), and an
+#      `icon_custom_emoji_id` to show a custom emoji on the button.
+#
+# IMPORTANT: both (1) and the icon on (2) only render if the Telegram
+# account behind THIS BOT'S TOKEN has an active Telegram Premium
+# subscription. Without Premium, Telegram just ignores them and shows
+# the plain fallback emoji/text — nothing breaks either way. `style`
+# (the button color) works for every bot, Premium or not.
+#
+# HOW TO GET A REAL CUSTOM EMOJI ID (one-time setup):
+#   1. In any chat, find/send the Premium emoji you want to use.
+#   2. Forward that single message to @userinfobot (or @RawDataBot).
+#   3. It'll dump the message's raw JSON — look for an entity of type
+#      "custom_emoji" and copy its "custom_emoji_id" value.
+#   4. Paste it into CUSTOM_EMOJI_IDS below.
+# Leave a key's value empty/missing and ce()/styled_button() simply
+# fall back to the plain emoji — totally safe to ship as-is.
+CUSTOM_EMOJI_IDS: Dict[str, str] = {
+    # "wicket":   "5XXXXXXXXXXXXXXXXXXX",
+    # "duck":     "5XXXXXXXXXXXXXXXXXXX",
+    # "four":     "5XXXXXXXXXXXXXXXXXXX",
+    # "six":      "5XXXXXXXXXXXXXXXXXXX",
+    # "fifty":    "5XXXXXXXXXXXXXXXXXXX",
+    # "hundred":  "5XXXXXXXXXXXXXXXXXXX",
+    # "trophy":   "5XXXXXXXXXXXXXXXXXXX",
+    # "fire":     "5XXXXXXXXXXXXXXXXXXX",
+    # "captain":  "5XXXXXXXXXXXXXXXXXXX",
+}
+
+def ce(key: str, fallback: str) -> str:
+    """Wrap `fallback` emoji in a <tg-emoji> tag if a real custom emoji ID
+    is configured for `key`; otherwise just return `fallback` unchanged.
+    Only has visible effect inside text sent with parse_mode=ParseMode.HTML."""
+    eid = CUSTOM_EMOJI_IDS.get(key)
+    if eid:
+        return f'<tg-emoji emoji-id="{eid}">{fallback}</tg-emoji>'
+    return fallback
+
+
+def styled_button(text: str, callback_data: Optional[str] = None, url: Optional[str] = None,
+                   style: Optional[str] = None, emoji_key: Optional[str] = None) -> "InlineKeyboardButton":
+    """Build an InlineKeyboardButton, optionally colored ('primary'/'success'/'danger')
+    and/or with a custom emoji icon. Degrades gracefully on older python-telegram-bot
+    versions that don't yet know about the `style`/`icon_custom_emoji_id` fields."""
+    kwargs = {}
+    if callback_data is not None:
+        kwargs["callback_data"] = callback_data
+    if url is not None:
+        kwargs["url"] = url
+    if style:
+        kwargs["style"] = style
+    icon_id = CUSTOM_EMOJI_IDS.get(emoji_key) if emoji_key else None
+    if icon_id:
+        kwargs["icon_custom_emoji_id"] = icon_id
+    try:
+        return InlineKeyboardButton(text, **kwargs)
+    except TypeError:
+        # Installed python-telegram-bot predates Bot API 9.4 support — pip install -U python-telegram-bot
+        kwargs.pop("style", None)
+        kwargs.pop("icon_custom_emoji_id", None)
+        return InlineKeyboardButton(text, **kwargs)
+
+
 
 # ═══════════════════════════════════════════════════════════════
 # MAGIC BALL MODE - Special Ball Types
@@ -1649,6 +1738,7 @@ class Player:
         self.dot_balls_bowled = 0
         self.boundaries = 0
         self.sixes = 0
+        self.ducks = 0  # 🦆 number of times out on 0
         self.dots = 0  # Track dot balls
         self.overs_bowled = 0
         self.maiden_overs = 0
@@ -5168,13 +5258,13 @@ async def update_solo_board(context, chat_id, match):
     
     # Buttons
     keyboard = [
-        [InlineKeyboardButton("✅ Join Battle", callback_data="solo_join"),
-         InlineKeyboardButton("🚪 Leave", callback_data="solo_leave")]
+        [styled_button("✅ Join Battle", callback_data="solo_join", style="success"),
+         styled_button("🚪 Leave", callback_data="solo_leave", style="danger")]
     ]
     
     # Show START button if enough players
     if count >= 2:
-        keyboard.append([InlineKeyboardButton("🚀 START MATCH", callback_data="solo_start_game")])
+        keyboard.append([styled_button("🚀 START MATCH", callback_data="solo_start_game", style="primary")])
         
     await refresh_game_message(context, chat_id, match, msg, InlineKeyboardMarkup(keyboard), media_key="joining")
 
@@ -6309,7 +6399,11 @@ async def request_batsman_selection(context: ContextTypes.DEFAULT_TYPE, chat_id:
 
     captain = match.get_captain(bat_team)
     if not captain:
-        await context.bot.send_message(chat_id, "⚠️ No captain selected! Use /captain to set one.")
+        await context.bot.send_message(
+            chat_id,
+            f"⚠️ No batting captain set! 👑 Host (<code>{match.host_id}</code>) can send <code>/batting [number]</code> to continue.",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     captain_tag = get_user_tag(captain)
@@ -6326,6 +6420,7 @@ async def request_batsman_selection(context: ContextTypes.DEFAULT_TYPE, chat_id:
         f"🏏 {captain_tag} ➔ Send in your next batsman!",
         f"⚙ Use: <code>/batting [number]</code>",
         f"⏳ Hint: Use <code>/qbatting</code> to pre-queue a batsman",
+        f"🛟 Host can also send this if the captain's away",
     ]
     msg = themed("SELECT BATSMAN", bat_msg_lines, "🏏")
     
@@ -6406,9 +6501,11 @@ async def batting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bat_team = match.current_batting_team
     
-    # Only captain can select → silently reject & delete non-captain messages
-    if user.id != bat_team.captain_id:
-        logger.warning(f"👮‍♂️ User {user.first_name} is not captain")
+    # Captain OR host can select → silently reject & delete everyone else's messages
+    is_captain = bool(bat_team.captain_id and user.id == bat_team.captain_id)
+    is_host = (user.id == match.host_id)
+    if not is_captain and not is_host:
+        logger.warning(f"👮‍♂️ User {user.first_name} is not captain or host")
         try:
             await update.message.delete()
         except Exception:
@@ -6463,7 +6560,7 @@ async def batting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Request Non-Striker
         captain_tag = get_user_tag(match.get_captain(bat_team))
-        msg += f"🧢 <b>{captain_tag}</b>, now select the <b>NON-STRIKER</b>:\n"
+        msg = f"🧢 <b>{captain_tag}</b>, now select the <b>NON-STRIKER</b>:\n"
         msg += f"👉 <b>Command:</b> <code>/batting [serial_number]</code>"
         
         await context.bot.send_message(chat.id, msg, parse_mode=ParseMode.HTML)
@@ -6801,7 +6898,7 @@ async def request_bowler_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         logger.error("❌ CRITICAL: No bowling captain found!")
         await context.bot.send_message(
             chat_id, 
-            "⚠️ <b>Error:</b> No bowling captain found! Use /changecap to set one.", 
+            f"⚠️ <b>No bowling captain set!</b> 👑 Host (<code>{match.host_id}</code>) can send <code>/bowling [number]</code> to continue, or use /changecap to set a captain.", 
             parse_mode=ParseMode.HTML
         )
         return
@@ -6832,6 +6929,7 @@ async def request_bowler_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         f"🥎 {captain_tag} ➔ Send in your strike bowler!",
         f"⚙ Use: <code>/bowling [number]</code>",
         f"Use <code>/qbowling</code> to pre-queue a bowler.",
+        f"🛟 Host can also send this if the captain's away.",
     ]
     msg = themed("SELECT BOWLER", bowler_lines, "🥎")
     
@@ -6844,7 +6942,7 @@ async def request_bowler_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         _group_url = f"https://t.me/{context.bot.username}"
     
     bowler_select_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🏟️ Go to Group", url=_group_url)
+        styled_button("🏟️ Go to Group", url=_group_url, style="primary")
     ]])
     
     # Send message to group
@@ -6992,22 +7090,26 @@ async def bowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"✅ Waiting for bowler confirmed")
     
     bowling_captain = match.get_captain(match.current_bowling_team)
-    if not bowling_captain:
+    is_host = (user.id == match.host_id)
+
+    if not bowling_captain and not is_host:
         logger.error(f"❌ No bowling captain found!")
         await update.message.reply_text("⚠️ No bowling captain found!")
         return
-    
-    logger.info(f"👑 Bowling captain: {bowling_captain.first_name} (ID: {bowling_captain.user_id})")
-        
-    if user.id != bowling_captain.user_id:
-        logger.warning(f"🚫 User {user.first_name} is not the bowling captain")
+
+    if bowling_captain:
+        logger.info(f"👑 Bowling captain: {bowling_captain.first_name} (ID: {bowling_captain.user_id})")
+
+    is_captain = bool(bowling_captain and user.id == bowling_captain.user_id)
+    if not is_captain and not is_host:
+        logger.warning(f"🚫 User {user.first_name} is not the bowling captain or host")
         try:
             await update.message.delete()
         except Exception:
             pass
         return
     
-    logger.info(f"✅ Captain verification passed")
+    logger.info(f"✅ Captain/host verification passed")
     
     if not context.args:
         logger.warning(f"⚠️ No serial number provided")
@@ -7152,8 +7254,8 @@ async def declare_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_text = themed("🏳️ INNINGS DECLARATION", declare_lines, "🏳️")
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Accept Declaration", callback_data=f"declare_accept_{chat.id}"),
-        InlineKeyboardButton("❌ Deny", callback_data=f"declare_deny_{chat.id}"),
+        styled_button("✅ Accept Declaration", callback_data=f"declare_accept_{chat.id}", style="success"),
+        styled_button("❌ Deny", callback_data=f"declare_deny_{chat.id}", style="danger"),
     ]])
 
     sent = await context.bot.send_message(chat.id, msg_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
@@ -7294,8 +7396,8 @@ async def retirehurt_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg_text = themed("🤕 RETIRE HURT REQUEST", rh_lines, "🤕")
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Accept", callback_data=f"retirehurt_accept_{chat.id}"),
-        InlineKeyboardButton("❌ Deny", callback_data=f"retirehurt_deny_{chat.id}"),
+        styled_button("✅ Accept", callback_data=f"retirehurt_accept_{chat.id}", style="success"),
+        styled_button("❌ Deny", callback_data=f"retirehurt_deny_{chat.id}", style="danger"),
     ]])
 
     sent = await context.bot.send_message(chat.id, msg_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
@@ -8315,7 +8417,7 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             ]
             wicket_msg = themed("❌ WICKET", wkt_lines, "🔴")
             
-            _wkt_react = InlineKeyboardMarkup([[InlineKeyboardButton("🔥 Amazing", callback_data=f"react_amazingw_{group_id}"), InlineKeyboardButton("😂 Funny", callback_data=f"react_funnyw_{group_id}")]])
+            _wkt_react = InlineKeyboardMarkup([[styled_button("🔥 Amazing", callback_data=f"react_amazingw_{group_id}", style="primary"), styled_button("😂 Funny", callback_data=f"react_funnyw_{group_id}", style="success")]])
             gif_url = get_random_gif(MatchEvent.WICKET)
             try:
                 await context.bot.send_animation(group_id, animation=gif_url, caption=wicket_msg, parse_mode=ParseMode.HTML, reply_markup=_wkt_react)
@@ -8670,10 +8772,10 @@ async def offer_drs_to_captain(context: ContextTypes.DEFAULT_TYPE, group_id: int
     captain_tag = get_user_tag(bat_captain)
     batsman_tag = get_user_tag(batsman)
     
-    # ⌨️ INLINE KEYBOARD (Updated Emojis)
+    # ⌨️ INLINE KEYBOARD (Updated Emojis + Bot API 9.4 colors)
     keyboard = [
-        [InlineKeyboardButton("🖥️ DRS Review", callback_data="drs_take")],
-        [InlineKeyboardButton("❌ Don't Want", callback_data="drs_reject")]
+        [styled_button("🖥️ DRS Review", callback_data="drs_take", style="primary")],
+        [styled_button("❌ Don't Want", callback_data="drs_reject", style="danger")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -9004,7 +9106,29 @@ async def confirm_wicket_and_continue(context: ContextTypes.DEFAULT_TYPE, group_
     })
 
     logger.info(f"✅ Wickets updated: Team={bat_team.wickets}, Bowler={bowler.wickets}, Consecutive={bowler.consecutive_wickets}")
-    
+
+    # 🦆 ZERO/DUCK CHECK — fires whenever the batsman departs on 0
+    if out_player.runs == 0:
+        out_player.ducks += 1
+        is_golden = out_player.balls_faced <= 1  # out on the very first ball faced
+        duck_gif = get_random_gif(MatchEvent.DUCK)
+        duck_label = f"🟡 {ce('duck', '🦆')} GOLDEN DUCK!" if is_golden else f"🦆 {ce('duck', '🦆')} DUCK!"
+        duck_msg = (
+            f"{duck_label}\n"
+            f"─────────────────\n"
+            f"😬 <b>{out_player.first_name}</b> departs without scoring!\n"
+            f"📊 <b>{out_player.runs}</b> ({out_player.balls_faced})  ·  🎯 Ducks this match: <b>{out_player.ducks}</b>"
+        )
+        try:
+            if duck_gif:
+                await context.bot.send_animation(group_id, animation=duck_gif, caption=duck_msg, parse_mode=ParseMode.HTML)
+            else:
+                await context.bot.send_message(group_id, duck_msg, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"Error sending duck gif: {e}")
+            await context.bot.send_message(group_id, duck_msg, parse_mode=ParseMode.HTML)
+        await asyncio.sleep(1)
+
     # 🎉 CHECK BOWLING MILESTONE
     await check_and_celebrate_milestones(context, group_id, match, bowler, 'bowling')
     
@@ -9109,8 +9233,12 @@ async def confirm_wicket_and_continue(context: ContextTypes.DEFAULT_TYPE, group_
         await end_innings(context, group_id, match)
         return
     
-    msg += f"👑 {captain_tag} → send in your next batter!\n"
-    msg += f"⌨️ <code>/batting [number]</code>  ⏳ <i>4 min window</i>"
+    msg = themed("🏏 SELECT NEW BATSMAN", [
+        f"💀 {available_count} batsman(s) available",
+    ], "🏏")
+    msg += f"\n👑 {captain_tag} → send in your next batter!\n"
+    msg += f"⌨️ <code>/batting [number]</code>  ⏳ <i>4 min window</i>\n"
+    msg += f"🛟 <i>Host can also send this if the captain's away.</i>"
     
     await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
     logger.info("📨 New batsman request sent to group")
@@ -10244,8 +10372,11 @@ async def process_solo_turn_result(context, chat_id, match):
                 f"🏏 <i>Unbelievable bowling display!</i>"
             )
             try:
-                ht_gif = "https://media.tenor.com/HpTnkTq6h2IAAAAC/cricket-hattrick.gif"
-                await context.bot.send_animation(chat_id, ht_gif, caption=ht_msg, parse_mode=ParseMode.HTML)
+                ht_gif = get_random_gif(MatchEvent.HAT_TRICK)
+                if ht_gif:
+                    await context.bot.send_animation(chat_id, ht_gif, caption=ht_msg, parse_mode=ParseMode.HTML)
+                else:
+                    await context.bot.send_message(chat_id, ht_msg, parse_mode=ParseMode.HTML)
             except:
                 await context.bot.send_message(chat_id, ht_msg, parse_mode=ParseMode.HTML)
             match.solo_consecutive_wickets[bowler_key] = 0  # Reset after hat-trick
@@ -10277,6 +10408,11 @@ async def process_solo_turn_result(context, chat_id, match):
     else:
         batter.runs += runs
         batter.balls_faced += 1
+        # 🏏 FIX: track boundaries so /mystats shows real 4s/6s instead of 0
+        if runs == 4:
+            batter.boundaries += 1
+        elif runs == 6:
+            batter.sixes += 1
         
         # Reset consecutive wickets for this bowler (scored off)
         if not hasattr(match, 'solo_consecutive_wickets'):
@@ -10315,10 +10451,7 @@ async def process_solo_turn_result(context, chat_id, match):
         prev_runs = batter.runs - runs
         # Fifty celebration
         if prev_runs < 50 and batter.runs >= 50 and batter.runs < 100:
-            fifty_gifs = [
-                "https://media.tenor.com/UBE1qWoTtLAAAAAC/cricket-fifty.gif",
-                "https://media.tenor.com/xtBFMdQjRwUAAAAC/cricket-celebration.gif"
-            ]
+            fifty_gif = get_random_gif(MatchEvent.FIFTY)
             cel_msg = (
                 f"🌟〔 <b>FIFTY!</b> 〕🌟\n\n"
                 f"🏏 <b>{batter.first_name}</b> reaches <b>50 runs</b>!\n"
@@ -10326,15 +10459,15 @@ async def process_solo_turn_result(context, chat_id, match):
                 f"🎉 <i>Half-century milestone!</i>"
             )
             try:
-                await context.bot.send_animation(chat_id, random.choice(fifty_gifs), caption=cel_msg, parse_mode=ParseMode.HTML)
+                if fifty_gif:
+                    await context.bot.send_animation(chat_id, fifty_gif, caption=cel_msg, parse_mode=ParseMode.HTML)
+                else:
+                    await context.bot.send_message(chat_id, cel_msg, parse_mode=ParseMode.HTML)
             except:
                 await context.bot.send_message(chat_id, cel_msg, parse_mode=ParseMode.HTML)
         # Hundred celebration
         elif prev_runs < 100 and batter.runs >= 100:
-            hundred_gifs = [
-                "https://media.tenor.com/BK2xfqEUiGoAAAAC/cricket-century.gif",
-                "https://media.tenor.com/xtBFMdQjRwUAAAAC/cricket-celebration.gif"
-            ]
+            hundred_gif = get_random_gif(MatchEvent.HUNDRED)
             cel_msg = (
                 f"💯〔 <b>CENTURY!</b> 〕💯\n\n"
                 f"🏏 <b>{batter.first_name}</b> reaches <b>100 runs</b>!\n"
@@ -10342,7 +10475,10 @@ async def process_solo_turn_result(context, chat_id, match):
                 f"🎊 <i>What a magnificent hundred!</i>"
             )
             try:
-                await context.bot.send_animation(chat_id, random.choice(hundred_gifs), caption=cel_msg, parse_mode=ParseMode.HTML)
+                if hundred_gif:
+                    await context.bot.send_animation(chat_id, hundred_gif, caption=cel_msg, parse_mode=ParseMode.HTML)
+                else:
+                    await context.bot.send_message(chat_id, cel_msg, parse_mode=ParseMode.HTML)
             except:
                 await context.bot.send_message(chat_id, cel_msg, parse_mode=ParseMode.HTML)
         if match.solo_balls_this_spell >= 3:
@@ -10614,8 +10750,8 @@ async def endsolo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show confirmation buttons
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Yes, End Solo", callback_data=f"confirm_endsolo_{chat_id}"),
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_endsolo")
+            styled_button("✅ Yes, End Solo", callback_data=f"confirm_endsolo_{chat_id}", style="danger"),
+            styled_button("❌ Cancel", callback_data="cancel_endsolo", style="primary")
         ]
     ])
     
@@ -10706,7 +10842,8 @@ async def aistart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("😊 Easy", callback_data="ai_diff_easy")],
         [InlineKeyboardButton("😐 Medium", callback_data="ai_diff_medium")],
-        [InlineKeyboardButton("😈 Hard", callback_data="ai_diff_hard")]
+        [InlineKeyboardButton("😈 Hard", callback_data="ai_diff_hard")],
+        [InlineKeyboardButton("👹 God Level", callback_data="ai_diff_god")]
     ]
     
     caption = (
@@ -10740,12 +10877,14 @@ async def ai_difficulty_callback(update: Update, context: ContextTypes.DEFAULT_T
     
     # Select overs
     keyboard = [
+        [InlineKeyboardButton("1 Over", callback_data=f"ai_over_1_{difficulty}"),
+         InlineKeyboardButton("2 Overs", callback_data=f"ai_over_2_{difficulty}")],
         [InlineKeyboardButton("3 Overs", callback_data=f"ai_over_3_{difficulty}"),
-         InlineKeyboardButton("5 Overs", callback_data=f"ai_over_5_{difficulty}")],
-        [InlineKeyboardButton("10 Overs", callback_data=f"ai_over_10_{difficulty}")]
+         InlineKeyboardButton("4 Overs", callback_data=f"ai_over_4_{difficulty}")],
+        [InlineKeyboardButton("5 Overs", callback_data=f"ai_over_5_{difficulty}")]
     ]
     
-    diff_emoji = {"easy": "😊", "medium": "😐", "hard": "😈"}
+    diff_emoji = {"easy": "😊", "medium": "😐", "hard": "😈", "god": "👹"}
     
     caption = f"🤖 <b>Difficulty:</b> {diff_emoji[difficulty]} {difficulty.upper()}\n\n" \
               "Select match overs:"
@@ -10799,6 +10938,7 @@ async def ai_over_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "target": 0,
         "phase": "toss",  # toss -> waiting_user
         "ai_number": None,
+        "user_batting_now": True,  # explicit flag: who is batting right now (fixes AI-bats-first bug)
         "user_stats": {"runs": 0, "balls": 0, "fours": 0, "sixes": 0},
         "ai_stats": {"runs": 0, "balls": 0, "wickets": 0},
         "user_spam_history": [],  # Track user's last numbers for spam detection
@@ -10878,6 +11018,7 @@ async def ai_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             match["innings"] = 1  # First innings - AI batting
             match["ai_batting_first"] = True  # AI is batting in first innings
             match["phase"] = "waiting_ai"
+            match["user_batting_now"] = False
             msg += "⚾ You're bowling first → good luck!"
             
             try:
@@ -10911,6 +11052,7 @@ async def ai_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             match["phase"] = "waiting_user"
+            match["user_batting_now"] = True
             await asyncio.sleep(1)
             await ai_play_ball(context, user.id)
 
@@ -10935,6 +11077,7 @@ async def ai_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         match["target"] = 0   # No target yet
         match["phase"] = "waiting_user"  # Waiting for user to bowl
         match["ai_batting_first"] = True  # Track that AI is batting in first innings
+        match["user_batting_now"] = False
         
         msg = f"⚾ <b>YOU CHOSE TO BOWL!</b>\n\n"
         msg += "🤖 AI is batting first.\n\n"
@@ -10970,6 +11113,7 @@ async def ai_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         
         match["phase"] = "waiting_user"
+        match["user_batting_now"] = True
         await asyncio.sleep(1)
         await ai_play_ball(context, user.id)
 
@@ -11003,7 +11147,7 @@ async def ai_play_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int):
         else:  # First innings
             weights = [1, 1.5, 2, 2.5, 2, 1.5, 1]  # Slightly favor 3
         ai_choice = random.choices([0, 1, 2, 3, 4, 5, 6], weights=weights)[0]
-    else:  # HARD - GOD LEVEL BOWLING 😈
+    elif difficulty == "hard":  # HARD 😈
         # Track user's batting history to predict their shots
         user_wickets = match["user_wickets"]
         
@@ -11066,6 +11210,59 @@ async def ai_play_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int):
         
         # 5% true random to avoid being completely predictable
         if random.random() < 0.05:
+            ai_choice = random.randint(0, 6)
+    else:  # GOD LEVEL - 👹 nightmare bowling, ~10x harder than Hard
+        user_wickets = match["user_wickets"]
+        
+        if "user_bat_history" not in match:
+            match["user_bat_history"] = []
+        
+        # Predict from even a single prior shot, and weigh recent shots more
+        predicted_shot = None
+        if len(match["user_bat_history"]) >= 1:
+            recent = match["user_bat_history"][-8:]
+            freq = {}
+            for n in recent:
+                freq[n] = freq.get(n, 0) + 1
+            predicted_shot = max(freq, key=freq.get)
+        
+        if match.get("ai_batting_first") and match["innings"] == 1:
+            user_run_rate = user_score / max(user_balls, 1)
+            if user_run_rate > 3:
+                weights = [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+            else:
+                weights = [0.8, 1.2, 2.0, 4.0, 2.5, 1.5, 1.0]
+        elif match["innings"] == 2:
+            runs_needed = target - user_score
+            balls_left = (match["overs"] * 6) - user_balls
+            if runs_needed <= 0:
+                weights = [1, 1, 1, 1, 1, 1, 1]
+            elif runs_needed <= 4 and balls_left > 0:
+                weights = [1.0, 1.5, 2.5, 4.5, 3.0, 1.5, 1.0]
+            elif balls_left <= 3:
+                weights = [1.0, 1.5, 2.5, 5.0, 3.0, 1.5, 1.0]
+            elif runs_needed > balls_left * 4:
+                weights = [0.5, 1.0, 1.5, 2.0, 4.5, 5.5, 4.5]
+            elif runs_needed < balls_left * 1.5:
+                weights = [2.5, 5.0, 5.5, 4.5, 2.0, 1.5, 1.0]
+            else:
+                weights = [1.0, 2.0, 3.5, 5.0, 3.0, 2.0, 1.5]
+        else:
+            if user_wickets == 0 and user_balls > 4:
+                weights = [2.5, 3.0, 3.5, 4.5, 3.0, 2.5, 2.0]
+            elif user_score > user_balls * 2.5:
+                weights = [0.5, 1.0, 1.5, 2.0, 4.5, 5.0, 4.5]
+            else:
+                weights = [1.0, 1.5, 2.0, 4.5, 2.5, 1.5, 1.0]
+        
+        ai_choice = random.choices([0, 1, 2, 3, 4, 5, 6], weights=weights)[0]
+        
+        # GOD MODE: bowl the user's predicted number almost every single time
+        if predicted_shot is not None and random.random() < 0.85:
+            ai_choice = predicted_shot
+        
+        # Only 1% true randomness — near-unbeatable bowling
+        if random.random() < 0.01:
             ai_choice = random.randint(0, 6)
     
     match["ai_number"] = ai_choice
@@ -11193,7 +11390,7 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
             else:  # Normal chase
                 weights = [0.8, 1.5, 2, 2, 1.8, 1.2, 1]
             ai_bat = random.choices([0, 1, 2, 3, 4, 5, 6], weights=weights)[0]
-    else:  # hard - GOD LEVEL ULTIMATE AI 😈
+    elif difficulty == "hard":  # HARD 😈
         runs_needed = target - match["ai_score"]
         balls_left = (match["overs"] * 6) - match["ai_balls"]
         wickets_left = 1 - match["ai_wickets"]  # Only 1 wicket
@@ -11259,6 +11456,61 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
             # 5% surprise shot (keeps it slightly human-like)
             if random.random() < 0.05:
                 ai_bat = random.randint(0, 6)
+    else:  # GOD LEVEL - 👹 ultimate nightmare batting, ~10x harder than Hard
+        runs_needed = target - match["ai_score"]
+        balls_left = (match["overs"] * 6) - match["ai_balls"]
+        
+        if "user_bowl_history" not in match:
+            match["user_bowl_history"] = []
+        
+        # Predict and avoid the user's bowling number from even a single ball faced
+        predicted_avoid = None
+        if len(match["user_bowl_history"]) >= 1:
+            recent = match["user_bowl_history"][-8:]
+            freq = {}
+            for n in recent:
+                freq[n] = freq.get(n, 0) + 1
+            predicted_avoid = max(freq, key=freq.get)
+        
+        if runs_needed <= 0:  # Already winning
+            ai_bat = random.randint(2, 6)
+        else:
+            if balls_left <= 1:  # LAST BALL - go for the kill
+                weights = [0.0, 0.0, 0.0, 0.1, 1.5, 3.0, 7.0]
+            elif balls_left <= 3:
+                weights = [0.0, 0.0, 0.05, 0.2, 2.0, 4.0, 7.0]
+            elif balls_left <= 6:
+                required_rr = runs_needed / balls_left
+                if required_rr >= 4:
+                    weights = [0.0, 0.05, 0.1, 0.3, 2.0, 4.5, 7.0]
+                elif required_rr >= 2:
+                    weights = [0.1, 0.3, 1.0, 2.0, 3.0, 3.5, 4.5]
+                else:
+                    weights = [0.3, 1.5, 3.0, 3.5, 2.5, 2.0, 1.5]
+            else:
+                required_rr = runs_needed / max(balls_left, 1)
+                if required_rr >= 4:
+                    weights = [0.0, 0.05, 0.2, 0.6, 2.5, 4.5, 6.5]
+                elif required_rr >= 2.5:
+                    weights = [0.1, 0.3, 1.0, 2.0, 3.5, 4.5, 5.0]
+                elif required_rr >= 1.5:
+                    weights = [0.3, 0.8, 2.0, 3.5, 3.0, 2.8, 2.2]
+                elif required_rr >= 1.0:
+                    weights = [0.8, 2.0, 3.5, 3.5, 2.5, 1.8, 1.0]
+                else:  # Cruise control but still sharp
+                    weights = [2.5, 4.0, 4.0, 2.5, 1.2, 0.6, 0.2]
+            
+            ai_bat = random.choices([0, 1, 2, 3, 4, 5, 6], weights=weights)[0]
+            
+            # GOD MODE: virtually never plays the user's predicted delivery
+            if predicted_avoid is not None and ai_bat == predicted_avoid:
+                avoid_weights = weights.copy()
+                avoid_weights[predicted_avoid] = 0.001
+                ai_bat = random.choices([0, 1, 2, 3, 4, 5, 6], weights=avoid_weights)[0]
+            
+            # Only 1% surprise shot — almost never gets out by chance
+            if random.random() < 0.01:
+                ai_bat = random.randint(0, 6)
     
     # Process result
     if ai_bat == user_bowl:
@@ -11293,6 +11545,7 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
             match["innings"] = 2
             match["ai_batting_first"] = False
             match["phase"] = "waiting_user"
+            match["user_batting_now"] = True
             
             await asyncio.sleep(2)
             await ai_play_ball(context, user_id)
@@ -11339,6 +11592,7 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
                 match["innings"] = 2
                 match["ai_batting_first"] = False
                 match["phase"] = "waiting_user"
+                match["user_batting_now"] = True
                 
                 await asyncio.sleep(2)
                 await ai_play_ball(context, user_id)
@@ -20663,17 +20917,17 @@ async def send_milestone_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int, p
     
     if milestone_type == "half_century":
         gif = "CgACAgUAAxkBAAIjvGlViB_k4xno1I7SvP_yjqat_swhAALjGAACQdfwV3nPGMVrF3YgOAQ"
-        msg = f"🎉 <b>HALF CENTURY!</b> 🎉\n"
+        msg = f"{ce('fifty', '🎉')} <b>HALF CENTURY!</b> {ce('fifty', '🎉')}\n"
         msg += "─────────────────\n"
         msg += f"🏏 <b>{player_tag}</b> reaches FIFTY!\n"
         msg += f"📊 <b>Score:</b> {player.runs} ({player.balls_faced})\n"
         msg += f"⚡ <b>Strike Rate:</b> {round((player.runs/max(player.balls_faced,1))*100, 1)}\n\n"
-        msg += "🔥 <i>What a brilliant knock!</i>\n"
+        msg += f"{ce('fire', '🔥')} <i>What a brilliant knock!</i>\n"
         msg += "─────────────────"
         
     elif milestone_type == "century":
         gif = "CgACAgUAAxkBAAIjvmlViDWGHyeIZrWAraXgMumQeYd4AAIhBgACJWaIVY0cR_DZgUHEOAQ"
-        msg = f"🏆 <b>CENTURY!</b> 🏆\n"
+        msg = f"{ce('trophy', '🏆')} <b>CENTURY!</b> {ce('trophy', '🏆')}\n"
         msg += "─────────────────\n"
         msg += f"👑 <b>{player_tag}</b> hits a HUNDRED!\n"
         msg += f"📊 <b>Score:</b> {player.runs} ({player.balls_faced})\n"
@@ -20688,7 +20942,7 @@ async def send_milestone_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int, p
         msg += f"⚡ <b>{player_tag}</b> takes THREE WICKETS!\n"
         msg += f"📊 <b>Wickets:</b> {player.wickets}/{player.runs_conceded}\n"
         msg += f"🏏 <b>Overs:</b> {format_overs(player.balls_bowled)}\n\n"
-        msg += "🔥 <i>Unstoppable! What a spell!</i>\n"
+        msg += f"{ce('fire', '🔥')} <i>Unstoppable! What a spell!</i>\n"
         msg += "─────────────────"
     else:
         return
@@ -21340,8 +21594,8 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Solo mode ──
     if getattr(match, 'game_mode', None) == "SOLO" or match.phase in [GamePhase.SOLO_JOINING, GamePhase.SOLO_MATCH]:
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Yes, End Solo", callback_data=f"confirm_endsolo_{group_id}"),
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_endsolo")
+            styled_button("✅ Yes, End Solo", callback_data=f"confirm_endsolo_{group_id}", style="danger"),
+            styled_button("❌ Cancel", callback_data="cancel_endsolo", style="primary")
         ]])
         await update.message.reply_text(
             "⚠️ Are you sure you want to end this solo match?\n\n"
@@ -21352,8 +21606,8 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Team / Tournament mode ──
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, End Match", callback_data="confirm_endmatch"),
-        InlineKeyboardButton("❌ Cancel", callback_data="cancel_endmatch")
+        styled_button("✅ Yes, End Match", callback_data="confirm_endmatch", style="danger"),
+        styled_button("❌ Cancel", callback_data="cancel_endmatch", style="primary")
     ]])
     await update.message.reply_text(
         "⚠️ Are you sure you want to end this match?\n\n"
@@ -22379,20 +22633,69 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         match = ai_matches[user.id]
         
-        # Check if AI is batting in first innings (user is bowling)
-        if match.get("ai_batting_first") and match["innings"] == 1:
+        # Check if AI is batting (user is bowling) — uses explicit flag, not innings number,
+        # since innings==2 can mean either side bats depending on who batted first
+        if not match.get("user_batting_now", True):
+            # SPAM CHECK - User bowling
+            if "user_spam_history" not in match:
+                match["user_spam_history"] = []
+            
+            match["user_spam_history"].append(num)
+            
             # Track bowling history for god-mode prediction
             if "user_bowl_history" not in match:
                 match["user_bowl_history"] = []
             match["user_bowl_history"].append(num)
             if len(match["user_bowl_history"]) > 10:
                 match["user_bowl_history"].pop(0)
-            # User is bowling to AI in first innings
+            
+            # Check last 3 numbers for spam
+            is_spam = False
+            if len(match["user_spam_history"]) >= 3:
+                if (match["user_spam_history"][-1] == match["user_spam_history"][-2] == 
+                    match["user_spam_history"][-3]):
+                    is_spam = True
+                    match["user_spam_history"] = []  # Reset
+            
+            if is_spam:
+                # WIDE BALL - Don't count ball, AI gets 1 free run
+                if match.get("ai_batting_first") and match["innings"] == 1:
+                    # First innings - penalty applied when AI's innings starts/continues
+                    if "ai_penalty_runs" not in match:
+                        match["ai_penalty_runs"] = 0
+                    match["ai_penalty_runs"] += 1
+                    await update.message.reply_text(
+                        "🚫 <b>WIDE BALL!</b>\n"
+                        "⚠️ You spammed the same number 3 times!\n\n"
+                        "📉 <b>Penalty:</b> +1 Run to AI\n"
+                        "🔄 Ball not counted. AI will bowl again.",
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    # Second innings - AI is actively batting, apply runs directly
+                    match["ai_score"] += 1
+                    await update.message.reply_text(
+                        "🚫 <b>WIDE BALL!</b>\n"
+                        "⚠️ You spammed the same number 3 times!\n\n"
+                        "📉 <b>Penalty:</b> +1 Run to AI\n"
+                        f"📊 AI: {match['ai_score']}/{match['ai_wickets']}\n\n"
+                        "🔄 Ball not counted. Bowl again.",
+                        parse_mode=ParseMode.HTML
+                    )
+                    # Check if AI won via wide
+                    if match["ai_score"] >= match.get("target", 0):
+                        await ai_end_match(context, user.id, "ai_won")
+                        return
+                
+                # User bowls again (no ball counted)
+                return
+            
+            # User is bowling to AI
             await ai_bat_ball(context, user.id, num)
             return
         
         # User is batting
-        if match["phase"] == "waiting_user" and match["innings"] == 1:
+        if match["phase"] == "waiting_user" and match.get("user_batting_now", True):
             ai_num = match.get("ai_number")
             if ai_num is None:
                 return
@@ -22452,6 +22755,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 match["target"] = match["user_score"] + 1
                 match["innings"] = 2
                 match["phase"] = "waiting_ai"
+                match["user_batting_now"] = False
                 
                 result_msg += f"\n─────────────────\n"
                 result_msg += f"<b>YOUR INNINGS ENDED!</b>\n"
@@ -22495,6 +22799,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     match["target"] = match["user_score"] + 1
                     match["innings"] = 2
                     match["phase"] = "waiting_ai"
+                    match["user_batting_now"] = False
                     
                     result_msg += f"\n─────────────────\n"
                     result_msg += f"<b>YOUR INNINGS ENDED!</b>\n"
@@ -22627,55 +22932,6 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await asyncio.sleep(1)
                     await ai_play_ball(context, user.id)
                     return
-        
-        # User is bowling (AI batting)
-        elif match["phase"] == "waiting_user" and match["innings"] == 2:
-            # SPAM CHECK - User bowling
-            if "user_spam_history" not in match:
-                match["user_spam_history"] = []
-            
-            match["user_spam_history"].append(num)
-            
-            # Track for god-mode AI prediction
-            if "user_bowl_history" not in match:
-                match["user_bowl_history"] = []
-            match["user_bowl_history"].append(num)
-            if len(match["user_bowl_history"]) > 10:
-                match["user_bowl_history"].pop(0)
-            
-            # Check last 3 numbers for spam
-            is_spam = False
-            if len(match["user_spam_history"]) >= 3:
-                if (match["user_spam_history"][-1] == match["user_spam_history"][-2] == 
-                    match["user_spam_history"][-3]):
-                    is_spam = True
-                    match["user_spam_history"] = []  # Reset
-            
-            if is_spam:
-                # WIDE BALL - Don't count ball, user gets 1 free run to AI
-                match["ai_score"] += 1
-                
-                await update.message.reply_text(
-                    "🚫 <b>WIDE BALL!</b>\n"
-                    "⚠️ You spammed the same number 3 times!\n\n"
-                    "📉 <b>Penalty:</b> +1 Run to AI\n"
-                    f"📊 AI: {match['ai_score']}/{match['ai_wickets']}\n\n"
-                    "🔄 Ball not counted. Bowl again.",
-                    parse_mode=ParseMode.HTML
-                )
-                
-                # Check if AI won via wide
-                if match["ai_score"] >= match["target"]:
-                    await ai_end_match(context, user.id, "ai_won")
-                    return
-                
-                # User bowls again (no ball counted)
-                return
-            
-            await update.message.reply_text(f"⚾ <b>You bowled:</b> {num}\n\nAI is playing...", parse_mode=ParseMode.HTML)
-            await asyncio.sleep(1)
-            await ai_bat_ball(context, user.id, num)
-            return
         
         return
     
@@ -26376,14 +26632,23 @@ async def qbatting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"─────────────────\n"
             f"ℹ️ <b>Usage:</b> <code>/qbatting [serial]</code>\n"
             f"Pre-queue next batsman (up to 3){queue_display}\n\n"
+            f"🧹 <code>/qbatting clear</code> → empty the queue\n"
             f"📊 Use /players to see serial numbers.",
             parse_mode=ParseMode.HTML
         )
         return
+
+    # 🧹 /qbatting clear — empty the queue
+    if context.args[0].strip().lower() == "clear":
+        q = _get_queue(chat.id, "batting")
+        q.clear()
+        await update.message.reply_text("🧹 <b>Batting queue cleared.</b>", parse_mode=ParseMode.HTML)
+        return
+
     try:
         serial = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("❌ Invalid serial number. Use: <code>/qbatting [number]</code>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ Invalid serial number. Use: <code>/qbatting [number]</code> or <code>/qbatting clear</code>", parse_mode=ParseMode.HTML)
         return
     player = bat_team.get_player_by_serial(serial)
     if not player:
@@ -26397,14 +26662,14 @@ async def qbatting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ <b>{player.first_name}</b> is already in the queue.", parse_mode=ParseMode.HTML)
         return
     if len(q) >= 3:
-        await update.message.reply_text("🚫 Queue is full (max 3). Remove someone first with /qbatting clear.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("🚫 Queue is full (max 3). Remove someone first with <code>/qbatting clear</code>.", parse_mode=ParseMode.HTML)
         return
 
     # ✅ FIX 2: Show confirmation button before adding
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(f"✅ Confirm → {player.first_name}", callback_data=f"qbat_confirm_{chat.id}_{player.user_id}_{serial}"),
-            InlineKeyboardButton("❌ Cancel", callback_data=f"qbat_cancel_{chat.id}")
+            styled_button(f"✅ Confirm → {player.first_name}", callback_data=f"qbat_confirm_{chat.id}_{player.user_id}_{serial}", style="success"),
+            styled_button("❌ Cancel", callback_data=f"qbat_cancel_{chat.id}", style="danger")
         ]
     ])
     await update.message.reply_text(
@@ -26483,7 +26748,7 @@ async def qbatting_confirm_callback(update: Update, context: ContextTypes.DEFAUL
 
 
 async def qbowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Queue a bowler for next over: /qbowling [serial]  (bowling captain only, max 3)"""
+    """Queue a bowler for next over: /qbowling [serial]  (bowling captain or host, max 3)"""
     chat = update.effective_chat
     user = update.effective_user
     if chat.type == "private":
@@ -26494,8 +26759,11 @@ async def qbowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if match.phase != GamePhase.MATCH_IN_PROGRESS:
         return
     bowl_team = match.current_bowling_team
-    if user.id != bowl_team.captain_id:
-        m = await update.message.reply_text("🚫 Only the bowling captain can queue bowlers!", parse_mode=ParseMode.HTML)
+    # Allow bowling captain OR host
+    is_captain = bool(bowl_team.captain_id and user.id == bowl_team.captain_id)
+    is_host = (user.id == match.host_id)
+    if not is_captain and not is_host:
+        m = await update.message.reply_text("🚫 Only the bowling captain or host can queue bowlers!", parse_mode=ParseMode.HTML)
         asyncio.create_task(_auto_delete(context, chat.id, m.message_id, 5))
         return
     if not context.args:
@@ -26509,14 +26777,23 @@ async def qbowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"─────────────────\n"
             f"ℹ️ <b>Usage:</b> <code>/qbowling [serial]</code>\n"
             f"Pre-queue next bowler (up to 3){queue_display}\n\n"
+            f"🧹 <code>/qbowling clear</code> → empty the queue\n"
             f"📊 Use /players to see serial numbers.",
             parse_mode=ParseMode.HTML
         )
         return
+
+    # 🧹 /qbowling clear — empty the queue
+    if context.args[0].strip().lower() == "clear":
+        q = _get_queue(chat.id, "bowling")
+        q.clear()
+        await update.message.reply_text("🧹 <b>Bowling queue cleared.</b>", parse_mode=ParseMode.HTML)
+        return
+
     try:
         serial = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("❌ Invalid serial number. Use: <code>/qbowling [number]</code>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ Invalid serial number. Use: <code>/qbowling [number]</code> or <code>/qbowling clear</code>", parse_mode=ParseMode.HTML)
         return
     player = bowl_team.get_player_by_serial(serial)
     if not player:
@@ -26530,14 +26807,14 @@ async def qbowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ <b>{player.first_name}</b> is already in the bowling queue.", parse_mode=ParseMode.HTML)
         return
     if len(q) >= 3:
-        await update.message.reply_text("🚫 Bowling queue is full (max 3).", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("🚫 Bowling queue is full (max 3). Remove someone first with <code>/qbowling clear</code>.", parse_mode=ParseMode.HTML)
         return
 
     # ✅ FIX 2: Show confirmation button
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(f"✅ Confirm → {player.first_name}", callback_data=f"qbowl_confirm_{chat.id}_{player.user_id}_{serial}"),
-            InlineKeyboardButton("❌ Cancel", callback_data=f"qbowl_cancel_{chat.id}")
+            styled_button(f"✅ Confirm → {player.first_name}", callback_data=f"qbowl_confirm_{chat.id}_{player.user_id}_{serial}", style="success"),
+            styled_button("❌ Cancel", callback_data=f"qbowl_cancel_{chat.id}", style="danger")
         ]
     ])
     await update.message.reply_text(
@@ -26578,9 +26855,11 @@ async def qbowling_confirm_callback(update: Update, context: ContextTypes.DEFAUL
         match = active_matches[group_id]
         bowl_team = match.current_bowling_team
 
-        # Only bowling captain can confirm
-        if user.id != bowl_team.captain_id:
-            await query.answer("🚫 Only the bowling captain can confirm!", show_alert=True)
+        # Bowling captain or host can confirm
+        is_captain = bool(bowl_team.captain_id and user.id == bowl_team.captain_id)
+        is_host = (user.id == match.host_id)
+        if not is_captain and not is_host:
+            await query.answer("🚫 Only the bowling captain or host can confirm!", show_alert=True)
             return
 
         player = bowl_team.get_player(player_uid)
@@ -27604,8 +27883,15 @@ async def setup_public_bot_commands(application: Application):
     # Deleting the webhook here (it runs once, right before polling starts)
     # makes startup self-healing regardless of how the bot was run before.
     try:
-        await application.bot.delete_webhook(drop_pending_updates=False)
-        logger.info("✅ Webhook cleared (if any) — safe to start polling.")
+        for attempt in range(3):
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=True)
+                logger.info("✅ Webhook cleared (if any) — safe to start polling.")
+                break
+            except Exception as e:
+                logger.warning(f"delete_webhook attempt {attempt+1}/3 failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2)
     except Exception as e:
         logger.warning(f"Could not delete webhook (continuing anyway): {e}")
 
@@ -27930,19 +28216,16 @@ def main():
     _load_clone_bots_meta()  # Restore clone bot tracking from disk
     
     logger.info("Cricoverse bot starting...")
-
-    # ✅ FIX: Delete any active webhook before polling starts
-    # This prevents: "Conflict: can't use getUpdates while webhook is active"
-    import asyncio as _asyncio
-    async def _delete_webhook():
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=False)
-            logger.info("✅ Webhook deleted — polling safe to start.")
-        except Exception as e:
-            logger.warning(f"Could not delete webhook: {e}")
-    _asyncio.get_event_loop().run_until_complete(_delete_webhook())
-
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    except Conflict:
+        logger.error(
+            "❌ Conflict: another instance of this bot (same BOT_TOKEN) is already "
+            "polling or has a webhook set elsewhere — e.g. a second deployment, a "
+            "leftover process on Render/Railway, or a local run you forgot to stop. "
+            "Stop the other instance, then restart this one."
+        )
+        raise
 
 
 if __name__ == "__main__":

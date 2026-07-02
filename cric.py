@@ -303,6 +303,7 @@ class GamePhase(Enum):
     TEAM_JOINING = "team_joining"
     HOST_SELECTION = "host_selection"
     CAPTAIN_SELECTION = "captain_selection"
+    FANTASY_PICK = "fantasy_pick"
     TEAM_EDIT = "team_edit"
     OVER_SELECTION = "over_selection"
     TOSS = "toss"
@@ -530,16 +531,20 @@ GIFS = {
         "https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExbWdubjB0YmVuZnMwdXBwODg5MzZ0cjFsNWl4ZXN1MzltOW1yZng5dCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/YtI7H5jotPvh9Z09t6/giphy.gif"
     ],
     MatchEvent.FREE_HIT: [
-        "https://t.me/cricoverse/42"
+        "https://media1.tenor.com/m/b13Yr5x3RhQAAAAC/free-hit-cricket.gif",
+        "https://media1.tenor.com/m/H2b9lXjF3nQAAAAC/cricket-six.gif"
     ],
     MatchEvent.DRS_REVIEW: [
-        "https://t.me/cricoverse/37"
+        "https://media1.tenor.com/m/PC9-9pGgc1EAAAAC/umpire-review.gif",
+        "https://media1.tenor.com/m/2ZFAX9x3YbEAAAAC/third-umpire-cricket.gif"
     ],
     MatchEvent.DRS_OUT: [
-        "https://pin.it/4HD5YcJOA"
+        "https://media1.tenor.com/m/JZ9m0v6qk6IAAAAC/out-cricket-umpire.gif",
+        "https://media1.tenor.com/m/8Vv3M7t3z9wAAAAC/cricket-wicket-out.gif"
     ],
     MatchEvent.DRS_NOT_OUT: [
-        "https://tenor.com/bOVyJ.gif"
+        "https://media1.tenor.com/m/y6t6TQxk8AwAAAAC/not-out-cricket.gif",
+        "https://media1.tenor.com/m/oDx9j1x3PkQAAAAC/cricket-celebration-safe.gif"
     ],
     MatchEvent.INNINGS_BREAK: [
     "CgACAgUAAxkBAAIjxGlViI35Zggv28khmw7xO9VzmT5IAALCDgACWnBJVhxhPkgGPYgDOAQ"
@@ -779,6 +784,9 @@ MEDIA_ASSETS = {
     "tournament_points": "AgACAgUAAxkBAALMJmmQoCzqP4IUR8uPpxQfP_TiCerjAAIMD2sbsP15VF2lqpJFGN7yAQADAgADeQADOgQ",
     "tournament_teams": "AgACAgUAAxkBAALMWmmQvIZFgc8DC8O3tQyyswuJLIpvAAKQDmsbnjKIVP9FxWHhpQZPAQADAgADeQADOgQ",
     "tournament_match": "AgACAgUAAxkBAALMMGmQoE4Zf_HhwlQId3Vgq0DNN1WMAAJGDmsbnjKIVNmxZFYO324iAQADAgADeQADOgQ",
+    # 🏆 Fantasy Dream III pick window banner — replace with your own file_id/URL anytime.
+    # Falls back to the "squads" photo by default so it works out of the box.
+    "fantasy": "AgACAgEAAxkBAAEBc9Fp_No7t1y4dOZoKNUJ37Rvzn8QGgACyQtrG6eY6Uf1pVWq3Gwy3gEAAwIAA3kAAzsE",
 }
 # Commentary templates
 # Ultimate Professional English Commentary (Expanded)
@@ -789,7 +797,7 @@ COMMENTARY = {
         "Straight to the fielder. Dot ball. 😐",
         "Swing and a miss! The batsman had no clue. 💨",
         "Dot ball. Pressure is building up on the batting side! 😰",
-        "Respect the bowler! Good delivery in the corridor of uncertainty. 🙌",
+        "Respect the bowler! That was a really good delivery. 🙌",
         "No run there. Excellent fielding inside the circle. 🤐",
         "Played back to the bowler. 🤚",
         "A loud shout for LBW, but turned down. Dot ball. 🔉",
@@ -810,7 +818,7 @@ COMMENTARY = {
         "Dropped at his feet and they scamper through. ⚡",
         "Fielder fumbles, and they steal a run. 🤲",
         "Sensible batting. Taking the single on offer. 🧠",
-        "Driven to long-on for one. 🚶",
+        "Nicely placed for a single. 🚶",
         "Smart cricket! Rotating the strike to keep the scoreboard ticking. ⏱️",
         "A little hesitation, but they make it in the end. 😅"
     ],
@@ -837,19 +845,19 @@ COMMENTARY = {
     "boundary": [
         "CRACKING SHOT! Raced to the fence like a bullet! 🚀 FOUR!",
         "What timing! Found the gap perfectly. 🏎️ 4 Runs!",
-        "Beautiful Cover Drive! That is a textbook shot! 😍",
+        "Beautiful shot! That is textbook batting! 😍",
         "The fielder is just a spectator! That's a boundary! 👀",
         "One bounce and over the rope! Four runs! 🎾",
         "Misfield and four! The bowler is absolutely furious. 😠",
-        "Surgical precision! Cut away past point for FOUR! 🔪",
-        "Pulled away powerfully! No chance for the fielder. 🤠",
+        "Surgical precision! Placed perfectly for FOUR! 🔪",
+        "Hit powerfully! No chance for the fielder. 🤠",
         "Straight down the ground! Umpire had to duck! 🦆 FOUR!",
         "Edged but it flies past the slip cordon! Lucky boundary. 🍀",
-        "Swept away fine! The fielder gives chase in vain. 🧹",
+        "Played away fine! The fielder gives chase in vain. 🧹",
         "That was pure elegance! Caressed to the boundary. ✨",
         "Power and placement! A terrific shot for four. 💪",
         "Short ball punished! Dispatched to the fence. 👮‍♂️",
-        "Drilled through the covers! What a sound off the bat! 🔊"
+        "Drilled away! What a sound off the bat! 🔊"
     ],
     "five": [
         "FIVE RUNS! Overthrows! Bonus runs for the team. 🎁",
@@ -868,7 +876,7 @@ COMMENTARY = {
         "Gone with the wind! High and handsome! 🌬️",
         "That ball is in the parking lot! Fetch that! 🚗",
         "Clean striking! It's landed in the top tier! 🏟️",
-        "Upper cut sails over third man! What a shot! ✂️",
+        "Steered over the fielders! What a shot! ✂️",
         "Smoked down the ground! That is a massive six! 🚬",
         "The crowd catches it! That's a fan favorite shot! 🙌",
         "Pick that up! Sent traveling into the night sky! 🚀",
@@ -991,7 +999,9 @@ SHUBH_SPECIAL = {
     ]
 }
 
-SIDHU_COMMENTARY = {
+# 🇮🇳 HINGLISH SPECIAL — generic energetic Hindi-English mixed commentary.
+# Not tied to any real commentator; just lively desi cricket energy.
+HINGLISH_COMMENTARY = {
     "dot": [
         "Oye guru! Ball ne aisi kahani likhi, bat ne kalam hi gira di! 🧱",
         "Bowler ne missile chhodi, batsman statue ban khada raha! 🚀",
@@ -1096,7 +1106,8 @@ bot_start_time = time.time()
 # ══════════════════════════════════════════════
 fantasy_data: Dict[int, Dict] = {}  # {user_id: {"points", "title", "titles_owned", ...}} — persistent, all-time
 
-FANTASY_SQUAD_SIZE = 11          # Hard cap — never more than a real Dream XI
+FANTASY_SQUAD_SIZE = 3           # Dream III — pick a max of 3 players (Dream11-style, scaled down)
+FANTASY_PICK_WINDOW_SECONDS = 30 # Time given after captain selection to build the Dream III squad
 FANTASY_PTS_PER_RUN = 1          # +1 point for every run scored
 FANTASY_PTS_PER_SIX_BONUS = 10   # +10 BONUS on top of the run points for a six
 FANTASY_PTS_PER_WICKET = 30      # +30 points per wicket taken
@@ -1684,12 +1695,11 @@ def get_fantasy_title_info(key: str):
 
 def get_fantasy_squad_cap(match: 'Match') -> int:
     """
-    Dream XI size for this match's combined player pool.
-    Mirrors real Dream11 ratio (pick ~half the combined pool, capped at 11)
-    so picking is still a genuine choice even in small lobbies.
+    Dream III size for this match's combined player pool — max 3 picks,
+    Dream11-style but scaled down. Caps at pool size for tiny lobbies.
     """
     pool_size = len(match.team_x.players) + len(match.team_y.players)
-    return max(2, min(FANTASY_SQUAD_SIZE, pool_size // 2))
+    return max(1, min(FANTASY_SQUAD_SIZE, pool_size))
 
 
 def award_fantasy_wicket(match: 'Match', bowler: 'Player'):
@@ -1799,6 +1809,10 @@ class Team:
         self.batting_order: List[int] = []
         self.striker_id: Optional[int] = None
         self.non_striker_id: Optional[int] = None
+
+        # ✅ FIX: Frozen squad size at innings start — used for the "all out" check
+        # so that removing a player mid-game doesn't corrupt/prematurely-end or hang the innings.
+        self.innings_start_squad_size: Optional[int] = None
         
         # Current batsmen
         self.current_batsman_idx: Optional[int] = None
@@ -2063,8 +2077,12 @@ class Match:
         if not self.current_batting_team or not self.current_bowling_team:
             return False
         
-        # All out
-        if self.current_batting_team.wickets >= len(self.current_batting_team.players) - 1:
+        # All out — use the squad size FROZEN at innings start (not the live list length),
+        # so removing a player mid-game can't cause a premature end or a stuck/incorrect state.
+        squad_size = self.current_batting_team.innings_start_squad_size
+        if squad_size is None:
+            squad_size = len(self.current_batting_team.players)
+        if self.current_batting_team.wickets >= squad_size - 1:
             return True
         
         # Overs complete
@@ -2294,10 +2312,8 @@ def get_commentary(event_type: str, group_id: int = None, user_id: int = None) -
         style = user_style
     
     # Get commentary based on style
-    if style in ("shubh", "Shubh"):
-        comments = SHUBH_SPECIAL.get(event_type, [])
-    elif style == "sidhu":
-        comments = SIDHU_COMMENTARY.get(event_type, [])
+    if style == "hinglish":
+        comments = HINGLISH_COMMENTARY.get(event_type, [])
     else:  # english default
         comments = COMMENTARY.get(event_type, [])
     
@@ -2329,18 +2345,18 @@ _ai_commentary_lock = asyncio.Lock()
 _AI_COMMENTARY_STYLE_PROMPTS = {
     "english": (
         "You are a professional cricket commentator. Generate ONE short, punchy commentary line "
-        "(max 12 words) for the following ball event. Be vivid, dramatic, and varied. "
+        "(max 12 words) for the following ball event. Be vivid and dramatic, but keep it GENERIC — "
+        "do not name a specific shot type (e.g. cover drive, pull shot, sweep) or a specific fielding "
+        "position (e.g. long-on, third man, deep midwicket). Just react to the outcome (runs/wicket/etc). "
         "No quotation marks. Just the commentary sentence."
     ),
-    "shubh": (
-        "You are Shubh, a savage Hinglish cricket commentator. Generate ONE brutal roast-style "
-        "commentary line (max 15 words, mix Hindi and English) for the following ball event. "
-        "Be very funny and savage. No quotation marks."
-    ),
-    "sidhu": (
-        "You are Navjot Singh Sidhu, the legendary cricket commentator known for hilarious Punjabi "
-        "proverbs and metaphors. Generate ONE commentary line (max 15 words) for the following "
-        "ball event using Sidhu-style Punjabi wisdom or metaphor. No quotation marks."
+    "hinglish": (
+        "You are an energetic Hinglish (Hindi+English mix) cricket commentator with a fun, punjabi-tadka "
+        "style of excitement and wordplay. Generate ONE short commentary line (max 15 words, mixing Hindi "
+        "and English) for the following ball event. Be lively and full of josh, but keep it GENERIC — do "
+        "not name a specific shot type (e.g. cover drive, pull shot, sweep) or a specific fielding position "
+        "(e.g. long-on, third man, deep midwicket), and do not impersonate or name any real person. "
+        "Just react to the outcome (runs/wicket/etc) with energy. No quotation marks."
     ),
 }
 
@@ -5620,10 +5636,10 @@ async def host_selection_callback(update: Update, context: ContextTypes.DEFAULT_
 # Captain selection callback
 async def open_fantasy_squad_window(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
-    🏆 Announce + open the Pre-Match Fantasy Dream XI picking window.
+    🏆 Announce + open the Pre-Match Fantasy Dream III picking window.
     Anyone in the group can tap player buttons below to build a fantasy
-    squad before the match starts — picks lock automatically once toss
-    decision is made and the match moves to MATCH_IN_PROGRESS.
+    squad (max 3 players) during the 30-second window right after captain
+    selection — the toss starts automatically once the window closes.
     """
     if match.game_mode not in ("TEAM", "TOURNAMENT"):
         return
@@ -5634,6 +5650,7 @@ async def open_fantasy_squad_window(context: ContextTypes.DEFAULT_TYPE, group_id
 
     match.fantasy_squads = {}
     match.fantasy_window_open = True
+    match.phase = GamePhase.FANTASY_PICK
 
     cap = get_fantasy_squad_cap(match)
 
@@ -5641,28 +5658,65 @@ async def open_fantasy_squad_window(context: ContextTypes.DEFAULT_TYPE, group_id
         f"🎮 Tap players below to build your squad (max <b>{cap}</b>).",
         f"🏃 <b>+1</b> pt/run · 🚀 <b>+{FANTASY_PTS_PER_SIX_BONUS}</b> bonus/six · 🎯 <b>+{FANTASY_PTS_PER_WICKET}</b>/wicket",
         f"🙋 <i>Anyone in the group can play — you don't need to be in the match!</i>",
-        f"⏰ Squad locks automatically once the toss is done.",
+        f"⏰ You have <b>{FANTASY_PICK_WINDOW_SECONDS} seconds</b> — toss starts right after!",
         f"📋 Tap <b>My Squad</b> anytime to check your picks.",
     ]
-    msg = themed("🏆 PRE-MATCH FANTASY — PICK YOUR DREAM XI", lines, "🏏")
+    msg = themed(f"🏆 FANTASY DREAM III — PICK YOUR SQUAD ({FANTASY_PICK_WINDOW_SECONDS}s)", lines, "🏏")
 
     keyboard = []
     row = []
     for p in pool:
         team_emoji = "🧊" if p in match.team_x.players else "🔥"
-        row.append(InlineKeyboardButton(f"{team_emoji} {p.first_name}", callback_data=f"fpick_{group_id}_{p.user_id}"))
+        btn_style = "primary" if p in match.team_x.players else "danger"
+        row.append(styled_button(f"{team_emoji} {p.first_name}", callback_data=f"fpick_{group_id}_{p.user_id}", style=btn_style))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("📋 My Squad", callback_data=f"fmysquad_{group_id}")])
+    keyboard.append([styled_button("📋 My Squad", callback_data=f"fmysquad_{group_id}", style="success", emoji_key="trophy")])
 
     try:
-        sent = await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+        fantasy_photo = MEDIA_ASSETS.get("fantasy") or MEDIA_ASSETS.get("squads")
+        if fantasy_photo:
+            sent = await context.bot.send_photo(
+                chat_id=group_id,
+                photo=fantasy_photo,
+                caption=msg,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            sent = await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
         match.fantasy_announce_message_id = sent.message_id
     except Exception as e:
         logger.error(f"Error sending fantasy squad window: {e}")
+
+    # ⏰ Auto-close the Dream III window after the pick window and move to toss
+    asyncio.create_task(fantasy_window_timeout(context, group_id, match))
+
+
+async def fantasy_window_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
+    """After the Dream III pick window expires, lock picks and start the toss."""
+    await asyncio.sleep(FANTASY_PICK_WINDOW_SECONDS)
+
+    if match.phase != GamePhase.FANTASY_PICK:
+        return  # Match moved on (cancelled / ended) before the timer fired
+
+    match.fantasy_window_open = False
+
+    try:
+        squad_count = len([s for s in match.fantasy_squads.values() if s.get("players")])
+        await context.bot.send_message(
+            group_id,
+            f"🔒 <b>Dream III squads locked!</b> {squad_count} squad(s) submitted.\n🪙 Toss time now...",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.error(f"Error sending fantasy lock message: {e}")
+
+    match.phase = GamePhase.TOSS
+    await start_toss(None, context, match)
 
 
 async def captain_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5707,15 +5761,17 @@ async def captain_selection_callback(update: Update, context: ContextTypes.DEFAU
     
     # Check if BOTH are selected
     if match.team_x.captain_id and match.team_y.captain_id:
-        # ✅ FLOW FIX: Captains ke baad Toss aayega
-        match.phase = GamePhase.TOSS
-        await start_toss(query, context, match)
-        # 🏆 FANTASY: open the pre-match Dream XI picking window (Team/Tournament only)
+        # ✅ FLOW FIX: Captains ke baad Fantasy Dream III (30s) → phir Toss
         try:
             await open_fantasy_squad_window(context, chat.id, match)
         except Exception as e:
             logger.error(f"Error opening fantasy squad window: {e}")
-        
+
+        if match.phase != GamePhase.FANTASY_PICK:
+            # Not enough players for fantasy (e.g. <4) — go straight to toss
+            match.phase = GamePhase.TOSS
+            await start_toss(query, context, match)
+
     else:
         # Update Message (Show who is selected)
         captain_x = match.team_x.get_player(match.team_x.captain_id)
@@ -5725,8 +5781,8 @@ async def captain_selection_callback(update: Update, context: ContextTypes.DEFAU
         cap_y_name = captain_y.first_name if captain_y else "Not Selected"
         
         keyboard = [
-            [InlineKeyboardButton("Become Captain - Team X", callback_data="captain_team_x")],
-            [InlineKeyboardButton("Become Captain - Team Y", callback_data="captain_team_y")]
+            [styled_button("Become Captain - Team X", callback_data="captain_team_x", style="primary", emoji_key="captain")],
+            [styled_button("Become Captain - Team Y", callback_data="captain_team_y", style="danger", emoji_key="captain")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -6190,8 +6246,8 @@ async def start_toss(query, context: ContextTypes.DEFAULT_TYPE, match: Match):
     cap_x_name = captain_x.first_name if captain_x else "Team X Captain"
     
     keyboard = [
-        [InlineKeyboardButton("Heads", callback_data="toss_heads")],
-        [InlineKeyboardButton("Tails", callback_data="toss_tails")]
+        [styled_button("🪙 Heads", callback_data="toss_heads", style="primary")],
+        [styled_button("🪙 Tails", callback_data="toss_tails", style="danger")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -6244,8 +6300,8 @@ async def toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Ask winner to choose bat or bowl
     keyboard = [
-        [InlineKeyboardButton("🏏 Bat First", callback_data="toss_decision_bat")],
-        [InlineKeyboardButton("⚾ Bowl First", callback_data="toss_decision_bowl")]
+        [styled_button("🏏 Bat First", callback_data="toss_decision_bat", style="success")],
+        [styled_button("⚾ Bowl First", callback_data="toss_decision_bowl", style="primary")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -6317,8 +6373,7 @@ async def start_match(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
     match.current_batting_team = match.batting_first
     match.current_bowling_team = match.bowling_first
     match.innings = 1
-    
-    # 🏆 FANTASY: lock Dream XI picks — the match is starting now
+    match.current_batting_team.innings_start_squad_size = len(match.current_batting_team.players)
     match.fantasy_window_open = False
     
     # ✅ CRITICAL: Reset Batsmen & Bowler indices to None (Fresh Start)
@@ -8694,7 +8749,7 @@ async def commentary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     except (ValueError, IndexError):
         group_id = query.message.chat.id
     
-    valid_styles = ["english", "shubh", "sidhu"]
+    valid_styles = ["english", "hinglish"]
     if style not in valid_styles:
         await query.answer("❌ Invalid style!", show_alert=True)
         return
@@ -8729,8 +8784,7 @@ async def commentary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     style_names = {
         "english": "🇬🇧 English",
-        "shubh": "⚠️ Shubh's Special",
-        "sidhu": "😎 Sidhu Paaji"
+        "hinglish": "🇮🇳 Hinglish Special"
     }
     style_display = style_names.get(style, style)
     
@@ -9014,7 +9068,7 @@ async def process_drs_review(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
         batsman.is_out = False
         match.current_batting_team.out_players_indices.discard(match.current_batting_team.current_batsman_idx)
         
-        gif = "https://tenor.com/bOVyJ.gif"
+        gif = get_random_gif(MatchEvent.DRS_NOT_OUT)
         
         result_text = "📺 <b>DRS RESULT → NOT OUT!</b>\n"
         result_text += "─────────────────\n"
@@ -9022,7 +9076,10 @@ async def process_drs_review(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
         result_text += f"📡 DRS left: {match.current_batting_team.drs_remaining}"
         
         try:
-            await context.bot.send_animation(group_id, animation=gif, caption=result_text, parse_mode=ParseMode.HTML)
+            if gif:
+                await context.bot.send_animation(group_id, animation=gif, caption=result_text, parse_mode=ParseMode.HTML)
+            else:
+                await context.bot.send_message(group_id, result_text, parse_mode=ParseMode.HTML)
         except:
             await context.bot.send_message(group_id, result_text, parse_mode=ParseMode.HTML)
         
@@ -9034,13 +9091,17 @@ async def process_drs_review(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
             await execute_ball(context, group_id, match)
     else:
         # OUT confirmed
+        out_gif_url = get_random_gif(MatchEvent.DRS_OUT)
         result_text = "📺 <b>DRS RESULT → OUT!</b>\n"
         result_text += "─────────────────\n"
         result_text += f"🔴 <b>{batsman.first_name}</b> is OUT! Decision UPHELD!\n"
         result_text += f"🏃 Score: {batsman.runs}({batsman.balls_faced})  ·  📡 DRS left: {match.current_batting_team.drs_remaining}"
         
         try:
-            await context.bot.send_animation(group_id, animation=gif_url, caption=result_text, parse_mode=ParseMode.HTML)
+            if out_gif_url:
+                await context.bot.send_animation(group_id, animation=out_gif_url, caption=result_text, parse_mode=ParseMode.HTML)
+            else:
+                await context.bot.send_message(group_id, result_text, parse_mode=ParseMode.HTML)
         except:
             await context.bot.send_message(group_id, result_text, parse_mode=ParseMode.HTML)
         
@@ -9598,6 +9659,23 @@ async def confirm_wicket(context: ContextTypes.DEFAULT_TYPE, group_id: int, matc
     # Check for duck
     if batsman.runs == 0:
         batsman.ducks += 1
+        is_golden = batsman.balls_faced <= 0  # out without facing/scoring a single run yet
+        duck_gif = get_random_gif(MatchEvent.DUCK)
+        duck_label = f"🟡 {ce('duck', '🦆')} GOLDEN DUCK!" if is_golden else f"🦆 {ce('duck', '🦆')} DUCK!"
+        duck_msg = (
+            f"{duck_label}\n"
+            f"─────────────────\n"
+            f"😬 <b>{batsman.first_name}</b> departs without scoring!\n"
+            f"📊 <b>{batsman.runs}</b> ({batsman.balls_faced + 1})  ·  🎯 Ducks this match: <b>{batsman.ducks}</b>"
+        )
+        try:
+            if duck_gif:
+                await context.bot.send_animation(group_id, animation=duck_gif, caption=duck_msg, parse_mode=ParseMode.HTML)
+            else:
+                await context.bot.send_message(group_id, duck_msg, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"Error sending duck gif: {e}")
+            await context.bot.send_message(group_id, duck_msg, parse_mode=ParseMode.HTML)
     
     # Log ball
     match.ball_by_ball_log.append({
@@ -12133,6 +12211,7 @@ async def end_innings(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
         match.current_over_wickets = 0
         match.current_batting_team = match.get_other_team(match.current_batting_team)
         match.current_bowling_team = match.get_other_team(match.current_bowling_team)
+        match.current_batting_team.innings_start_squad_size = len(match.current_batting_team.players)
         
         # ✅ FIX: Reset ball counts so 2nd innings always starts from ball 0
         match.current_batting_team.balls = 0
@@ -15777,6 +15856,7 @@ async def start_super_over(context: ContextTypes.DEFAULT_TYPE, group_id: int, ma
     match.total_overs = 1  # Only 1 over
     match.current_batting_team = match.super_over_batting_first
     match.current_bowling_team = match.super_over_bowling_first
+    match.current_batting_team.innings_start_squad_size = len(match.current_batting_team.players)
     match.target = 0
     
     # Request openers
@@ -15849,6 +15929,7 @@ async def end_super_over_innings(context: ContextTypes.DEFAULT_TYPE, group_id: i
     match.innings = 2
     match.current_batting_team = bowl_team
     match.current_bowling_team = bat_team
+    match.current_batting_team.innings_start_squad_size = len(match.current_batting_team.players)
     
     # Reset for 2nd inningsS
     await reset_teams_for_super_over(match)
@@ -15942,7 +16023,7 @@ async def determine_super_over_winner(context: ContextTypes.DEFAULT_TYPE, group_
         await send_potm_message(context, group_id, match)
     except: pass
     
-    # 🏆 Fantasy Dream XI — finalize results
+    # 🏆 Fantasy Dream III — finalize results
     try:
         await finalize_fantasy_results(context, group_id, match)
     except Exception as e:
@@ -21956,7 +22037,7 @@ async def changecappick_callback(update: Update, context: ContextTypes.DEFAULT_T
     # Move player if in other team
     player = other_team.get_player(uid)
     if player:
-        other_team.players.remove(player)
+        other_team.remove_player(uid)  # ✅ FIX: safe removal (keeps batsman/bowler indices in sync)
         if other_team.captain_id == uid:
             other_team.captain_id = None
 
@@ -23373,8 +23454,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Style mapping
     style_map = {
         "set_english": "english",
-        "set_shubh": "shubh", 
-        "set_sidhu": "sidhu"
+        "set_hinglish": "hinglish"
     }
     
     if data in style_map:
@@ -23388,8 +23468,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Confirmation message
         style_name = {
             "english": "English",
-            "shubh": "Shubh's Special", 
-            "sidhu": "Sidhu Paaji"
+            "hinglish": "Hinglish Special"
         }.get(style_map[data], "English")
         
         await query.message.edit_text(
@@ -23429,7 +23508,7 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     commentary = get_gc_setting(group_id, "commentary_style", "english")
     lobby_time = get_gc_setting(group_id, "lobby_time", 120)
     
-    commentary_display = {"english": "🇬🇧 English", "shubh": "😂 Shubh Special", "sidhu": "🦁 Sidhu Paaji"}.get(commentary, "🇬🇧 English")
+    commentary_display = {"english": "🇬🇧 English", "hinglish": "🇮🇳 Hinglish Special"}.get(commentary, "🇬🇧 English")
     
     text = (
         f"⚙️ <b>GC SETTINGS</b>\n"
@@ -23451,8 +23530,7 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ],
         [
             InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
-            InlineKeyboardButton("😂 Shubh", callback_data=f"gcs_comm_shubh_{group_id}"),
-            InlineKeyboardButton("🦁 Sidhu", callback_data=f"gcs_comm_sidhu_{group_id}"),
+            InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}"),
         ],
         [
             InlineKeyboardButton("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}"),
@@ -23501,7 +23579,7 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif data == f"gcs_wide_{group_id}":
         gc_settings[group_id]["wide_enabled"] = not gc_settings[group_id].get("wide_enabled", True)
     elif data.startswith(f"gcs_comm_"):
-        style = parts[-2]  # e.g. english, shubh, sidhu
+        style = parts[-2]  # e.g. english, hinglish
         gc_settings[group_id]["commentary_style"] = style
         # Also update registered_groups for backward compat
         if group_id in registered_groups:
@@ -23518,7 +23596,7 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     commentary = gc_settings[group_id].get("commentary_style", "english")
     lobby_time = gc_settings[group_id].get("lobby_time", 120)
     
-    commentary_display = {"english": "🇬🇧 English", "shubh": "😂 Shubh Special", "sidhu": "🦁 Sidhu Paaji"}.get(commentary, "🇬🇧 English")
+    commentary_display = {"english": "🇬🇧 English", "hinglish": "🇮🇳 Hinglish Special"}.get(commentary, "🇬🇧 English")
     
     try:
         chat_title = query.message.chat.title or "This Group"
@@ -23547,10 +23625,7 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         ],
         [
             InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
-            InlineKeyboardButton("😂 Shubh", callback_data=f"gcs_comm_shubh_{group_id}"),
-        ],
-        [
-            InlineKeyboardButton("🦁 Sidhu", callback_data=f"gcs_comm_sidhu_{group_id}"),
+            InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}"),
         ],
         [
             InlineKeyboardButton("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}"),
@@ -24037,7 +24112,7 @@ async def get_all_file_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def commentary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     🎙️ ADMIN ONLY: Change commentary style for entire group
-    Usage: /commentary [english/shubh/sidhu]
+    Usage: /commentary [english/hinglish]
     """
     chat = update.effective_chat
     user = update.effective_user
@@ -24069,8 +24144,7 @@ async def commentary_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         keyboard = [
             [InlineKeyboardButton("🇬🇧 English", callback_data=f"gcommentary_english_{chat.id}")],
-            [InlineKeyboardButton("⚠️ Shubh's Special", callback_data=f"gcommentary_shubh_{chat.id}")],
-            [InlineKeyboardButton("😎 Sidhu Style", callback_data=f"gcommentary_sidhu_{chat.id}")]
+            [InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcommentary_hinglish_{chat.id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -24079,8 +24153,7 @@ async def commentary_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         msg += f"📢 <b>Current Style:</b> {current_style.upper()}\n\n"
         msg += "<b>Options:</b>\n"
         msg += "• 🇬🇧 <b>English:</b> Professional commentary\n"
-        msg += "• ⚠️ <b>Shubh's Special:</b> Hindi+English mix\n"
-        msg += "• 😎 <b>Sidhu:</b> Fun Punjabi style\n\n"
+        msg += "• 🇮🇳 <b>Hinglish Special:</b> Fun Hindi+English mix\n\n"
         msg += "<i>Click button to change for all group matches.</i>"
         
         # Send with photo
@@ -24099,16 +24172,15 @@ async def commentary_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # Process text command
     style = context.args[0].lower()
-    valid_styles = ["english", "shubh", "sidhu"]
+    valid_styles = ["english", "hinglish"]
     
     if style not in valid_styles:
         await update.message.reply_text(
             "⚠️ <b>Invalid style!</b>\n\n"
             "Available styles:\n"
             "• <code>english</code>\n"
-            "• <code>shubh</code>\n"
-            "• <code>sidhu</code>\n\n"
-            "Example: <code>/commentary Shubh</code>",
+            "• <code>hinglish</code>\n\n"
+            "Example: <code>/commentary hinglish</code>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -24128,8 +24200,7 @@ async def commentary_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     style_name = {
         "english": "English",
-        "shubh": "Shubh's Special",
-        "sidhu": "Sidhu Paaji"
+        "hinglish": "Hinglish Special"
     }.get(style, "English")
     
     await update.message.reply_text(
@@ -25751,7 +25822,7 @@ async def tourlb_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════
 
 async def fantasy_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Toggle a player in/out of the tapping user's Fantasy Dream XI."""
+    """Toggle a player in/out of the tapping user's Fantasy Dream III."""
     query = update.callback_query
     user = query.from_user
     data = query.data  # fpick_{group_id}_{player_user_id}
@@ -25769,8 +25840,8 @@ async def fantasy_pick_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("⚠️ This fantasy window is no longer active.", show_alert=True)
         return
 
-    if not getattr(match, "fantasy_window_open", False) or match.phase != GamePhase.TOSS:
-        await query.answer("⏰ Fantasy squad picks are locked — the match has already started!", show_alert=True)
+    if not getattr(match, "fantasy_window_open", False) or match.phase != GamePhase.FANTASY_PICK:
+        await query.answer("⏰ Fantasy squad picks are locked — the toss has already started!", show_alert=True)
         return
 
     pool = match.team_x.players + match.team_y.players
@@ -25790,14 +25861,14 @@ async def fantasy_pick_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer(f"➖ Removed {player_obj.first_name}. ({len(squad['players'])}/{cap})")
     else:
         if len(squad["players"]) >= cap:
-            await query.answer(f"🚫 Your Dream XI is full ({cap}/{cap})! Remove someone first.", show_alert=True)
+            await query.answer(f"🚫 Your Dream III is full ({cap}/{cap})! Remove someone first.", show_alert=True)
             return
         squad["players"].append(player_id)
         await query.answer(f"✅ Added {player_obj.first_name}! ({len(squad['players'])}/{cap})")
 
 
 async def fantasy_mysquad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the tapping user their current Dream XI picks via popup alert."""
+    """Show the tapping user their current Dream III picks via popup alert."""
     query = update.callback_query
     user = query.from_user
     data = query.data  # fmysquad_{group_id}
@@ -25814,17 +25885,17 @@ async def fantasy_mysquad_callback(update: Update, context: ContextTypes.DEFAULT
 
     squad = match.fantasy_squads.get(user.id)
     if not squad or not squad.get("players"):
-        await query.answer("📭 You haven't picked anyone yet! Tap player names to build your Dream XI.", show_alert=True)
+        await query.answer("📭 You haven't picked anyone yet! Tap player names to build your Dream III.", show_alert=True)
         return
 
     pool = match.team_x.players + match.team_y.players
     names = [p.first_name for p in pool if p.user_id in squad["players"]]
     cap = get_fantasy_squad_cap(match)
-    await query.answer(f"Your Dream XI ({len(names)}/{cap}): " + ", ".join(names), show_alert=True)
+    await query.answer(f"Your Dream III ({len(names)}/{cap}): " + ", ".join(names), show_alert=True)
 
 
 async def mysquad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the caller's fantasy Dream XI for the active match in this chat."""
+    """Show the caller's fantasy Dream III for the active match in this chat."""
     chat_id = update.effective_chat.id
     user = update.effective_user
     match = active_matches.get(chat_id)
@@ -25834,7 +25905,7 @@ async def mysquad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     squad = getattr(match, "fantasy_squads", {}).get(user.id)
     if not squad or not squad.get("players"):
-        await update.message.reply_text("📭 You haven't picked your Fantasy Dream XI yet! Tap a player in the fantasy message above to build your squad.")
+        await update.message.reply_text("📭 You haven't picked your Fantasy Dream III yet! Tap a player in the fantasy message above to build your squad.")
         return
 
     pool = match.team_x.players + match.team_y.players
@@ -25852,13 +25923,13 @@ async def mysquad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def fantasylb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the global, all-time Fantasy Dream XI leaderboard."""
+    """Show the global, all-time Fantasy Dream III leaderboard."""
     ranked = sorted(fantasy_data.items(), key=lambda kv: kv[1].get("points", 0), reverse=True)
     ranked = [r for r in ranked if r[1].get("points", 0) > 0][:15]
 
     if not ranked:
         await update.message.reply_text(
-            "📭 No fantasy points on the board yet!\nPlay a Team or Tournament match and pick your Dream XI before it starts."
+            "📭 No fantasy points on the board yet!\nPlay a Team or Tournament match and pick your Dream III before it starts."
         )
         return
 
@@ -27904,7 +27975,7 @@ async def setup_public_bot_commands(application: Application):
         BotCommand("momentum", "Momentum dashboard image"),
         BotCommand("strikemap", "Strike map image"),
         BotCommand("lb", "Global leaderboard"),
-        BotCommand("fantasylb", "Fantasy Dream XI leaderboard"),
+        BotCommand("fantasylb", "Fantasy Dream III leaderboard"),
         BotCommand("gcsettings", "Group settings for admins"),
         BotCommand("endmatch", "End the current match"),
     ]
@@ -27995,7 +28066,7 @@ def main():
     application.add_handler(CommandHandler("leaderboard", leaderboard_command))
     application.add_handler(CommandHandler("lb", leaderboard_command))
 
-    # 🏆 Fantasy Dream XI
+    # 🏆 Fantasy Dream III
     application.add_handler(CommandHandler("mysquad", mysquad_command))
     application.add_handler(CommandHandler("fantasylb", fantasylb_command))
     application.add_handler(CommandHandler("fantasyshop", fantasyshop_command))
@@ -28120,7 +28191,7 @@ def main():
     application.add_handler(CallbackQueryHandler(leaderboard_callback, pattern="^lb_"))
     application.add_handler(CallbackQueryHandler(tourlb_callback, pattern="^tourlb_"))
 
-    # 🏆 Fantasy Dream XI
+    # 🏆 Fantasy Dream III
     application.add_handler(CallbackQueryHandler(fantasy_pick_callback, pattern="^fpick_"))
     application.add_handler(CallbackQueryHandler(fantasy_mysquad_callback, pattern="^fmysquad_"))
     application.add_handler(CallbackQueryHandler(fantasy_buytitle_callback, pattern="^fbuytitle_"))

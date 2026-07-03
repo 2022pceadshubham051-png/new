@@ -55,6 +55,8 @@ from telegram.ext import (
     MessageHandler,
     ChatMemberHandler,
     ContextTypes,
+    TypeHandler,
+    ApplicationHandlerStop,
     filters
 )
 from telegram.constants import ParseMode
@@ -1078,6 +1080,7 @@ STATS_FILE = os.path.join(DATA_DIR, "stats.json")
 ACHIEVEMENTS_FILE = os.path.join(DATA_DIR, "achievements.json")
 FANTASY_FILE = os.path.join(DATA_DIR, "fantasy.json")
 BANNED_GROUPS_FILE = os.path.join(DATA_DIR, "banned_groups.json")
+BANNED_USERS_FILE = os.path.join(DATA_DIR, "banned_users.json")
 GROUPS_FILE = os.path.join(DATA_DIR, "groups.json")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 DB_FILE = DB_PATH # SQL Database File (using the same path as DB_PATH)
@@ -1099,6 +1102,7 @@ achievements: Dict[int, List[str]] = {}
 registered_groups: Dict[int, Dict] = {}
 gc_settings: Dict[int, Dict] = {}  # Per-GC admin settings
 banned_groups: Set[int] = set()
+banned_users: Dict[int, Dict] = {}   # user_id -> {"reason":..., "banned_by":..., "banned_at":..., "name":...}
 bot_start_time = time.time()
 
 # ══════════════════════════════════════════════
@@ -1514,9 +1518,28 @@ def load_data():
         except Exception as e:
             logger.error(f"Error loading banned groups: {e}")
             banned_groups = set()
-    
+
+    # ✅ LOAD BANNED USERS
+    global banned_users
+    if os.path.exists(BANNED_USERS_FILE):
+        try:
+            with open(BANNED_USERS_FILE, 'r') as f:
+                banned_users = {int(k): v for k, v in json.load(f).items()}
+            logger.info(f"🚫 Loaded {len(banned_users)} banned users")
+        except Exception as e:
+            logger.error(f"Error loading banned users: {e}")
+            banned_users = {}
+
     # Load per-group settings
     load_gc_settings()
+
+def save_banned_users():
+    """Persist the banned_users dict to disk."""
+    try:
+        with open(BANNED_USERS_FILE, 'w') as f:
+            json.dump({str(k): v for k, v in banned_users.items()}, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving banned users: {e}")
 
 # Initialize player stats for a user
 def load_gc_settings():
@@ -3901,6 +3924,10 @@ def get_help_tutorial_text():
         "┃\n"
         "┃ 📸 Image commands have short cooldowns\n"
         "┃    to keep generation smooth.\n"
+        "┃\n"
+        "┃ 🛡 OWNER TOOLS\n"
+        "┃ ├ /ban (reply/@user/id) [reason]\n"
+        "┃ └ /unban (reply/@user/id)\n"
         "╰━━━━━━━━"
     )
 
@@ -7964,6 +7991,204 @@ async def unbangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pass
 
 # ==================== GROUP BAN MIDDLEWARE ====================
+
+async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🚫 Ban a player from using the bot (OWNER ONLY).
+    Usage:
+      /ban (reply to user)      [reason]
+      /ban @username            [reason]
+      /ban 123456789            [reason]
+    Any non-owner attempting this command is silently ignored.
+    """
+    user = update.effective_user
+
+    # Owner-only — everyone else is ignored silently, no reply at all.
+    if user.id != OWNER_ID:
+        return
+
+    target_id = None
+    target_name = None
+    reason_args = list(context.args) if context.args else []
+
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+        target_id = target_user.id
+        target_name = target_user.first_name
+        reason = " ".join(reason_args) if reason_args else "No reason provided"
+    else:
+        if not reason_args:
+            await update.message.reply_text(
+                themed("⚙️ USAGE", [
+                    "<code>/ban</code> (reply to user) [reason]",
+                    "<code>/ban @username</code> [reason]",
+                    "<code>/ban 123456789</code> [reason]",
+                ], "⚙️"),
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        first = reason_args[0]
+        if first.startswith("@"):
+            uname = first[1:].lower()
+            found = None
+            for uid, data in user_data.items():
+                if (data.get("username") or "").lower() == uname:
+                    found = uid
+                    target_name = data.get("first_name", uname)
+                    break
+            if not found:
+                await update.message.reply_text(
+                    themed("❌ NOT FOUND", [
+                        "Couldn't resolve that username.",
+                        "Try replying to their message, or use their numeric user ID instead."
+                    ], "❌"),
+                    parse_mode=ParseMode.HTML
+                )
+                return
+            target_id = found
+            reason_args = reason_args[1:]
+        elif first.isdigit():
+            target_id = int(first)
+            target_name = user_data.get(target_id, {}).get("first_name", str(target_id))
+            reason_args = reason_args[1:]
+        else:
+            await update.message.reply_text(
+                themed("❌ INVALID", [
+                    "Provide a valid <code>@username</code>, numeric user ID, or reply to the user's message."
+                ], "❌"),
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        reason = " ".join(reason_args) if reason_args else "No reason provided"
+
+    if target_id == OWNER_ID:
+        await update.message.reply_text(
+            themed("❌ NOPE", ["You can't ban yourself, boss 😅"], "❌"),
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    banned_users[target_id] = {
+        "reason": reason,
+        "banned_by": user.id,
+        "banned_at": datetime.now().isoformat(),
+        "name": target_name or str(target_id),
+    }
+    save_banned_users()
+
+    await update.message.reply_text(
+        themed("🚫 USER BANNED", [
+            f"👤 <b>{target_name or target_id}</b> (<code>{target_id}</code>)",
+            f"📝 Reason: <b>{reason}</b>",
+            "",
+            "This user can no longer use any bot command.",
+        ], "🚫"),
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    ✅ Unban a previously banned player (OWNER ONLY).
+    Usage:
+      /unban (reply to user)
+      /unban @username
+      /unban 123456789
+    Any non-owner attempting this command is silently ignored.
+    """
+    user = update.effective_user
+
+    if user.id != OWNER_ID:
+        return
+
+    target_id = None
+
+    if update.message.reply_to_message:
+        target_id = update.message.reply_to_message.from_user.id
+    elif context.args:
+        first = context.args[0]
+        if first.startswith("@"):
+            uname = first[1:].lower()
+            for uid, data in user_data.items():
+                if (data.get("username") or "").lower() == uname:
+                    target_id = uid
+                    break
+        elif first.isdigit():
+            target_id = int(first)
+
+    if target_id is None:
+        await update.message.reply_text(
+            themed("⚙️ USAGE", [
+                "<code>/unban</code> (reply to user)",
+                "<code>/unban @username</code>",
+                "<code>/unban 123456789</code>",
+            ], "⚙️"),
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if target_id not in banned_users:
+        await update.message.reply_text(
+            themed("ℹ️ NOT BANNED", ["This user isn't banned."], "ℹ️"),
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    info = banned_users.pop(target_id)
+    save_banned_users()
+
+    await update.message.reply_text(
+        themed("✅ USER UNBANNED", [
+            f"👤 <b>{info.get('name', target_id)}</b> (<code>{target_id}</code>)",
+            "Can use the bot again.",
+        ], "✅"),
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def global_user_ban_enforcer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🛡️ Runs before every other handler (registered in group=-1).
+    Blocks any command or button-press from a banned user and shows them
+    the reason. Silently does nothing for non-banned users / plain chat text.
+    """
+    user = update.effective_user
+    if not user or user.id == OWNER_ID:
+        return
+
+    ban_info = banned_users.get(user.id)
+    if not ban_info:
+        return
+
+    reason = ban_info.get("reason", "No reason provided")
+
+    if update.callback_query:
+        try:
+            await update.callback_query.answer(
+                f"🚫 You are banned from using this bot.\nReason: {reason}",
+                show_alert=True
+            )
+        except Exception:
+            pass
+        raise ApplicationHandlerStop
+
+    msg = update.effective_message
+    if msg and msg.text and msg.text.startswith("/"):
+        try:
+            await msg.reply_text(
+                themed("🚫 YOU ARE BANNED", [
+                    f"📝 Reason: <b>{reason}</b>",
+                    "",
+                    "Contact the bot owner if you think this is a mistake.",
+                ], "🚫"),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+        raise ApplicationHandlerStop
+
 
 async def check_group_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
@@ -12926,12 +13151,19 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
         from PIL import Image, ImageDraw, ImageFont, ImageOps
         from io import BytesIO
 
-        TEMPLATE_PATH = "players_template.jpg"
-        if not os.path.exists(TEMPLATE_PATH):
-            TEMPLATE_PATH = "/home/cricoverse/players_template.jpg"
+        TEMPLATE_CANDIDATES = [
+            "players_template.png",
+            "players_template.jpg",
+            "/home/cricoverse/players_template.png",
+            "/home/cricoverse/players_template.jpg",
+        ]
+        TEMPLATE_PATH = next((p for p in TEMPLATE_CANDIDATES if os.path.exists(p)), None)
+        if TEMPLATE_PATH is None:
+            logger.error("generate_players_squad_image: template file not found (players_template.png)")
+            return None
 
         base = Image.open(TEMPLATE_PATH).convert("RGBA")
-        W, H = base.size  # 1024 x 639
+        W, H = base.size  # native template size (auto-detected, no hardcoded assumption)
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
         # ── Fetch pfp bytes ──
@@ -12979,43 +13211,20 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
             circle.paste(pfp, (0, 0), mask)
             img_overlay.alpha_composite(circle, (cx - r, cy - r))
 
-        # Template layout (1024 x 639) — pixel-calibrated:
-        # LEFT  circle (Team X cap) : cx=238, cy=359, inner_r=115
-        # RIGHT circle (Team Y cap) : cx=775, cy=359, inner_r=115
-        # CENTER small (Host)       : cx=510, cy=235, inner_r=58
-        paste_circle(overlay, cap_x_bytes,  238, 359, 115,
+        # Template layout (native 1598 x 984) — pixel-calibrated via color-mask detection:
+        # LEFT  circle (Team X cap) : cx=359,  cy=555, inner_r=155
+        # RIGHT circle (Team Y cap) : cx=1236, cy=555, inner_r=157
+        # CENTER small (Host)       : cx=801,  cy=356, inner_r=78
+        paste_circle(overlay, cap_x_bytes,  359, 555, 155,
                      initials=(match.team_x.name or "X")[:2].upper())
-        paste_circle(overlay, cap_y_bytes,  775, 359, 115,
+        paste_circle(overlay, cap_y_bytes,  1236, 555, 157,
                      initials=(match.team_y.name or "Y")[:2].upper())
-        paste_circle(overlay, host_bytes,   510, 235,  58,
+        paste_circle(overlay, host_bytes,   801, 356,  78,
                      initials=(getattr(match, "host_name", "H") or "H")[:2].upper())
 
-        # ── Team name labels ──
-        draw = ImageDraw.Draw(overlay)
-        try:
-            f_team = ImageFont.truetype("Roboto-Bold.ttf", 34)
-        except Exception:
-            f_team = ImageFont.load_default(size=34)
-
-        WHITE = (255, 255, 255, 255)
-        # Team X label — centred on Team X circle x=238, banner y=562
-        tx_name = (match.team_x.name or "TEAM X")[:14].upper()
-        tb = draw.textbbox((0, 0), tx_name, font=f_team)
-        draw.text((238 - (tb[2]-tb[0])//2, 562), tx_name, font=f_team, fill=WHITE)
-
-        # Team Y label — centred on Team Y circle x=775, banner y=562
-        ty_name = (match.team_y.name or "TEAM Y")[:14].upper()
-        tb = draw.textbbox((0, 0), ty_name, font=f_team)
-        draw.text((775 - (tb[2]-tb[0])//2, 562), ty_name, font=f_team, fill=WHITE)
-
-        # Host label (small, above host circle)
-        host_name = (getattr(match, "host_name", "Host") or "Host")[:16]
-        try:
-            f_host = ImageFont.truetype("Roboto-Regular.ttf", 20)
-        except Exception:
-            f_host = ImageFont.load_default(size=20)
-        hb = draw.textbbox((0, 0), host_name, font=f_host)
-        draw.text((510 - (hb[2]-hb[0])//2, 156), host_name, font=f_host, fill=WHITE)
+        # NOTE: This template has baked-in static labels ("TEAM X" / "TEAM Y" / "HOST")
+        # as part of the background art, so we don't draw duplicate text on top —
+        # only the profile pictures are pasted into the circles above.
 
         final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()
@@ -27470,12 +27679,19 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
         if not sorted_players:
             return None
 
-        TEMPLATE_PATH = "solo_podium_template.jpg"
-        if not os.path.exists(TEMPLATE_PATH):
-            TEMPLATE_PATH = "/home/cricoverse/solo_podium_template.jpg"
+        TEMPLATE_CANDIDATES = [
+            "solo_podium_template.png",
+            "solo_podium_template.jpg",
+            "/home/cricoverse/solo_podium_template.png",
+            "/home/cricoverse/solo_podium_template.jpg",
+        ]
+        TEMPLATE_PATH = next((p for p in TEMPLATE_CANDIDATES if os.path.exists(p)), None)
+        if TEMPLATE_PATH is None:
+            logger.error("generate_solo_top3_image: template file not found (solo_podium_template.png)")
+            return None
 
         base = Image.open(TEMPLATE_PATH).convert("RGBA")
-        W, H = base.size  # 1024 x 682
+        W, H = base.size  # native template size (auto-detected, no hardcoded assumption)
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
@@ -27528,19 +27744,20 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
             circle = circle_hq.resize((size, size), Image.Resampling.LANCZOS)
             img_overlay.alpha_composite(circle, (cx - r, cy - r))
 
-        # ── Circle positions pixel-measured from rendered output (1024×682) ──
-        # 1st (gold ring center):   photo cx=514, cy=295, r=120
-        # 2nd (silver ring left):   ring cx=195, cy=300, outer_r=164 → photo r=146
-        # 3rd (bronze ring right):  ring cx=838, cy=363, outer_r=157,126 → photo r=108
+        # ── Circle positions — pixel-calibrated via color-mask detection on the
+        #    native 1537×1023 template (tight fit to each colored circle) ──
+        # 1st (gold ring, centre):  cx=767,  cy=450, r=143
+        # 2nd (silver ring, left):  cx=340,  cy=541, r=125
+        # 3rd (bronze ring, right): cx=1192, cy=547, r=123
 
         def get_init(p):
             return (getattr(p, "first_name", "P") or "P")[:2].upper()
 
-        paste_circle(overlay, pfp_bytes[0], 515, 297,  92, get_init(top3[0]))   # 1st – centre gold ring
+        paste_circle(overlay, pfp_bytes[0], 767, 450, 143, get_init(top3[0]))   # 1st – centre gold ring
         if len(top3) > 1:
-            paste_circle(overlay, pfp_bytes[1], 227, 357,  80, get_init(top3[1]))  # 2nd – left silver ring
+            paste_circle(overlay, pfp_bytes[1], 340, 541, 125, get_init(top3[1]))  # 2nd – left silver ring
         if len(top3) > 2:
-            paste_circle(overlay, pfp_bytes[2], 797, 375, 108, get_init(top3[2]))  # 3rd – right bronze ring
+            paste_circle(overlay, pfp_bytes[2], 1192, 547, 123, get_init(top3[2]))  # 3rd – right bronze ring
 
         final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()
@@ -28167,7 +28384,13 @@ def main():
     application.add_handler(CommandHandler("bangroup", bangroup_command))
     application.add_handler(CommandHandler("unbangroup", unbangroup_command))
     application.add_handler(CommandHandler("bannedgroups", bannedgroups_command))
+    application.add_handler(CommandHandler("ban", ban_command))
+    application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("clone", clone_command))
+
+    # 🛡️ Global per-user ban enforcer — runs before every other handler so a
+    # banned user's commands/button-presses never reach normal handlers.
+    application.add_handler(TypeHandler(Update, global_user_ban_enforcer), group=-1)
 
     #application.add_handler(MessageHandler(
      #   filters.ChatType.PRIVATE & ~filters.COMMAND, 

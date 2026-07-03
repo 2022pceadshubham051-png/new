@@ -8151,8 +8151,14 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def global_user_ban_enforcer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     🛡️ Runs before every other handler (registered in group=-1).
-    Blocks any command or button-press from a banned user and shows them
-    the reason. Silently does nothing for non-banned users / plain chat text.
+    Blocks any command or button-press from a banned user.
+
+    Behaviour:
+      - /game and /mystats  -> reply showing the ban reason.
+      - Every other command -> silently ignored (no reply at all).
+      - Join buttons (join_team_x / join_team_y / solo_join*) -> silently
+        ignored so the banned user is never added to the match.
+      - Every other button press -> silently ignored too.
     """
     user = update.effective_user
     if not user or user.id == OWNER_ID:
@@ -8164,29 +8170,31 @@ async def global_user_ban_enforcer(update: Update, context: ContextTypes.DEFAULT
 
     reason = ban_info.get("reason", "No reason provided")
 
+    # ── Button presses: always silent, never let them take effect ──
     if update.callback_query:
         try:
-            await update.callback_query.answer(
-                f"🚫 You are banned from using this bot.\nReason: {reason}",
-                show_alert=True
-            )
+            await update.callback_query.answer()  # clears the loading spinner, no alert text
         except Exception:
             pass
         raise ApplicationHandlerStop
 
+    # ── Text commands ──
     msg = update.effective_message
     if msg and msg.text and msg.text.startswith("/"):
-        try:
-            await msg.reply_text(
-                themed("🚫 YOU ARE BANNED", [
-                    f"📝 Reason: <b>{reason}</b>",
-                    "",
-                    "Contact the bot owner if you think this is a mistake.",
-                ], "🚫"),
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
+        cmd = msg.text[1:].split()[0].split("@")[0].lower() if len(msg.text) > 1 else ""
+        if cmd in ("game", "mystats"):
+            try:
+                await msg.reply_text(
+                    themed("🚫 YOU ARE BANNED", [
+                        f"📝 Reason: <b>{reason}</b>",
+                        "",
+                        "Contact the bot owner if you think this is a mistake.",
+                    ], "🚫"),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+        # All other commands: silently ignored, no reply.
         raise ApplicationHandlerStop
 
 

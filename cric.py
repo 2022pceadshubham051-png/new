@@ -7990,6 +7990,166 @@ async def unbangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except:
         pass
 
+# ==================== ACHIEVEMENTS ADMIN COMMANDS ====================
+
+def _resolve_achievement_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Resolve (target_id, target_name, achievement_text) for /addach and /removeach.
+    Supports: reply, @username, or numeric user ID. Returns (None, None, error_text) on failure.
+    """
+    args = list(context.args) if context.args else []
+
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+        target_id = target_user.id
+        target_name = target_user.first_name
+        text = " ".join(args).strip()
+        if not text:
+            return None, None, None
+        return target_id, target_name, text
+
+    if not args:
+        return None, None, None
+
+    first = args[0]
+    if first.startswith("@"):
+        uname = first[1:].lower()
+        found = None
+        target_name = None
+        for uid, data in user_data.items():
+            if (data.get("username") or "").lower() == uname:
+                found = uid
+                target_name = data.get("first_name", uname)
+                break
+        if not found:
+            return None, None, "not_found"
+        text = " ".join(args[1:]).strip()
+        if not text:
+            return None, None, None
+        return found, target_name, text
+    elif first.isdigit():
+        target_id = int(first)
+        target_name = user_data.get(target_id, {}).get("first_name", str(target_id))
+        text = " ".join(args[1:]).strip()
+        if not text:
+            return None, None, None
+        return target_id, target_name, text
+    else:
+        return None, None, None
+
+
+async def addach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🏆 Add an achievement to a player's /mystats card (Owner / Approved Members only).
+    Usage:
+      /addach (reply to user) Achievement Text
+      /addach @username Achievement Text
+      /addach 123456789 Achievement Text
+    """
+    user = update.effective_user
+
+    if user.id != OWNER_ID and user.id not in POWERED_USERS:
+        await update.message.reply_text(
+            "❌ <b>Permission Denied</b>\nOnly the Bot Owner or Approved Members can use this command.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    target_id, target_name, ach_text = _resolve_achievement_target(update, context)
+
+    if target_id is None:
+        if ach_text == "not_found":
+            await update.message.reply_text(
+                "❌ <b>Not Found</b>\nCouldn't resolve that username. Try replying to their message, or use their numeric user ID instead.",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_text(
+                "⚙️ <b>Usage</b>\n"
+                "• <code>/addach</code> (reply to user) Achievement Text\n"
+                "• <code>/addach @username</code> Achievement Text\n"
+                "• <code>/addach 123456789</code> Achievement Text",
+                parse_mode=ParseMode.HTML
+            )
+        return
+
+    user_achievements = achievements.setdefault(target_id, [])
+
+    # Duplicate protection (case-insensitive match)
+    if any(existing.lower() == ach_text.lower() for existing in user_achievements):
+        await update.message.reply_text(
+            "❌ Player already has this achievement.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    user_achievements.append(ach_text)
+    save_data()
+
+    await update.message.reply_text(
+        f"🏆 <b>Achievement Added!</b>\n"
+        f"👤 Player: {html.escape(target_name or str(target_id))}\n"
+        f"🎖️ Achievement: {html.escape(ach_text)}",
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def removeach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🗑️ Remove an achievement from a player's /mystats card (Owner / Approved Members only).
+    Usage:
+      /removeach (reply to user) Achievement Text
+      /removeach @username Achievement Text
+      /removeach 123456789 Achievement Text
+    """
+    user = update.effective_user
+
+    if user.id != OWNER_ID and user.id not in POWERED_USERS:
+        await update.message.reply_text(
+            "❌ <b>Permission Denied</b>\nOnly the Bot Owner or Approved Members can use this command.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    target_id, target_name, ach_text = _resolve_achievement_target(update, context)
+
+    if target_id is None:
+        if ach_text == "not_found":
+            await update.message.reply_text(
+                "❌ <b>Not Found</b>\nCouldn't resolve that username. Try replying to their message, or use their numeric user ID instead.",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_text(
+                "⚙️ <b>Usage</b>\n"
+                "• <code>/removeach</code> (reply to user) Achievement Text\n"
+                "• <code>/removeach @username</code> Achievement Text\n"
+                "• <code>/removeach 123456789</code> Achievement Text",
+                parse_mode=ParseMode.HTML
+            )
+        return
+
+    user_achievements = achievements.get(target_id, [])
+    match = next((a for a in user_achievements if a.lower() == ach_text.lower()), None)
+
+    if not match:
+        await update.message.reply_text(
+            "❌ Player doesn't have this achievement.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    user_achievements.remove(match)
+    save_data()
+
+    await update.message.reply_text(
+        f"🗑️ <b>Achievement Removed</b>\n"
+        f"👤 Player: {html.escape(target_name or str(target_id))}\n"
+        f"🎖️ Achievement: {html.escape(match)}",
+        parse_mode=ParseMode.HTML
+    )
+
+
 # ==================== GROUP BAN MIDDLEWARE ====================
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -12013,97 +12173,9 @@ async def ai_end_match(context: ContextTypes.DEFAULT_TYPE, user_id: int, result:
     except:
         await context.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
     
-    # Update stats
-    if user_id in player_stats:
-        # Safely update stats with get() to avoid KeyError
-        player_stats[user_id]["total_runs"] = player_stats[user_id].get("total_runs", 0) + match["user_stats"]["runs"]
-        player_stats[user_id]["total_balls_faced"] = player_stats[user_id].get("total_balls_faced", 0) + match["user_stats"]["balls"]
-        player_stats[user_id]["total_sixes"] = player_stats[user_id].get("total_sixes", 0) + match["user_stats"]["sixes"]
-        player_stats[user_id]["total_fours"] = player_stats[user_id].get("total_fours", 0) + match["user_stats"]["fours"]
-        player_stats[user_id]["matches_played"] = player_stats[user_id].get("matches_played", 0) + 1
-        if result == "user_won":
-            player_stats[user_id]["matches_won"] = player_stats[user_id].get("matches_won", 0) + 1
-        save_data()
-    
-    # Save AI stats to database
-    try:
-        difficulty = match.get("difficulty", "easy")
-        won = 1 if result == "user_won" else 0
-        user_runs = match["user_stats"]["runs"]
-        user_sixes = match["user_stats"]["sixes"]
-        user_fours = match["user_stats"]["fours"]
-        
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Create table if not exists (migration safety)
-        c.execute('''CREATE TABLE IF NOT EXISTS ai_stats (
-            user_id INTEGER PRIMARY KEY,
-            total_matches INTEGER DEFAULT 0,
-            wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            easy_matches INTEGER DEFAULT 0,
-            medium_matches INTEGER DEFAULT 0,
-            hard_matches INTEGER DEFAULT 0,
-            easy_wins INTEGER DEFAULT 0,
-            medium_wins INTEGER DEFAULT 0,
-            hard_wins INTEGER DEFAULT 0,
-            highest_score INTEGER DEFAULT 0,
-            total_runs INTEGER DEFAULT 0,
-            total_sixes INTEGER DEFAULT 0,
-            total_fours INTEGER DEFAULT 0,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        
-        c.execute("SELECT user_id FROM ai_stats WHERE user_id = ?", (user_id,))
-        exists = c.fetchone()
-        
-        if not exists:
-            c.execute("""INSERT INTO ai_stats 
-                (user_id, total_matches, wins, losses,
-                 easy_matches, medium_matches, hard_matches,
-                 easy_wins, medium_wins, hard_wins,
-                 highest_score, total_runs, total_sixes, total_fours)
-                VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, won, 1 - won,
-                 1 if difficulty == "easy" else 0,
-                 1 if difficulty == "medium" else 0,
-                 1 if difficulty == "hard" else 0,
-                 won if difficulty == "easy" else 0,
-                 won if difficulty == "medium" else 0,
-                 won if difficulty == "hard" else 0,
-                 user_runs, user_runs, user_sixes, user_fours))
-        else:
-            c.execute("""UPDATE ai_stats SET
-                total_matches = total_matches + 1,
-                wins = wins + ?,
-                losses = losses + ?,
-                easy_matches = easy_matches + ?,
-                medium_matches = medium_matches + ?,
-                hard_matches = hard_matches + ?,
-                easy_wins = easy_wins + ?,
-                medium_wins = medium_wins + ?,
-                hard_wins = hard_wins + ?,
-                highest_score = MAX(highest_score, ?),
-                total_runs = total_runs + ?,
-                total_sixes = total_sixes + ?,
-                total_fours = total_fours + ?,
-                last_updated = CURRENT_TIMESTAMP
-                WHERE user_id = ?""",
-                (won, 1 - won,
-                 1 if difficulty == "easy" else 0,
-                 1 if difficulty == "medium" else 0,
-                 1 if difficulty == "hard" else 0,
-                 won if difficulty == "easy" else 0,
-                 won if difficulty == "medium" else 0,
-                 won if difficulty == "hard" else 0,
-                 user_runs, user_runs, user_sixes, user_fours, user_id))
-        
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"AI stats save error: {e}")
-    
+    # 🤖 AI Mode stats recording has been permanently disabled.
+    # (AI Mode matches no longer contribute to player statistics or overall stats.)
+
     # Remove match
     del ai_matches[user_id]
 
@@ -16614,21 +16686,31 @@ def update_h2h_stats(match: Match):
             # Bowling vs opponent
             record["wickets_taken"] += p1.wickets
 
-    # 🔮 Save Magic Ball mode match stats
-    if getattr(match, "magic_ball_mode", False) or getattr(match, "game_mode", "") == "MAGICBALL":
-        all_mb_players = list(match.team_x.players) + list(match.team_y.players)
-        for p in all_mb_players:
-            uid = p.user_id
-            init_player_stats(uid)
-            mb = player_stats[uid].setdefault("magicball", {})
-            mb["matches"] = mb.get("matches", 0) + 1
-            is_win = winner and p in winner.players
-            mb["wins"] = mb.get("wins", 0) + (1 if is_win else 0)
-            mb["runs"] = mb.get("runs", 0) + p.runs
-            if p.runs > mb.get("high_score", 0):
-                mb["high_score"] = p.runs
+    # 🔮 Magic Ball Mode stats recording has been permanently disabled.
+    # (Magic Ball matches no longer contribute to player statistics.)
 
     save_data()
+
+
+# 🏆 Icons cycled for achievements shown in /mystats (purely cosmetic, in display order)
+ACHIEVEMENT_ICONS = ["🥇", "⭐", "🟠", "🟣", "🏅", "🎖️", "🔥", "💎"]
+
+
+def build_achievements_text(user_id: int, user_name: str) -> str:
+    """Build the 🏆 Achievements section text shown in /mystats."""
+    user_achievements = achievements.get(user_id, [])
+    SEP = "━━━━━━━━━━━━━━"
+
+    text = f"🏆 <b>{html.escape(user_name)}'s Achievements</b>\n"
+    text += f"{SEP}\n"
+    if not user_achievements:
+        text += "No achievements yet."
+    else:
+        for i, ach in enumerate(user_achievements):
+            icon = ACHIEVEMENT_ICONS[i % len(ACHIEVEMENT_ICONS)]
+            text += f"{icon} {html.escape(ach)}\n"
+        text = text.rstrip("\n")
+    return text
 
 
 def check_achievements(player: Player):
@@ -16791,10 +16873,7 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}"),
-                InlineKeyboardButton("🤖 AI", callback_data=f"mystats_ai_{user_id}")
-            ],
-            [
-                InlineKeyboardButton("🔮 Magic Ball", callback_data=f"mystats_magicball_{user_id}")
+                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -17048,9 +17127,8 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ],
         [
             InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}"),
-            InlineKeyboardButton("🤖 AI", callback_data=f"mystats_ai_{user_id}")
-        ],
-        [InlineKeyboardButton("🔮 Magic Ball", callback_data=f"mystats_magicball_{user_id}")]
+            InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -17426,109 +17504,10 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyword))
 
     # ══════════════════════════════════════
-    #   AI STATS
+    #   ACHIEVEMENTS
     # ══════════════════════════════════════
-    elif "mystats_ai" in data:
-        try:
-            ai_conn = sqlite3.connect(DB_PATH)
-            ai_c = ai_conn.cursor()
-            ai_c.execute("""
-                SELECT total_matches, wins, losses,
-                       easy_matches, medium_matches, hard_matches,
-                       easy_wins, medium_wins, hard_wins,
-                       highest_score, total_runs, total_sixes, total_fours
-                FROM ai_stats WHERE user_id = ?
-            """, (user_id,))
-            ai_row = ai_c.fetchone()
-            ai_conn.close()
-        except:
-            ai_row = None
-        
-        if not ai_row or ai_row[0] == 0:
-            text = (
-                f"🤖 <b>{user_name}'s AI STATS</b>\n{SEP}\n"
-                "🏟️ <i>No AI matches played yet!</i>\n"
-                "Use /aistart to challenge the machine! 🤖"
-            )
-        else:
-            (total, wins, losses, easy_m, med_m, hard_m,
-             easy_w, med_w, hard_w, hs, total_runs, sixes, fours) = ai_row
-            win_rate = round((wins / total * 100), 1) if total > 0 else 0
-            hard_wr = round((hard_w / hard_m * 100), 1) if hard_m > 0 else 0
-            
-            # Badge
-            if hard_m >= 5 and hard_wr >= 60:
-                badge = "👑 <b>AI CONQUEROR</b>"
-            elif wins >= 10:
-                badge = "🏅 <b>AI VETERAN</b>"
-            elif wins >= 5:
-                badge = "⭐ <b>AI FIGHTER</b>"
-            elif wins >= 1:
-                badge = "🥉 <b>AI BEATER</b>"
-            else:
-                badge = "🤖 <i>Keep grinding!</i>"
-
-            text = f"🤖 <b>{user_name}'s AI STATS</b>\n"
-            text += f"{SEP}\n"
-            text += f"🎮 <b>Matches:</b>  {total}\n"
-            text += f"🏆 <b>Wins:</b>  {wins}  ┊  💔 <b>Losses:</b>  {losses}  ┊  📈 <b>Win Rate:</b>  {win_rate}%\n"
-            text += f"{SEP}\n"
-            text += f"🎯 <b>DIFFICULTY RECORD</b>\n"
-            text += f"├ 😊 <b>Easy:</b>    {easy_w}W / {easy_m} played\n"
-            text += f"├ 😐 <b>Medium:</b>  {med_w}W / {med_m} played\n"
-            text += f"└ 😈 <b>Hard:</b>   {hard_w}W / {hard_m} played"
-            if hard_m > 0:
-                text += f"  ({hard_wr}%)"
-            text += f"\n{SEP}\n"
-            text += f"🏏 <b>BATTING VS AI</b>\n"
-            text += f"├ 🏃 <b>Runs:</b>  {total_runs}\n"
-            text += f"├ 🎯 <b>Highest Score:</b>  {hs}\n"
-            text += f"├ 🚀 <b>Sixes:</b>  {sixes}\n"
-            text += f"└ 🔥 <b>Fours:</b>  {fours}\n"
-            text += f"{SEP}\n"
-            text += f"🎖️ <b>BADGE:</b>  {badge}"
-
-        keyboard = [[back_button]]
-        try:
-            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-        except:
-            try:
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-            except:
-                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # ══════════════════════════════════════
-    #   MAGIC BALL STATS
-    # ══════════════════════════════════════
-    elif "mystats_magicball" in data:
-        mb_stats = player_stats.get(user_id, {}).get("magicball", {})
-        matches = mb_stats.get("matches", 0)
-        wins = mb_stats.get("wins", 0)
-        runs = mb_stats.get("runs", 0)
-        hs = mb_stats.get("high_score", 0)
-        balls_triggered = mb_stats.get("magic_balls_triggered", 0)
-        best_ball = mb_stats.get("best_magic_ball", "None")
-        
-        if matches == 0:
-            text = (
-                f"🔮 <b>{user_name}'s MAGIC BALL STATS</b>\n{SEP}\n"
-                "✨ <i>No Magic Ball matches yet!</i>\n"
-                "Use /game → 🔮 Magic Ball Mode to play! ✨"
-            )
-        else:
-            win_rate = round((wins / max(matches, 1)) * 100, 1)
-            text = f"🔮 <b>{user_name}'s MAGIC BALL STATS</b>\n"
-            text += f"{SEP}\n"
-            text += f"🎮 <b>Matches:</b>  {matches}\n"
-            text += f"🏆 <b>Wins:</b>  {wins}  ┊  💔 <b>Losses:</b>  {matches-wins}  ┊  📈 <b>Win Rate:</b>  {win_rate}%\n"
-            text += f"{SEP}\n"
-            text += f"🏏 <b>BATTING</b>\n"
-            text += f"├ 🏃 <b>Runs:</b>  {runs}\n"
-            text += f"└ 🎯 <b>Highest Score:</b>  {hs}\n"
-            text += f"{SEP}\n"
-            text += f"✨ <b>MAGIC BALL STATS</b>\n"
-            text += f"├ ⚡ <b>Balls Triggered:</b>  {balls_triggered}\n"
-            text += f"└ 🏅 <b>Favourite Ball:</b>  {best_ball}"
+    elif "mystats_achievements" in data:
+        text = build_achievements_text(user_id, user_name)
 
         keyboard = [[back_button]]
         try:
@@ -17550,10 +17529,7 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}"),
-                InlineKeyboardButton("🤖 AI", callback_data=f"mystats_ai_{user_id}")
-            ],
-            [
-                InlineKeyboardButton("🔮 Magic Ball", callback_data=f"mystats_magicball_{user_id}")
+                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -17563,8 +17539,7 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"─────────────────\n"
         text += f"👤 <b>{user_name}</b>\n"
         text += f"─────────────────\n"
-        text += f"📊 <b>Overall</b> · 👥 <b>Team</b> · ⚔️ <b>Solo</b>\n"
-        text += f"🤖 <b>AI</b> · 🔮 <b>Magic Ball</b>\n"
+        text += f"📊 <b>Overall</b> · 👥 <b>Team</b> · ⚔️ <b>Solo</b> · 🏆 <b>Achievements</b>\n"
         text += f"─────────────────\n"
         text += "👇 <i>Select a mode to view your stats!</i>"
         
@@ -28303,6 +28278,8 @@ def main():
 
     # ================== STATS ==================
     application.add_handler(CommandHandler("mystats", mystats_command_v2))
+    application.add_handler(CommandHandler("addach", addach_command))
+    application.add_handler(CommandHandler("removeach", removeach_command))
 
     # ================== FUN ==================mode_selection_callback
 

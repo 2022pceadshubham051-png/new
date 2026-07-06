@@ -16852,6 +16852,191 @@ async def save_match_to_history(match, winner_team: str):
     conn.close()
 
 
+def build_team_stats_text(user_id: int, user_name: str) -> str:
+    """Build the 👥 Team stats section text shown in /mystats (also used as the default view)."""
+    SEP = "─────────────────"
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT
+            team_matches_played, team_matches_won,
+            team_total_runs, team_highest_score,
+            team_total_balls_faced, team_total_wickets,
+            team_total_sixes, team_total_fours,
+            team_total_hundreds, team_total_fifties, team_total_ducks,
+            team_best_bowling_wickets, team_best_bowling_runs,
+            team_total_dots, team_total_balls_bowled,
+            win_streak, hat_tricks, player_of_match_count,
+            five_wicket_hauls, times_not_out
+        FROM user_stats WHERE user_id = ?
+    """, (user_id,))
+    db_row = c.fetchone()
+    conn.close()
+
+    if not db_row or db_row[0] == 0:
+        # Fallback to old columns
+        conn2 = sqlite3.connect(DB_PATH)
+        c2 = conn2.cursor()
+        c2.execute("""
+            SELECT matches_played, matches_won, total_runs, highest_score,
+                   total_balls_faced, total_wickets, total_sixes, total_fours,
+                   total_hundreds, total_fifties, total_ducks,
+                   best_bowling_wickets, best_bowling_runs, total_dots,
+                   total_balls_bowled, player_of_match_count, five_wicket_hauls
+            FROM user_stats WHERE user_id = ?
+        """, (user_id,))
+        old_row = c2.fetchone()
+        conn2.close()
+        if old_row and old_row[0] > 0:
+            matches, wins, runs, hs, balls_faced, wickets, sixes, fours, hundreds, fifties, ducks, best_w, best_r, dots, balls_bowled, mom, fifer = old_row
+            win_streak = hat_tricks = times_not_out = 0
+        else:
+            matches = wins = runs = hs = balls_faced = wickets = sixes = fours = 0
+            hundreds = fifties = ducks = best_w = best_r = dots = balls_bowled = mom = fifer = 0
+            win_streak = hat_tricks = times_not_out = 0
+    else:
+        matches, wins, runs, hs, balls_faced, wickets, sixes, fours, hundreds, fifties, ducks, best_w, best_r, dots, balls_bowled, win_streak, hat_tricks, mom, fifer, times_not_out = db_row
+
+    # ── PRIMARY: always prefer in-memory player_stats["team"] (most up-to-date) ──
+    mem_team = player_stats.get(user_id, {}).get("team", {})
+    if mem_team.get("matches", 0) > 0:
+        matches     = mem_team.get("matches", mem_team.get("matches_played", matches))
+        wins        = mem_team.get("wins", wins)
+        runs        = mem_team.get("runs", runs)
+        hs          = mem_team.get("highest", hs)
+        balls_faced = mem_team.get("balls", balls_faced)
+        wickets     = mem_team.get("wickets", wickets)
+        sixes       = mem_team.get("sixes", sixes)
+        fours       = mem_team.get("fours", fours)
+        hundreds    = mem_team.get("centuries", hundreds)
+        fifties     = mem_team.get("fifties", fifties)
+        ducks       = mem_team.get("ducks", ducks)
+        best_w      = mem_team.get("best_bowling_wickets", best_w)
+        best_r      = mem_team.get("best_bowling_runs", best_r)
+        dots        = mem_team.get("dots", dots)
+        balls_bowled= mem_team.get("balls_bowled", balls_bowled)
+        win_streak  = mem_team.get("win_streak", win_streak)
+        hat_tricks  = mem_team.get("hat_tricks", hat_tricks)
+        mom         = mem_team.get("mom", mom)
+        fifer       = mem_team.get("five_wicket_hauls", fifer)
+        times_not_out = mem_team.get("times_not_out", times_not_out)
+        runs_conceded = mem_team.get("runs_conceded", 0)
+    else:
+        runs_conceded = 0
+
+    if matches == 0:
+        text = (
+            f"👥 <b>{user_name}'s TEAM STATS</b>\n{SEP}\n"
+            "🏟️ <i>No team matches played yet!</i>\n"
+            "Join a team match to get started. 🏏"
+        )
+    else:
+        # Batting metrics
+        inns_bat = matches - ducks
+        avg = round(runs / max(inns_bat, 1), 2)
+        sr  = round((runs / max(balls_faced, 1)) * 100, 2)
+        win_rate = round((wins / matches) * 100, 1)
+        losses = matches - wins
+        # Bowling metrics
+        eco = round((runs_conceded / max(balls_bowled, 1)) * 6, 2) if balls_bowled > 0 else "→"
+        bowl_avg = round(runs_conceded / max(wickets, 1), 2) if wickets > 0 else "→"
+        # overs text
+        overs_text = format_overs(balls_bowled)
+        # Recent form → W/L results (last 5 matches)
+        _form_results = mem_team.get("last_5_results", player_stats.get(user_id, {}).get("last_5_results", []))
+        if _form_results:
+            _form_dots = ""
+            for _r in _form_results:
+                _form_dots += "🟢" if _r == "W" else "🔴"
+            _form_bar = f"{_form_dots}  <i>({'  '.join(_form_results)})</i>"
+        else:
+            # Fallback: score-based bar
+            _form_s = player_stats.get(user_id, {}).get("last_5_scores", [])
+            _form_bar = ""
+            for _sc in _form_s[-5:]:
+                _form_bar += "🟩" if _sc >= 50 else "🟡" if _sc >= 20 else "🔴" if _sc == 0 else "🟠"
+            _form_bar = _form_bar or "→"
+
+        # Captaincy stats
+        cap_matches = mem_team.get("cap_matches", mem_team.get("captain_matches", 0))
+        cap_wins    = mem_team.get("cap_wins", mem_team.get("captain_wins", 0))
+        cap_rate    = round((cap_wins / max(cap_matches, 1)) * 100, 1) if cap_matches > 0 else 0
+        best_bowl   = f"{best_w}/{best_r}" if best_w else "N/A"
+        bat_sr      = sr
+        bat_avg     = avg
+        highest     = hs
+
+        text = (
+            f"╭━━ 👤 PLAYER PROFILE ━━🥎\n"
+            f"┃ 🆔 ID: {user_id}\n"
+            f"┃ 👤 Player: {html.escape(user_name)}\n"
+            f"╰━━━━━━━━\n"
+            f"╭━━ 📈 PLAYER RECORD ━━━🥎\n"
+            f"┃ 📊 Matches: {matches}\n"
+            f"┃ ✅ Wins: {wins} | ❌ Losses: {matches - wins}\n"
+            f"┃ 🔥 Recent Form: [ {_form_bar} ]\n"
+            f"┃ 👑 Captaincy: {cap_wins}/{cap_matches} Wins ({cap_rate}%)\n"
+            f"┃ 🏅 Man of Match: {mom}\n"
+            f"╰━━━━━━━━\n"
+            f"╭━━ 🏏 BATTING ARSENAL ━🥎\n"
+            f"┃ 🏏 Runs: {runs} | 🥎 Balls: {balls_faced}\n"
+            f"┃ 📈 Average: {bat_avg}\n"
+            f"┃ ⚡ Strike Rate: {bat_sr}\n"
+            f"┃ 🔝 Highest Score: {highest}\n"
+            f"┃ 💥 Fours: {fours} | 🚀 Sixes: {sixes}\n"
+            f"┃ 💯 100s: {hundreds} | ✨ 50s: {fifties}\n"
+            f"╰━━━━━━━━\n"
+            f"╭━━ 🥎 BOWLING ATTACK ━━🥎\n"
+            f"┃ 🎯 Wickets: {wickets}\n"
+            f"┃ ⏳ Overs: {overs_text} | 📉 Economy: {eco}\n"
+            f"┃ 📊 Average: {bowl_avg}\n"
+            f"┃ 💎 Best Figures: {best_bowl}\n"
+            f"┃ 🎩 Hat-tricks: {hat_tricks}\n"
+            f"┃ 🔥 5-Wickets: {fifer}\n"
+            f"╰━━━━━━━━"
+        )
+
+    return text
+
+
+def fetch_team_stats_for_card(user_id: int) -> dict:
+    """Fetch team stats in the same dict shape generate_stats_image expects."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT team_matches_played, team_matches_won, team_total_runs, team_highest_score,
+               team_total_balls_faced, team_total_wickets, team_total_fifties, team_total_hundreds
+        FROM user_stats WHERE user_id = ?
+    """, (user_id,))
+    row = c.fetchone()
+    conn.close()
+
+    matches = wins = runs = hs = balls = wickets = fifties = hundreds = 0
+    if row and row[0]:
+        matches, wins, runs, hs, balls, wickets, fifties, hundreds = row
+
+    mem_team = player_stats.get(user_id, {}).get("team", {})
+    if mem_team.get("matches", 0) > 0:
+        matches  = mem_team.get("matches", matches)
+        wins     = mem_team.get("wins", wins)
+        runs     = mem_team.get("runs", runs)
+        hs       = mem_team.get("highest", hs)
+        balls    = mem_team.get("balls", balls)
+        wickets  = mem_team.get("wickets", wickets)
+        fifties  = mem_team.get("fifties", fifties)
+        hundreds = mem_team.get("centuries", hundreds)
+
+    sr = round((runs / balls * 100), 2) if balls > 0 else 0.0
+    win_rate = round((wins / matches * 100), 1) if matches > 0 else 0.0
+
+    return {
+        "matches": matches, "wins": wins, "losses": max(matches - wins, 0),
+        "win_rate": win_rate, "runs": runs, "highest": hs, "balls": balls,
+        "wickets": wickets, "fifties": fifties, "hundreds": hundreds,
+        "strike_rate": sr,
+    }
+
+
 async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏏 Interactive cricket stats → per-mode with photo card"""
     query = update.callback_query
@@ -16868,11 +17053,10 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
         keyboard = [
             [
-                InlineKeyboardButton("📊 Overall", callback_data=f"mystats_overall_{user_id}"),
-                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}")
+                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
+                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
             ],
             [
-                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}"),
                 InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
             ]
         ]
@@ -17122,48 +17306,27 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = [
         [
-            InlineKeyboardButton("📊 Overall", callback_data=f"mystats_overall_{user_id}"),
-            InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}")
+            InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
+            InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
         ],
         [
-            InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}"),
             InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    stats = fetch_overall_stats(user_id)
-    # Build recent form string
-    _form = player_stats.get(user_id, {}).get("last_5_results", [])
-    form_str = " ➔ ".join(_form[-3:]) if _form else "N/A"
-
-    caption = (
-        f"╭━━ 🏆 Cricoverse Cricket Card ━━\n"
-        f"┃ 👤 Player: {html.escape(user_name)}\n"
-        f"┃\n"
-        f"┃ 📊 OVERALL SUMMARY\n"
-        f"┃ ├ 🏏 Matches: {stats['matches']} | Runs: {stats['runs']}\n"
-        f"┃ └ 🥎 Wickets: {stats['wickets']}\n"
-        f"┃\n"
-        f"┃ 📈 WIN RECORD\n"
-        f"┃ ├ 🏆 Record: {stats['wins']}W - {stats['losses']}L ({stats['win_rate']}%)\n"
-        f"┃ └ 🔥 Recent Form: [ {form_str} ]\n"
-        f"┃\n"
-        f"┃ 💎 PERSONAL BESTS\n"
-        f"┃ ├ 🏏 Batting: {stats['highest']} Runs\n"
-        f"┃ └ 🥎 Bowling: {stats['best_bowling']}\n"
-        f"╰━━━━━━━━\n"
-        f"👉 Tap a section below for deeper stats!"
-    )
+    # ── Default view is Team stats ──
+    stats = fetch_team_stats_for_card(user_id)
+    caption = build_team_stats_text(user_id, user_name)
 
     wait_msg = await send_photo_generation_status(
         update,
         "Building your player card",
-        "Adding profile photo, overall stats, and a cleaner card layout."
+        "Adding profile photo, team stats, and a cleaner card layout."
     )
     try:
         avatar_bytes = await fetch_user_avatar_bytes(context, user_id)
-        stats_photo = await generate_stats_image(user_id, user_name, stats, avatar_bytes, "overall")
+        stats_photo = await generate_stats_image(user_id, user_name, stats, avatar_bytes, "team")
         if stats_photo:
             await update.message.reply_photo(
                 photo=stats_photo,
@@ -17202,232 +17365,17 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = query.from_user.first_name
 
     # Standard back button
-    back_button = InlineKeyboardButton("🔙 Back", callback_data=f"mystats_menu_{user_id}")
+    back_button = InlineKeyboardButton("🔙 Back", callback_data=f"mystats_team_{user_id}")
     
     # ──────────────── SECTION SEPARATOR HELPER ────────────────
     SEP = "─────────────────"
     SEP2 = "─────────────────"
     
     # ══════════════════════════════════════
-    #   OVERALL STATS
-    # ══════════════════════════════════════
-    if "mystats_overall" in data:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT 
-                matches_played, matches_won, total_runs, highest_score,
-                total_balls_faced, total_wickets, total_sixes, total_fours,
-                total_dots, best_bowling_wickets, best_bowling_runs,
-                total_ducks, total_fifties, total_hundreds,
-                five_wicket_hauls, player_of_match_count
-            FROM user_stats
-            WHERE user_id = ?
-        """, (user_id,))
-        row = c.fetchone()
-        conn.close()
-        
-        if not row or row[0] == 0:
-            text = (
-                f"📊 <b>{user_name}'s OVERALL STATS</b>\n"
-                f"{SEP}\n"
-                "🏟️ <i>No matches played yet!</i>\n"
-                "Play some cricket to fill your profile. 🏏"
-            )
-        else:
-            matches, won, runs, hs, balls, wickets, sixes, fours, dots, bb_w, bb_r, ducks, fifties, hundreds, fifers, mom_count = row
-            avg = round(runs / max(matches-ducks, 1), 2)
-            sr = round((runs / balls * 100), 2) if balls > 0 else 0
-            win_rate = round((won / matches * 100), 1) if matches > 0 else 0
-            best_bowl = f"{bb_w}/{bb_r}" if bb_w else "N/A"
-            
-            text = f"📊 <b>{user_name}'s OVERALL STATS</b>\n"
-            text += f"{SEP}\n"
-            text += f"🎮 <b>Matches:</b>  {matches}\n"
-            text += f"🏆 <b>Wins:</b>  {won}  ┊  💔 <b>Losses:</b>  {matches-won}  ┊  📈 <b>Win Rate:</b>  {win_rate}%\n"
-
-            # ── Recent Form Guide ──
-            _form_results = player_stats.get(user_id, {}).get("last_5_results", [])
-            if _form_results:
-                _form_dots = ""
-                for _r in _form_results:
-                    _form_dots += "🟢" if _r == "W" else "🔴"
-                text += f"🔥 <b>Recent Form:</b>  {_form_dots}  <i>({'  '.join(_form_results)})</i>\n"
-
-            text += f"{SEP}\n"
-            text += f"🏏 <b>BATTING</b>\n"
-            text += f"├ 🏃 <b>Runs:</b>  {runs}\n"
-            text += f"├ 🎯 <b>Highest Score:</b>  {hs}\n"
-            text += f"├ ⚡ <b>Strike Rate:</b>  {sr}\n"
-            text += f"├ 📊 <b>Average:</b>  {avg}\n"
-            text += f"├ 🚀 <b>Sixes:</b>  {sixes}\n"
-            text += f"├ 🔥 <b>Fours:</b>  {fours}\n"
-            text += f"├ ⚫ <b>Dots:</b>  {dots}\n"
-            text += f"└ 🦆 <b>Ducks:</b>  {ducks}\n"
-            text += f"{SEP}\n"
-            text += f"🏆 <b>MILESTONES</b>\n"
-            text += f"├ 💯 <b>Centuries:</b>  {hundreds}\n"
-            text += f"├ 5️⃣0️⃣ <b>Fifties:</b>  {fifties}\n"
-            text += f"└ 🌟 <b>MOM Awards:</b>  {mom_count}\n"
-            text += f"{SEP}\n"
-            text += f"⚾ <b>BOWLING</b>\n"
-            text += f"├ 🎯 <b>Wickets:</b>  {wickets}\n"
-            text += f"├ 🏅 <b>Best Figure:</b>  {best_bowl}\n"
-            text += f"└ 🖐️ <b>5-Wkt Hauls:</b>  {fifers}"
-        
-        keyboard = [[back_button]]
-        try:
-            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-        except:
-            try:
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-            except:
-                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # ══════════════════════════════════════
     #   TEAM STATS
     # ══════════════════════════════════════
-    elif "mystats_team" in data:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT
-                team_matches_played, team_matches_won,
-                team_total_runs, team_highest_score,
-                team_total_balls_faced, team_total_wickets,
-                team_total_sixes, team_total_fours,
-                team_total_hundreds, team_total_fifties, team_total_ducks,
-                team_best_bowling_wickets, team_best_bowling_runs,
-                team_total_dots, team_total_balls_bowled,
-                win_streak, hat_tricks, player_of_match_count,
-                five_wicket_hauls, times_not_out
-            FROM user_stats WHERE user_id = ?
-        """, (user_id,))
-        db_row = c.fetchone()
-        conn.close()
-
-        if not db_row or db_row[0] == 0:
-            # Fallback to old columns
-            conn2 = sqlite3.connect(DB_PATH)
-            c2 = conn2.cursor()
-            c2.execute("""
-                SELECT matches_played, matches_won, total_runs, highest_score,
-                       total_balls_faced, total_wickets, total_sixes, total_fours,
-                       total_hundreds, total_fifties, total_ducks,
-                       best_bowling_wickets, best_bowling_runs, total_dots,
-                       total_balls_bowled, player_of_match_count, five_wicket_hauls
-                FROM user_stats WHERE user_id = ?
-            """, (user_id,))
-            old_row = c2.fetchone()
-            conn2.close()
-            if old_row and old_row[0] > 0:
-                matches, wins, runs, hs, balls_faced, wickets, sixes, fours, hundreds, fifties, ducks, best_w, best_r, dots, balls_bowled, mom, fifer = old_row
-                win_streak = hat_tricks = times_not_out = 0
-            else:
-                matches = wins = runs = hs = balls_faced = wickets = sixes = fours = 0
-                hundreds = fifties = ducks = best_w = best_r = dots = balls_bowled = mom = fifer = 0
-                win_streak = hat_tricks = times_not_out = 0
-        else:
-            matches, wins, runs, hs, balls_faced, wickets, sixes, fours, hundreds, fifties, ducks, best_w, best_r, dots, balls_bowled, win_streak, hat_tricks, mom, fifer, times_not_out = db_row
-
-        # ── PRIMARY: always prefer in-memory player_stats["team"] (most up-to-date) ──
-        mem_team = player_stats.get(user_id, {}).get("team", {})
-        if mem_team.get("matches", 0) > 0:
-            matches     = mem_team.get("matches", mem_team.get("matches_played", matches))
-            wins        = mem_team.get("wins", wins)
-            runs        = mem_team.get("runs", runs)
-            hs          = mem_team.get("highest", hs)
-            balls_faced = mem_team.get("balls", balls_faced)
-            wickets     = mem_team.get("wickets", wickets)
-            sixes       = mem_team.get("sixes", sixes)
-            fours       = mem_team.get("fours", fours)
-            hundreds    = mem_team.get("centuries", hundreds)
-            fifties     = mem_team.get("fifties", fifties)
-            ducks       = mem_team.get("ducks", ducks)
-            best_w      = mem_team.get("best_bowling_wickets", best_w)
-            best_r      = mem_team.get("best_bowling_runs", best_r)
-            dots        = mem_team.get("dots", dots)
-            balls_bowled= mem_team.get("balls_bowled", balls_bowled)
-            win_streak  = mem_team.get("win_streak", win_streak)
-            hat_tricks  = mem_team.get("hat_tricks", hat_tricks)
-            mom         = mem_team.get("mom", mom)
-            fifer       = mem_team.get("five_wicket_hauls", fifer)
-            times_not_out = mem_team.get("times_not_out", times_not_out)
-            runs_conceded = mem_team.get("runs_conceded", 0)
-        else:
-            runs_conceded = 0
-
-        if matches == 0:
-            text = (
-                f"👥 <b>{user_name}'s TEAM STATS</b>\n{SEP}\n"
-                "🏟️ <i>No team matches played yet!</i>\n"
-                "Join a team match to get started. 🏏"
-            )
-        else:
-            # Batting metrics
-            inns_bat = matches - ducks
-            avg = round(runs / max(inns_bat, 1), 2)
-            sr  = round((runs / max(balls_faced, 1)) * 100, 2)
-            win_rate = round((wins / matches) * 100, 1)
-            losses = matches - wins
-            # Bowling metrics
-            eco = round((runs_conceded / max(balls_bowled, 1)) * 6, 2) if balls_bowled > 0 else "→"
-            bowl_avg = round(runs_conceded / max(wickets, 1), 2) if wickets > 0 else "→"
-            # overs text
-            overs_text = format_overs(balls_bowled)
-            # Recent form → W/L results (last 5 matches)
-            _form_results = mem_team.get("last_5_results", player_stats.get(user_id, {}).get("last_5_results", []))
-            if _form_results:
-                _form_dots = ""
-                for _r in _form_results:
-                    _form_dots += "🟢" if _r == "W" else "🔴"
-                _form_bar = f"{_form_dots}  <i>({'  '.join(_form_results)})</i>"
-            else:
-                # Fallback: score-based bar
-                _form_s = player_stats.get(user_id, {}).get("last_5_scores", [])
-                _form_bar = ""
-                for _sc in _form_s[-5:]:
-                    _form_bar += "🟩" if _sc >= 50 else "🟡" if _sc >= 20 else "🔴" if _sc == 0 else "🟠"
-                _form_bar = _form_bar or "→"
-
-            # Captaincy stats
-            cap_matches = mem_team.get("cap_matches", mem_team.get("captain_matches", 0))
-            cap_wins    = mem_team.get("cap_wins", mem_team.get("captain_wins", 0))
-            cap_rate    = round((cap_wins / max(cap_matches, 1)) * 100, 1) if cap_matches > 0 else 0
-            best_bowl   = f"{best_w}/{best_r}" if best_w else "N/A"
-            bat_sr      = sr
-            bat_avg     = avg
-            highest     = hs
-
-            text = (
-                f"╭━━ 👤 PLAYER PROFILE ━━🥎\n"
-                f"┃ 🆔 ID: {user_id}\n"
-                f"┃ 👤 Player: {html.escape(user_name)}\n"
-                f"╰━━━━━━━━\n"
-                f"╭━━ 📈 PLAYER RECORD ━━━🥎\n"
-                f"┃ 📊 Matches: {matches}\n"
-                f"┃ ✅ Wins: {wins} | ❌ Losses: {matches - wins}\n"
-                f"┃ 🔥 Recent Form: [ {_form_bar} ]\n"
-                f"┃ 👑 Captaincy: {cap_wins}/{cap_matches} Wins ({cap_rate}%)\n"
-                f"┃ 🏅 Man of Match: {mom}\n"
-                f"╰━━━━━━━━\n"
-                f"╭━━ 🏏 BATTING ARSENAL ━🥎\n"
-                f"┃ 🏏 Runs: {runs} | 🥎 Balls: {balls_faced}\n"
-                f"┃ 📈 Average: {bat_avg}\n"
-                f"┃ ⚡ Strike Rate: {bat_sr}\n"
-                f"┃ 🔝 Highest Score: {highest}\n"
-                f"┃ 💥 Fours: {fours} | 🚀 Sixes: {sixes}\n"
-                f"┃ 💯 100s: {hundreds} | ✨ 50s: {fifties}\n"
-                f"╰━━━━━━━━\n"
-                f"╭━━ 🥎 BOWLING ATTACK ━━🥎\n"
-                f"┃ 🎯 Wickets: {wickets}\n"
-                f"┃ ⏳ Overs: {overs_text} | 📉 Economy: {eco}\n"
-                f"┃ 📊 Average: {bowl_avg}\n"
-                f"┃ 💎 Best Figures: {best_bowl}\n"
-                f"┃ 🎩 Hat-tricks: {hat_tricks}\n"
-                f"┃ 🔥 5-Wickets: {fifer}\n"
-                f"╰━━━━━━━━"
-            )
+    if "mystats_team" in data:
+        text = build_team_stats_text(user_id, user_name)
 
         keyboard = [[back_button]]
         try:
@@ -17524,11 +17472,10 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "mystats_menu" in data:
         keyboard = [
             [
-                InlineKeyboardButton("📊 Overall", callback_data=f"mystats_overall_{user_id}"),
-                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}")
+                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
+                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
             ],
             [
-                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}"),
                 InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
             ]
         ]
@@ -17539,7 +17486,7 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"─────────────────\n"
         text += f"👤 <b>{user_name}</b>\n"
         text += f"─────────────────\n"
-        text += f"📊 <b>Overall</b> · 👥 <b>Team</b> · ⚔️ <b>Solo</b> · 🏆 <b>Achievements</b>\n"
+        text += f"👥 <b>Team</b> · ⚔️ <b>Solo</b> · 🏆 <b>Achievements</b>\n"
         text += f"─────────────────\n"
         text += "👇 <i>Select a mode to view your stats!</i>"
         

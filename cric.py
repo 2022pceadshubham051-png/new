@@ -734,7 +734,7 @@ def themed(title: str, lines: list, emoji: str = "🏏") -> str:
     dashes = "━" * max(1, 22 - len(title))
     header = f"╭━━ {title} {dashes} {emoji}"
     body = "\n".join(f"┃ {l}" for l in lines)
-    footer = "╰" + "━" * 26
+    footer = "╰" + "━" * 18
     return f"{header}\n{body}\n{footer}"
 
 
@@ -28179,15 +28179,15 @@ async def setup_public_bot_commands(application: Application):
     # Deleting the webhook here (it runs once, right before polling starts)
     # makes startup self-healing regardless of how the bot was run before.
     try:
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 await application.bot.delete_webhook(drop_pending_updates=True)
                 logger.info("✅ Webhook cleared (if any) — safe to start polling.")
                 break
             except Exception as e:
-                logger.warning(f"delete_webhook attempt {attempt+1}/3 failed: {e}")
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                logger.warning(f"delete_webhook attempt {attempt+1}/5 failed: {e}")
+                if attempt < 4:
+                    await asyncio.sleep(3)
     except Exception as e:
         logger.warning(f"Could not delete webhook (continuing anyway): {e}")
 
@@ -28518,16 +28518,43 @@ def main():
     _load_clone_bots_meta()  # Restore clone bot tracking from disk
     
     logger.info("Cricoverse bot starting...")
-    try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    except Conflict:
-        logger.error(
-            "❌ Conflict: another instance of this bot (same BOT_TOKEN) is already "
-            "polling or has a webhook set elsewhere — e.g. a second deployment, a "
-            "leftover process on Render/Railway, or a local run you forgot to stop. "
-            "Stop the other instance, then restart this one."
-        )
-        raise
+
+    # ✅ PERMANENT FIX: run_polling in a self-healing retry loop.
+    # Instead of crashing on "Conflict: can't use getUpdates while webhook is
+    # active" (or a duplicate-instance conflict), we clear the webhook and
+    # retry with backoff. This means whatever process manager restarts this
+    # bot (cron, systemd, Render/Railway auto-restart) no longer needs a
+    # perfectly clean handoff between the old and new process — the bot
+    # heals itself instead of dying and needing a manual restart every week.
+    retry_delay = 5
+    max_retry_delay = 300  # cap backoff at 5 minutes
+    while True:
+        try:
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                close_loop=False,
+            )
+            # run_polling only returns on a clean shutdown (e.g. Ctrl+C) — stop looping.
+            break
+        except Conflict as e:
+            logger.error(
+                f"❌ Conflict detected ({e}). This usually means a webhook is "
+                "set, or another instance (same BOT_TOKEN) is still polling — "
+                "e.g. old process not fully killed on redeploy. "
+                f"Clearing webhook and retrying in {retry_delay}s..."
+            )
+            try:
+                asyncio.run(application.bot.delete_webhook(drop_pending_updates=True))
+                logger.info("✅ Webhook cleared after conflict.")
+            except Exception as inner_e:
+                logger.warning(f"Could not clear webhook after conflict: {inner_e}")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
+        except Exception as e:
+            logger.error(f"Unexpected error in run_polling: {e}. Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
 
 
 if __name__ == "__main__":

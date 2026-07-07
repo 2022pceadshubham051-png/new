@@ -1995,6 +1995,11 @@ class Match:
         self.ball_timeout_task: Optional[asyncio.Task] = None
         self.batsman_selection_task: Optional[asyncio.Task] = None
         self.bowler_selection_task: Optional[asyncio.Task] = None
+        # 🔧 GLITCH FIX: tracks the currently-running ball/turn processing
+        # coroutine (execute_ball / process_ball_result / process_solo_turn_result)
+        # so /endmatch and /endall can forcefully cancel it too, instead of just
+        # cancelling the scheduled timers and leaving this one running to completion.
+        self.active_ball_task: Optional[asyncio.Task] = None
         
         self.solo_players: List[Player] = [] # List of Player objects
         self.current_solo_bat_idx = 0
@@ -6460,6 +6465,11 @@ async def start_match(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
 
 async def request_batsman_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match):
     """Prompt captain for new batsman after wicket"""
+    # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
+    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+        logger.info("⛔ request_batsman_selection aborted — match already ended.")
+        return
+
     # ── Check batting queue first ──
     bat_team = match.current_batting_team
     queued_idx = _pop_next_batsman(chat_id, bat_team)
@@ -6944,7 +6954,12 @@ async def batsman_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id
 
 async def request_bowler_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match):
     """Prompt captain for bowler - GUARANTEED DELIVERY WITH FULL LOGGING"""
-    
+
+    # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
+    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+        logger.info("⛔ request_bowler_selection aborted — match already ended.")
+        return
+
     logger.info(f"🎬 === BOWLER SELECTION START === Chat: {chat_id}")
     
     # Validate bowling team exists
@@ -7585,6 +7600,11 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
     """
     
     logger.info(f"🎮 === EXECUTE_BALL START === Group: {group_id}")
+
+    # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
+    if match.phase == GamePhase.MATCH_ENDED or group_id not in active_matches:
+        logger.info("⛔ execute_ball aborted — match already ended.")
+        return
     
     bat_team = match.current_batting_team
     bowl_team = match.current_bowling_team
@@ -8783,6 +8803,11 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     """
     ✅ COMPLETE FIX: Proper ball counting with OVERS LIMIT CHECK
     """
+    # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
+    if match.phase == GamePhase.MATCH_ENDED or group_id not in active_matches:
+        logger.info("⛔ process_ball_result aborted — match already ended.")
+        return
+
     bat_team = match.current_batting_team
     bowl_team = match.current_bowling_team
     
@@ -10751,6 +10776,11 @@ async def trigger_solo_ball(context, chat_id, match):
 
 async def process_solo_turn_result(context, chat_id, match):
     """Calculates Solo result with FIXED Next Batsman flow"""
+    # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
+    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+        logger.info("⛔ process_solo_turn_result aborted — match already ended.")
+        return
+
     batter = match.solo_players[match.current_solo_bat_idx]
     bowler = match.solo_players[match.current_solo_bowl_idx]
     bat_num = match.current_ball_data["batsman_number"]
@@ -23993,6 +24023,13 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             match.bowler_selection_task.cancel()
         if hasattr(match, 'join_phase_task') and match.join_phase_task:
             match.join_phase_task.cancel()
+        # 🔧 GLITCH FIX: also cancel solo timer / pause-resume / in-flight ball task
+        if hasattr(match, 'solo_timer_task') and match.solo_timer_task:
+            match.solo_timer_task.cancel()
+        if hasattr(match, 'pause_task') and match.pause_task:
+            match.pause_task.cancel()
+        if hasattr(match, 'active_ball_task') and match.active_ball_task:
+            match.active_ball_task.cancel()
         
         # Unpin message
         try:
@@ -24060,6 +24097,13 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         if match.bowler_selection_task: match.bowler_selection_task.cancel()
         if hasattr(match, 'join_phase_task') and match.join_phase_task: 
             match.join_phase_task.cancel()
+        # 🔧 GLITCH FIX: also cancel solo timer / pause-resume / in-flight ball task
+        if hasattr(match, 'solo_timer_task') and match.solo_timer_task:
+            match.solo_timer_task.cancel()
+        if hasattr(match, 'pause_task') and match.pause_task:
+            match.pause_task.cancel()
+        if hasattr(match, 'active_ball_task') and match.active_ball_task:
+            match.active_ball_task.cancel()
         
         try:
             if match.main_message_id:
@@ -27142,7 +27186,8 @@ async def endall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             match = active_matches[gid]
             match.phase = GamePhase.MATCH_ENDED
             for attr in ("ball_timeout_task", "batsman_selection_task",
-                         "bowler_selection_task", "join_phase_task"):
+                         "bowler_selection_task", "join_phase_task",
+                         "solo_timer_task", "pause_task", "active_ball_task"):
                 task = getattr(match, attr, None)
                 if task:
                     task.cancel()

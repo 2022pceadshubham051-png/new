@@ -60,7 +60,7 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode
-from telegram.error import TelegramError, Forbidden, Conflict
+from telegram.error import TelegramError, Forbidden, Conflict, RetryAfter
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 3: Configure logging AFTER all imports
@@ -87,6 +87,11 @@ processing_commands: Dict[int, bool] = defaultdict(bool)
 last_command_time: Dict[int, float] = defaultdict(float)
 COMMAND_TIMEOUT = 5.0
 POWERED_USERS: Set[int] = set()
+
+# ── Flood control tracking ──
+# Tracks last time we warned a chat about flooding, so we don't spam it repeatedly
+flood_warned_chats: Dict[int, float] = defaultdict(float)
+FLOOD_WARNING_COOLDOWN = 60.0  # seconds between repeated flood warnings in the same chat
 
 # Custom Image File IDs (replace with your actual file IDs from bot)
 PLAYER_IMAGE_FILE_ID = "YOUR_PLAYER_IMAGE_FILE_ID_HERE"
@@ -3007,9 +3012,9 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
 async def cleanup_inactive_matches(context: ContextTypes.DEFAULT_TYPE):
-    """Auto-end matches inactive for > 15 minutes"""
+    """Auto-end matches inactive for > 10 minutes"""
     current_time = time.time()
-    inactive_threshold = 15 * 60  # 15 Minutes in seconds
+    inactive_threshold = 10 * 60  # 10 Minutes in seconds
     chats_to_remove = []
 
     # Check all active matches
@@ -3020,7 +3025,7 @@ async def cleanup_inactive_matches(context: ContextTypes.DEFAULT_TYPE):
                 # Send Time Out Message
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text="⏰ <b>MATCH TIMEOUT!</b>\nGame auto-ended after 15 minutes of inactivity.",
+                    text="⏰ <b>MATCH TIMEOUT!</b>\nGame auto-ended after 10 minutes of inactivity (no response recorded).",
                     parse_mode=ParseMode.HTML
                 )
                 # Unpin message
@@ -3597,14 +3602,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         is_new_user = True
 
-        if chat.type == "private":
-            try:
-                await context.bot.send_message(
-                    chat_id=SUPPORT_GROUP_ID,
-                    text=f'🆕 <b>New User Started Bot</b>\n👤 {user.first_name} (<a href=\"tg://user?id={user.id}\">{user.id}</a>)\n🎈 @{user.username}',
-                    parse_mode=ParseMode.HTML
-                )
-            except: pass
+    # Notify support group any time someone starts the bot in DM (new or returning)
+    if chat.type == "private":
+        try:
+            status_label = "🆕 New User Started Bot" if is_new_user else "🔁 User Started Bot Again"
+            await context.bot.send_message(
+                chat_id=SUPPORT_GROUP_ID,
+                text=(
+                    f'{status_label}\n'
+                    f'👤 {html.escape(user.first_name)} (<a href="tg://user?id={user.id}">{user.id}</a>)\n'
+                    f'🎈 @{user.username if user.username else "no_username"}'
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify support group about /start: {e}")
 
     welcome_text = (
         "╭━━ 🏏 CRICOVERSE ━━━━━━🏟️\n"
@@ -22596,7 +22608,61 @@ async def resetmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Log errors and notify user"""
     logger.error(f"Exception while handling an update: {context.error}")
-    
+
+    # ── Flood control: Telegram is rate-limiting the bot ──
+    if isinstance(context.error, RetryAfter):
+        try:
+            retry_after = getattr(context.error, "retry_after", None) or 5
+            effective_chat = getattr(update, "effective_chat", None) if update else None
+            flood_chat_id = effective_chat.id if effective_chat else None
+            flood_chat_title = (
+                html.escape(effective_chat.title or effective_chat.first_name or str(effective_chat.id))
+                if effective_chat else "Unknown chat"
+            )
+
+            # Notify support group with where the flood happened
+            try:
+                await context.bot.send_message(
+                    chat_id=SUPPORT_GROUP_ID,
+                    text=(
+                        "🌊 <b>BOT FLOODED!</b>\n"
+                        "─────────────────\n"
+                        f"📍 <b>Chat:</b> {flood_chat_title}\n"
+                        f"🆔 <b>Chat ID:</b> <code>{flood_chat_id}</code>\n"
+                        f"⏱ <b>Retry After:</b> {retry_after}s\n"
+                        "─────────────────\n"
+                        "<i>Telegram rate-limited the bot in this chat. "
+                        "Cooling down automatically.</i>"
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify support group about flood: {e}")
+
+            # Let the affected chat know to slow down, but don't spam it
+            if flood_chat_id is not None:
+                now = time.time()
+                if now - flood_warned_chats[flood_chat_id] > FLOOD_WARNING_COOLDOWN:
+                    flood_warned_chats[flood_chat_id] = now
+                    try:
+                        await asyncio.sleep(min(retry_after, 5))
+                        await context.bot.send_message(
+                            chat_id=flood_chat_id,
+                            text=(
+                                "⚠️ <b>Whoa, slow down a little!</b>\n"
+                                "Too many actions were sent too quickly and Telegram "
+                                "briefly paused the bot's messages here.\n"
+                                "🙏 <i>Please use the commands/buttons calmly, one at a "
+                                "time, and everything will keep working smoothly.</i>"
+                            ),
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send flood notice to chat {flood_chat_id}: {e}")
+        except Exception as e:
+            logger.error(f"Error while handling RetryAfter flood: {e}")
+        return
+
     # Notify owner about error
     try:
         error_text = f"An error occurred:\n\n{str(context.error)}"

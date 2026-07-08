@@ -3220,6 +3220,10 @@ async def solo_game_timer(context, chat_id, match, player_type, player_name):
 
 async def handle_solo_timeout(context, chat_id, match, player_type):
     """Handle Penalties for Solo Mode Timeouts"""
+    # 🔧 GLITCH FIX: match may have been ended via /endmatch during the 45s wait.
+    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+        logger.info("⛔ handle_solo_timeout aborted — match already ended.")
+        return
     
     # --- BATSMAN TIMEOUT ---
     if player_type == "batsman":
@@ -3286,6 +3290,10 @@ async def handle_solo_timeout(context, chat_id, match, player_type):
 # Helper to Rotate Bowler in Solo (Handles the Skip Logic)
 async def rotate_solo_bowler(context, chat_id, match, force_new_bowler=False):
     """Rotates bowler, skipping banned players"""
+    # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
+    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+        logger.info("⛔ rotate_solo_bowler aborted — match already ended.")
+        return
     
     if not force_new_bowler:
         match.solo_balls_this_spell += 1
@@ -10710,6 +10718,12 @@ async def start_solo_mechanics(context, chat_id, match):
 
 async def trigger_solo_ball(context, chat_id, match):
     """Sets up the next ball with Timers"""
+    # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here —
+    # this is called from timeout/rotation paths that run after long sleeps, so the
+    # match could have been ended in the meantime.
+    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+        logger.info("⛔ trigger_solo_ball aborted — match already ended.")
+        return
     batter = match.solo_players[match.current_solo_bat_idx]
     bowler = match.solo_players[match.current_solo_bowl_idx]
     
@@ -10902,6 +10916,10 @@ async def process_solo_turn_result(context, chat_id, match):
         
         # ✅ CRITICAL FIX: Naya ball trigger karna zaroori hai
         await asyncio.sleep(2)
+        # 🔧 GLITCH FIX: re-check — /endmatch may have fired during the awaits above.
+        if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+            logger.info("⛔ process_solo_turn_result (wicket branch) aborted post-await — match already ended.")
+            return
         await trigger_solo_ball(context, chat_id, match)
         return
 
@@ -11003,6 +11021,11 @@ async def process_solo_turn_result(context, chat_id, match):
             await asyncio.sleep(2)
 
         # Trigger Next Ball
+        # 🔧 GLITCH FIX: re-check — /endmatch may have fired during the awaits above
+        # (animations, commentary calls, over-change sleeps) before we schedule the next ball.
+        if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+            logger.info("⛔ process_solo_turn_result (runs branch) aborted post-await — match already ended.")
+            return
         await trigger_solo_ball(context, chat_id, match)
 
 # --- NEW: Solo Callback Handler ---
@@ -24150,6 +24173,13 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             match.solo_timer_task.cancel()
         if hasattr(match, 'join_phase_task') and match.join_phase_task:
             match.join_phase_task.cancel()
+        # 🔧 GLITCH FIX: cancel any in-flight ball/turn processing coroutine too,
+        # otherwise process_solo_turn_result keeps running after /endmatch and the
+        # solo game appears to continue even though it was "ended".
+        if hasattr(match, 'active_ball_task') and match.active_ball_task:
+            match.active_ball_task.cancel()
+        if hasattr(match, 'pause_task') and match.pause_task:
+            match.pause_task.cancel()
         
         # Unpin message
         try:
@@ -24163,6 +24193,7 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         
         # Generate summary image (optional, no stats saved)
         try:
+            sorted_players = sorted(match.solo_players, key=lambda x: x.runs, reverse=True)
             await generate_solo_top3_image(sorted_players, context)
 
         except Exception as e:

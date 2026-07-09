@@ -5043,6 +5043,7 @@ async def teamcreate_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     
     tournament_teams[group_id][team_name] = {"players": [], "captain": None}
+    save_tour_state(group_id)  # ✅ persist immediately so a restart doesn't lose the team
     
     await update.message.reply_text(
         f"✅ <b>Team Created!</b>\n"
@@ -5158,6 +5159,8 @@ async def teamadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             added.append(p["first_name"])
     
     bot_username = context.bot.username
+    if added:
+        save_tour_state(group_id)  # ✅ persist immediately so a restart doesn't lose the roster
     msg = f"✅ <b>Players Added to {team_name}</b>\n─────────────────\n"
     if added:
         msg += f"✅ Added: {', '.join(added)}\n"
@@ -5238,10 +5241,93 @@ async def teamremove_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     team_data["players"] = [p for p in team_data["players"] if p["user_id"] not in ids_to_remove]
     after = len(team_data["players"])
     removed = before - after
-    
+
+    if removed:
+        save_tour_state(group_id)  # ✅ persist immediately so a restart doesn't lose the change
+
     await update.message.reply_text(
         f"✅ <b>Removed {removed} player(s) from {team_name}</b>\n"
         f"📊 <b>Team size:</b> {after} players",
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def teamdelete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dissolve a tournament team/franchise: /teamdelete [team name]"""
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type == "private":
+        await update.message.reply_text("Use this command in a group!")
+        return
+
+    group_id = chat.id
+
+    if group_id not in TOURNAMENT_APPROVED_GROUPS:
+        return
+
+    member = await context.bot.get_chat_member(group_id, user.id)
+    if member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("🚫 Only group admins can delete teams!")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "📋 Usage: <code>/teamdelete [team name]</code>\nExample: <code>/teamdelete Team Alpha</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    args = context.args
+    teams = tournament_teams.get(group_id, {})
+
+    # Find team name (progressively longer phrases, same logic as /teamadd)
+    team_name = None
+    for i in range(len(args), 0, -1):
+        potential = " ".join(args[:i])
+        if potential in teams:
+            team_name = potential
+            break
+
+    if not team_name:
+        team_list = ", ".join(teams.keys()) if teams else "None"
+        await update.message.reply_text(
+            f"⚠️ Team not found!\nAvailable teams: {team_list}",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Confirm if this team has already played matches (points table entry exists)
+    pts_row = tournament_points.get(group_id, {}).get(team_name)
+    has_history = bool(pts_row and pts_row.get("played", 0) > 0)
+
+    del tournament_teams[group_id][team_name]
+
+    # Remove any *unplayed* fixtures involving this team (played ones are left as history)
+    fixtures = tournament_fixtures.get(group_id, [])
+    tournament_fixtures[group_id] = [
+        f for f in fixtures
+        if f.get("result") is not None or (f.get("team1") != team_name and f.get("team2") != team_name)
+    ]
+
+    save_tour_state(group_id)  # ✅ persist immediately
+
+    warn = ""
+    if has_history:
+        warn = (
+            f"\n\n⚠️ <b>Note:</b> This team already had match results recorded "
+            f"(P{pts_row['played']} W{pts_row['won']} L{pts_row['lost']}, NRR {pts_row.get('nrr', 0):+.2f}).\n"
+            f"That record is kept in the points table. If you create a <b>new</b> team with the "
+            f"<u>exact same name</u> later, it will inherit this old record — use a different name "
+            f"if you want a clean slate."
+        )
+
+    await update.message.reply_text(
+        f"🗑️ <b>Team Dissolved!</b>\n"
+        f"─────────────────\n"
+        f"🏏 <b>Team:</b> {team_name}\n"
+        f"Removed from tournament + any unplayed fixtures cleared."
+        f"{warn}",
         parse_mode=ParseMode.HTML
     )
 
@@ -28819,6 +28905,7 @@ def main():
     application.add_handler(CommandHandler("teamcreate", teamcreate_command))
     application.add_handler(CommandHandler("teamadd", teamadd_command))
     application.add_handler(CommandHandler("teamremove", teamremove_command))
+    application.add_handler(CommandHandler("teamdelete", teamdelete_command))
     application.add_handler(CommandHandler("tourresult", tourresult_command))
     application.add_handler(CommandHandler("tourlb", tourlb_command))
     # ================== MESSAGE HANDLERS ==================

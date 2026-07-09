@@ -1350,10 +1350,90 @@ def init_tournament_db():
             PRIMARY KEY (user_id, group_id)
         )
     """)
+
+    # ✅ Temporary tour-state storage (teams, fixtures, points, match stats).
+    # Cleared automatically when a tour is ended via /tourend or the "End Tour" button.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS tour_state (
+            group_id INTEGER PRIMARY KEY,
+            teams TEXT,
+            fixtures TEXT,
+            points TEXT,
+            match_stats TEXT,
+            fixture_counter INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     
     conn.commit()
     conn.close()
     logger.info("✅ Tournament database initialized")
+
+
+def save_tour_state(group_id: int):
+    """Persist the in-progress tour state for one group so it survives restarts.
+    Called after every tour mutation (team edits, fixtures generated, result recorded)."""
+    try:
+        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO tour_state (group_id, teams, fixtures, points, match_stats, fixture_counter, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(group_id) DO UPDATE SET
+                teams=excluded.teams, fixtures=excluded.fixtures, points=excluded.points,
+                match_stats=excluded.match_stats, fixture_counter=excluded.fixture_counter,
+                updated_at=CURRENT_TIMESTAMP
+        """, (
+            group_id,
+            json.dumps(tournament_teams.get(group_id, {})),
+            json.dumps(tournament_fixtures.get(group_id, [])),
+            json.dumps(tournament_points.get(group_id, {})),
+            json.dumps(tour_match_stats.get(group_id, {})),
+            tour_fixture_counter.get(group_id, 0),
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"❌ Error saving tour state for {group_id}: {e}")
+
+
+def load_tour_state():
+    """Restore any in-progress tours on startup so nothing is lost on a bot restart."""
+    try:
+        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT group_id, teams, fixtures, points, match_stats, fixture_counter FROM tour_state")
+        rows = c.fetchall()
+        conn.close()
+        for group_id, teams, fixtures, points, match_stats, fixture_counter in rows:
+            tournament_teams[group_id] = json.loads(teams) if teams else {}
+            tournament_fixtures[group_id] = json.loads(fixtures) if fixtures else []
+            tournament_points[group_id] = json.loads(points) if points else {}
+            tour_match_stats[group_id] = json.loads(match_stats) if match_stats else {}
+            tour_fixture_counter[group_id] = fixture_counter or 0
+        if rows:
+            logger.info(f"✅ Restored in-progress tour state for {len(rows)} group(s)")
+    except Exception as e:
+        logger.error(f"❌ Error loading tour state: {e}")
+
+
+def clear_tour_state(group_id: int):
+    """Wipe all temporary tour data for a group once the tour has ended."""
+    try:
+        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM tour_state WHERE group_id = ?", (group_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"❌ Error clearing tour state for {group_id}: {e}")
+
+    tournament_teams.pop(group_id, None)
+    tournament_fixtures.pop(group_id, None)
+    tournament_points.pop(group_id, None)
+    tour_match_stats.pop(group_id, None)
+    tour_fixture_counter.pop(group_id, None)
+    pending_tour_match.pop(group_id, None)
 
 def load_tournament_data():
     """Load tournament data on startup"""
@@ -1384,6 +1464,9 @@ def load_tournament_data():
         logger.info(f"✅ Loaded {len(TOURNAMENT_APPROVED_GROUPS)} tournament groups")
     except Exception as e:
         logger.error(f"Error loading tournament data: {e}")
+
+    # ✅ Restore any in-progress tour (teams/fixtures/points/match stats)
+    load_tour_state()
 
 
 def save_data():
@@ -4196,7 +4279,8 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("📊 Points Table", callback_data="tour_points_table"),
              InlineKeyboardButton("📋 Fixtures", callback_data="tour_fixtures")],
             [InlineKeyboardButton("✏️ Edit Team", callback_data="tour_edit_team"),
-             InlineKeyboardButton("🔙 Back", callback_data="back_to_modes")]
+             InlineKeyboardButton("🔙 Back", callback_data="back_to_modes")],
+            [InlineKeyboardButton("🛑 End Tour", callback_data="tour_end_confirm")]
         ]
 
         caption = (
@@ -4367,6 +4451,49 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
     chat = query.message.chat
     user = query.from_user
     group_id = chat.id
+
+    # 🛑 END TOUR — bot owner ONLY (bypasses the group-admin gate below on purpose)
+    if query.data in ("tour_end_confirm", "tour_end_yes", "tour_end_no"):
+        if user.id != OWNER_ID:
+            await query.answer("🚫 Only the bot owner can end a tournament!", show_alert=True)
+            return
+
+        if query.data == "tour_end_confirm":
+            keyboard = [[
+                InlineKeyboardButton("✅ Yes, End Tour", callback_data="tour_end_yes"),
+                InlineKeyboardButton("❌ Cancel", callback_data="tour_end_no")
+            ]]
+            text = (
+                "🛑 <b>END TOURNAMENT?</b>\n"
+                "─────────────────\n"
+                "This will permanently clear teams, fixtures, points table\n"
+                "and all match stats for this group's tour.\n\n"
+                "This action cannot be undone. Continue?"
+            )
+            try:
+                await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+            except Exception:
+                await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+            return
+
+        if query.data == "tour_end_no":
+            await query.answer("Cancelled.")
+            return
+
+        if query.data == "tour_end_yes":
+            clear_tour_state(group_id)
+            await query.answer("Tournament ended!", show_alert=True)
+            try:
+                await query.message.edit_caption(
+                    caption="🛑 <b>TOURNAMENT ENDED</b>\n─────────────────\nAll tour data (teams, fixtures, points, stats) has been cleared.",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                await query.message.reply_text(
+                    "🛑 <b>TOURNAMENT ENDED</b>\n─────────────────\nAll tour data (teams, fixtures, points, stats) has been cleared.",
+                    parse_mode=ParseMode.HTML
+                )
+            return
 
     # Admin check helper
     async def is_admin():
@@ -4600,8 +4727,10 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         # Initialize points table
         for tn in team_names:
             if tn not in tournament_points[group_id]:
-                tournament_points[group_id][tn] = {"played": 0, "won": 0, "lost": 0, "tied": 0, "pts": 0, "nrr": 0.0}
-        
+                tournament_points[group_id][tn] = _default_team_stats()
+
+        save_tour_state(group_id)  # ✅ persist so a restart doesn't wipe fixtures/points
+
         await query.answer(f"✅ {len(new_fixtures)} fixtures generated!", show_alert=True)
         await query.message.reply_text(
             f"📋 <b>FIXTURES GENERATED!</b>\n"
@@ -5117,6 +5246,120 @@ async def teamremove_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+def _default_team_stats():
+    """Default points-table row for a team, including NRR tracking fields."""
+    return {
+        "played": 0, "won": 0, "lost": 0, "tied": 0, "pts": 0, "nrr": 0.0,
+        "runs_for": 0.0, "overs_for": 0.0, "runs_against": 0.0, "overs_against": 0.0,
+    }
+
+
+def _effective_overs(team, allotted_overs: float) -> float:
+    """Standard NRR rule: if a team is bowled all out before using its full quota of
+    overs, the FULL allotted overs are used for run-rate purposes. Otherwise the
+    actual overs faced/bowled are used."""
+    actual_overs = (team.balls or 0) / 6.0
+    if getattr(team, "all_out", False):
+        return float(allotted_overs)
+    return actual_overs
+
+
+def _update_team_nrr(pts_row: dict, runs_for: float, overs_for: float, runs_against: float, overs_against: float):
+    """Add this match's runs/overs into a team's running NRR totals and recompute NRR."""
+    pts_row["runs_for"] = pts_row.get("runs_for", 0.0) + runs_for
+    pts_row["overs_for"] = pts_row.get("overs_for", 0.0) + overs_for
+    pts_row["runs_against"] = pts_row.get("runs_against", 0.0) + runs_against
+    pts_row["overs_against"] = pts_row.get("overs_against", 0.0) + overs_against
+    rr_for = pts_row["runs_for"] / pts_row["overs_for"] if pts_row["overs_for"] > 0 else 0.0
+    rr_against = pts_row["runs_against"] / pts_row["overs_against"] if pts_row["overs_against"] > 0 else 0.0
+    pts_row["nrr"] = round(rr_for - rr_against, 3)
+
+
+async def record_tour_match_result(context, group_id: int, match, winner, loser):
+    """Auto-capture player stats + result for a TOURNAMENT-mode match the moment it ends.
+    This runs automatically when any tournament match finishes, so /tourresult becomes
+    optional — points table, fixtures, NRR, and top-scorer stats (runs/wickets/sixes/fours/MVP)
+    are saved right away instead of depending on an admin typing the result manually."""
+    try:
+        mid = getattr(match, "tournament_match_id", None)
+        if mid is None or group_id not in pending_tour_match:
+            return  # Not a tournament match, nothing to do
+
+        t1 = match.team_x.name
+        t2 = match.team_y.name
+
+        player_runs, player_wkts, player_sixes, player_fours = {}, {}, {}, {}
+        best_player, best_score = None, -1
+        for p in match.team_x.players + match.team_y.players:
+            if p.runs:
+                player_runs[p.first_name] = player_runs.get(p.first_name, 0) + p.runs
+            if p.wickets:
+                player_wkts[p.first_name] = player_wkts.get(p.first_name, 0) + p.wickets
+            if p.sixes:
+                player_sixes[p.first_name] = player_sixes.get(p.first_name, 0) + p.sixes
+            if p.boundaries:
+                player_fours[p.first_name] = player_fours.get(p.first_name, 0) + p.boundaries
+            impact = p.runs + (p.wickets * 20)
+            if impact > best_score:
+                best_score, best_player = impact, p.first_name
+
+        tour_match_stats[group_id][mid] = {
+            "team1": t1, "team2": t2,
+            "player_runs": player_runs,
+            "player_wickets": player_wkts,
+            "player_sixes": player_sixes,
+            "player_fours": player_fours,
+            "mvp": best_player,
+        }
+
+        # Auto-update points table
+        pts = tournament_points[group_id]
+        for tn in [t1, t2]:
+            if tn not in pts:
+                pts[tn] = _default_team_stats()
+
+        if winner is None:
+            pts[t1]["played"] += 1; pts[t2]["played"] += 1
+            pts[t1]["tied"] += 1; pts[t2]["tied"] += 1
+            pts[t1]["pts"] += 1; pts[t2]["pts"] += 1
+            result_str = "Tie"
+        else:
+            winner_name, loser_name = winner.name, loser.name
+            pts.setdefault(winner_name, _default_team_stats())
+            pts.setdefault(loser_name, _default_team_stats())
+            pts[winner_name]["played"] += 1; pts[loser_name]["played"] += 1
+            pts[winner_name]["won"] += 1; pts[loser_name]["lost"] += 1
+            pts[winner_name]["pts"] += 2
+            result_str = f"{winner_name} won"
+
+        # ✅ Update Net Run Rate for both teams (standard "all-out = full overs" rule)
+        allotted = float(getattr(match, "total_overs", 0) or 0)
+        x_overs = _effective_overs(match.team_x, allotted)
+        y_overs = _effective_overs(match.team_y, allotted)
+        _update_team_nrr(pts[t1], match.team_x.score, x_overs, match.team_y.score, y_overs)
+        _update_team_nrr(pts[t2], match.team_y.score, y_overs, match.team_x.score, x_overs)
+
+        # Update the matching fixture + clear the pending-match session
+        for fix in tournament_fixtures.get(group_id, []):
+            if fix.get("match_id") == mid:
+                fix["result"] = result_str
+                break
+
+        pending_tour_match.pop(group_id, None)
+        save_tour_state(group_id)  # ✅ persist immediately so a crash/restart can't lose it
+
+        try:
+            await context.bot.send_message(
+                group_id,
+                f"🏆 <b>Tournament stats saved!</b>\n{result_str} • Points table, NRR & top-scorer stats updated automatically.",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"❌ Error auto-recording tour match result: {e}")
+
+
 async def tourresult_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Record tournament match result: /tourresult [winning_team]"""
     chat = update.effective_chat
@@ -5154,7 +5397,7 @@ async def tourresult_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     pts = tournament_points[group_id]
     for tn in [t1, t2]:
         if tn not in pts:
-            pts[tn] = {"played": 0, "won": 0, "lost": 0, "tied": 0, "pts": 0, "nrr": 0.0}
+            pts[tn] = _default_team_stats()
     
     if winner_arg == "tie":
         pts[t1]["played"] += 1
@@ -5191,7 +5434,9 @@ async def tourresult_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             break
     
     del pending_tour_match[group_id]
-    
+
+    save_tour_state(group_id)  # ✅ persist points/fixtures so restart doesn't lose them
+
     await update.message.reply_text(
         f"✅ <b>RESULT RECORDED!</b>\n"
         f"─────────────────\n"
@@ -12794,6 +13039,12 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
         logger.info("✅ Stats saved successfully")
     except Exception as e:
         logger.error(f"❌ Stats save error: {e}")
+
+    # ✅ Auto-capture tournament stats (runs/wickets/sixes/fours/MVP) + points table
+    try:
+        await record_tour_match_result(context, group_id, match, winner, loser)
+    except Exception as e:
+        logger.error(f"❌ Tour auto-record error: {e}")
     
     # ==========================================
     # 🎉 SEND VICTORY MESSAGE (GUARANTEED - 3 ATTEMPTS)
@@ -13099,6 +13350,12 @@ async def testwin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("✅ Stats saved successfully")
     except Exception as e:
         logger.error(f"❌ Stats save error: {e}")
+
+    # ✅ Auto-capture tournament stats (runs/wickets/sixes/fours/MVP) + points table
+    try:
+        await record_tour_match_result(context, group_id, match, winner, loser)
+    except Exception as e:
+        logger.error(f"❌ Tour auto-record error: {e}")
     
     # ==========================================
     # 🎉 SEND VICTORY MESSAGE (GUARANTEED)

@@ -1469,8 +1469,11 @@ def load_tournament_data():
     load_tour_state()
 
 
-def save_data():
-    """Save data to BOTH SQL Database AND JSON Files"""
+_save_data_dirty = False
+_save_data_task = None
+
+def _save_data_sync():
+    """The actual blocking I/O — only ever run inside a background thread now."""
     try:
         # 1. SQL Save (Primary & Fast)
         conn = sqlite3.connect(DB_FILE)
@@ -1494,16 +1497,44 @@ def save_data():
         conn.commit()
         conn.close()
         
-        # 2. JSON Save (Secondary / Manual Backup)
-        with open(USERS_FILE, 'w') as f: json.dump(user_data, f, indent=2)
-        with open(STATS_FILE, 'w') as f: json.dump(player_stats, f, indent=2)
-        with open(MATCHES_FILE, 'w') as f: json.dump(match_history, f, indent=2)
-        with open(GROUPS_FILE, 'w') as f: json.dump(registered_groups, f, indent=2)
-        with open(ACHIEVEMENTS_FILE, 'w') as f: json.dump(achievements, f, indent=2)
-        with open(FANTASY_FILE, 'w') as f: json.dump(fantasy_data, f, indent=2)
+        # 2. JSON Save (Secondary / Manual Backup) — no indent, much faster to serialize
+        with open(USERS_FILE, 'w') as f: json.dump(user_data, f)
+        with open(STATS_FILE, 'w') as f: json.dump(player_stats, f)
+        with open(MATCHES_FILE, 'w') as f: json.dump(match_history, f)
+        with open(GROUPS_FILE, 'w') as f: json.dump(registered_groups, f)
+        with open(ACHIEVEMENTS_FILE, 'w') as f: json.dump(achievements, f)
+        with open(FANTASY_FILE, 'w') as f: json.dump(fantasy_data, f)
 
     except Exception as e:
         logger.error(f"Error saving data: {e}")
+
+
+async def _save_data_debounced():
+    """
+    🔧 SCALE FIX: save_data() used to run fully synchronously on the event
+    loop — with 500 groups active, every single stat update (every ball!)
+    would freeze ALL 500 groups for as long as the full dataset took to
+    serialize + write to disk (SQL + 6 JSON files, every user, every time).
+    Now: mark dirty, wait 2s for more updates to pile up, then do ONE real
+    write in a background thread (doesn't block the event loop at all).
+    """
+    global _save_data_dirty, _save_data_task
+    await asyncio.sleep(2)
+    _save_data_dirty = False
+    await asyncio.to_thread(_save_data_sync)
+    _save_data_task = None
+
+
+def save_data():
+    """Non-blocking: schedules a debounced background save instead of writing inline."""
+    global _save_data_dirty, _save_data_task
+    _save_data_dirty = True
+    if _save_data_task is None or _save_data_task.done():
+        try:
+            _save_data_task = asyncio.create_task(_save_data_debounced())
+        except RuntimeError:
+            # No running event loop (e.g. called from sync startup code) — save immediately, inline.
+            _save_data_sync()
 
 def load_data():
     """Load all data (Try SQL first, Fallback to JSON)"""
@@ -2491,51 +2522,17 @@ _AI_EVENT_DESCRIPTIONS = {
 }
 
 async def get_ai_commentary_async(event_type: str, style: str = "english") -> str:
-    """Fetch one AI-generated commentary line. Falls back to static if API fails."""
-    cache_key = f"{style}:{event_type}"
-    
-    # Serve from pre-fetched cache if available
-    if _ai_commentary_cache[cache_key]:
-        return _ai_commentary_cache[cache_key].pop()
-    
-    system_prompt = _AI_COMMENTARY_STYLE_PROMPTS.get(style, _AI_COMMENTARY_STYLE_PROMPTS["english"])
-    event_desc = _AI_EVENT_DESCRIPTIONS.get(event_type, event_type)
-    
-    try:
-        import aiohttp
-        payload = {
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 60,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": f"Ball event: {event_desc}. Generate commentary:"}]
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"Content-Type": "application/json", "anthropic-version": "2023-06-01"},
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=4.0)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    text = data.get("content", [{}])[0].get("text", "").strip()
-                    if text:
-                        return text
-    except Exception as e:
-        logger.debug(f"AI commentary API call failed ({event_type}/{style}): {e}")
-    
-    # Fallback to static commentary
+    """AI commentary disabled — always returns static commentary now."""
     return get_commentary(event_type, group_id=None, user_id=None)
 
+
+async def _fetch_ai_commentary_line(event_type: str, style: str) -> Optional[str]:
+    """Disabled — no live API call anymore."""
+    return None
+
 async def prefetch_ai_commentary(event_type: str, style: str = "english", count: int = 3):
-    """Pre-warm the AI commentary cache in background."""
-    cache_key = f"{style}:{event_type}"
-    if len(_ai_commentary_cache[cache_key]) >= count:
-        return
-    for _ in range(count - len(_ai_commentary_cache[cache_key])):
-        line = await get_ai_commentary_async(event_type, style)
-        if line:
-            _ai_commentary_cache[cache_key].append(line)
+    """Disabled — no-op, kept so any stray caller doesn't crash."""
+    return
 
 def get_commentary_with_ai_fallback(event_type: str, group_id: int = None, user_id: int = None) -> str:
     """Synchronous wrapper: returns static commentary immediately (AI is async, used in async contexts)."""
@@ -3284,11 +3281,48 @@ async def huddle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
-async def solo_game_timer(context, chat_id, match, player_type, player_name):
+def bump_solo_ball_seq(match) -> int:
+    """
+    🔧 GLITCH FIX: advance solo-ball sequence counter, return new value.
+    Root cause of the "2 games running, one accepts no numbers" bug: the
+    45s timeout timer and a real user's number-submission can both fire for
+    the SAME ball in a tiny race window. When that happens, two parallel
+    "send your number" flows get created against the same match — one is a
+    ghost. Every time a ball's waiting-period starts OR is resolved by real
+    input, we bump this counter and stamp the timer task with it; if the
+    timer wakes up later and the counter has moved on, it knows a newer ball
+    already started and it aborts instead of firing a duplicate flow.
+    """
+    match.solo_ball_seq = getattr(match, 'solo_ball_seq', 0) + 1
+    return match.solo_ball_seq
+
+
+def is_match_stale(chat_id, match) -> bool:
+    """
+    🔧 GLITCH FIX: True if this `match` object is no longer the live match for
+    chat_id — either it already ended, or a newer match has replaced it in
+    active_matches. Old code only checked `chat_id not in active_matches`,
+    which is true-negative when a NEW match has taken over the same chat_id,
+    letting a dead match's leftover timers/tasks keep sending messages
+    ("phantom second game" bug).
+    """
+    return match.phase == GamePhase.MATCH_ENDED or active_matches.get(chat_id) is not match
+
+
+async def solo_game_timer(context, chat_id, match, player_type, player_name, seq=None):
     """Timer specifically for Solo Mode (45s)"""
+    if seq is None:
+        seq = getattr(match, 'solo_ball_seq', 0)
     try:
         # Wait 30 seconds
         await asyncio.sleep(30)
+
+        # 🔧 GLITCH FIX: if the real player already answered (or the ball
+        # moved on some other way) while we were sleeping, our seq is stale
+        # — abort instead of sending a duplicate "hurry up" into a resolved ball.
+        if getattr(match, 'solo_ball_seq', None) != seq:
+            logger.info("⛔ solo_game_timer aborted (30s mark) — stale timer, ball already resolved.")
+            return
         try:
             await context.bot.send_message(
                 chat_id, 
@@ -3300,6 +3334,12 @@ async def solo_game_timer(context, chat_id, match, player_type, player_name):
         # Remaining 15 Seconds
         await asyncio.sleep(15)
         
+        # 🔧 GLITCH FIX: same stale check right before acting on timeout —
+        # this is the exact race window users hit (number submitted at ~44-45s).
+        if getattr(match, 'solo_ball_seq', None) != seq:
+            logger.info("⛔ solo_game_timer aborted (timeout mark) — stale timer, ball already resolved.")
+            return
+
         # Timeout Trigger
         await handle_solo_timeout(context, chat_id, match, player_type)
             
@@ -3309,7 +3349,7 @@ async def solo_game_timer(context, chat_id, match, player_type, player_name):
 async def handle_solo_timeout(context, chat_id, match, player_type):
     """Handle Penalties for Solo Mode Timeouts"""
     # 🔧 GLITCH FIX: match may have been ended via /endmatch during the 45s wait.
-    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+    if is_match_stale(chat_id, match):
         logger.info("⛔ handle_solo_timeout aborted — match already ended.")
         return
     
@@ -3372,14 +3412,14 @@ async def handle_solo_timeout(context, chat_id, match, player_type):
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
             
             match.ball_timeout_task = asyncio.create_task(
-                solo_game_timer(context, chat_id, match, "bowler", bowler.first_name)
+                solo_game_timer(context, chat_id, match, "bowler", bowler.first_name, seq=bump_solo_ball_seq(match))
             )
 
 # Helper to Rotate Bowler in Solo (Handles the Skip Logic)
 async def rotate_solo_bowler(context, chat_id, match, force_new_bowler=False):
     """Rotates bowler, skipping banned players"""
     # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
-    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+    if is_match_stale(chat_id, match):
         logger.info("⛔ rotate_solo_bowler aborted — match already ended.")
         return
     
@@ -6817,7 +6857,7 @@ async def start_match(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
 async def request_batsman_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match):
     """Prompt captain for new batsman after wicket"""
     # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
-    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+    if is_match_stale(chat_id, match):
         logger.info("⛔ request_batsman_selection aborted — match already ended.")
         return
 
@@ -7307,7 +7347,7 @@ async def request_bowler_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: 
     """Prompt captain for bowler - GUARANTEED DELIVERY WITH FULL LOGGING"""
 
     # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
-    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+    if is_match_stale(chat_id, match):
         logger.info("⛔ request_bowler_selection aborted — match already ended.")
         return
 
@@ -11064,7 +11104,7 @@ async def trigger_solo_ball(context, chat_id, match):
     # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here —
     # this is called from timeout/rotation paths that run after long sleeps, so the
     # match could have been ended in the meantime.
-    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+    if is_match_stale(chat_id, match):
         logger.info("⛔ trigger_solo_ball aborted — match already ended.")
         return
     batter = match.solo_players[match.current_solo_bat_idx]
@@ -11126,7 +11166,7 @@ async def trigger_solo_ball(context, chat_id, match):
         
         # ✅ START BOWLER TIMER
         match.ball_timeout_task = asyncio.create_task(
-            solo_game_timer(context, chat_id, match, "bowler", bowler.first_name)
+            solo_game_timer(context, chat_id, match, "bowler", bowler.first_name, seq=bump_solo_ball_seq(match))
         )
     except:
         await context.bot.send_message(chat_id, f"⚠️ Cannot DM {bowl_tag}. Please start the bot!", parse_mode=ParseMode.HTML)
@@ -11134,7 +11174,7 @@ async def trigger_solo_ball(context, chat_id, match):
 async def process_solo_turn_result(context, chat_id, match):
     """Calculates Solo result with FIXED Next Batsman flow"""
     # 🔧 GLITCH FIX: if /endmatch or /endall already ended this match, stop here.
-    if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+    if is_match_stale(chat_id, match):
         logger.info("⛔ process_solo_turn_result aborted — match already ended.")
         return
 
@@ -11260,7 +11300,7 @@ async def process_solo_turn_result(context, chat_id, match):
         # ✅ CRITICAL FIX: Naya ball trigger karna zaroori hai
         await asyncio.sleep(2)
         # 🔧 GLITCH FIX: re-check — /endmatch may have fired during the awaits above.
-        if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+        if is_match_stale(chat_id, match):
             logger.info("⛔ process_solo_turn_result (wicket branch) aborted post-await — match already ended.")
             return
         await trigger_solo_ball(context, chat_id, match)
@@ -11366,7 +11406,7 @@ async def process_solo_turn_result(context, chat_id, match):
         # Trigger Next Ball
         # 🔧 GLITCH FIX: re-check — /endmatch may have fired during the awaits above
         # (animations, commentary calls, over-change sleeps) before we schedule the next ball.
-        if match.phase == GamePhase.MATCH_ENDED or chat_id not in active_matches:
+        if is_match_stale(chat_id, match):
             logger.info("⛔ process_solo_turn_result (runs branch) aborted post-await — match already ended.")
             return
         await trigger_solo_ball(context, chat_id, match)
@@ -11502,6 +11542,21 @@ async def solo_join_countdown(context, chat_id, match):
 async def end_solo_game_logic(context, chat_id, match):
     """✅ FIXED: Solo End with GC Notification"""
     match.phase = GamePhase.MATCH_ENDED
+
+    # 🔧 GLITCH FIX: cancel any lingering timer/task tied to this match so it
+    # can't wake up later and act on a chat that has since moved on to a new
+    # match. This mirrors what the manual /endsolo confirm handler already does.
+    for _task_attr in ("ball_timeout_task", "solo_timer_task", "join_phase_task",
+                       "active_ball_task", "pause_task"):
+        _task = getattr(match, _task_attr, None)
+        if _task:
+            _task.cancel()
+
+    # 🔧 GLITCH FIX: remove from active_matches immediately so a stray/late
+    # callback checking "chat_id not in active_matches" can't mistake this
+    # dead match for the currently active one.
+    if active_matches.get(chat_id) is match:
+        del active_matches[chat_id]
     
     # ✅ GENERATE AND SEND FINAL IMAGE FIRST
     try:
@@ -23193,6 +23248,9 @@ async def handle_group_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     # ✅ STOP BATSMAN TIMER
                     if match.ball_timeout_task: 
                         match.ball_timeout_task.cancel()
+                    # 🔧 GLITCH FIX: invalidate any timer that raced past its
+                    # cancel-window and is about to fire a duplicate flow anyway.
+                    bump_solo_ball_seq(match)
                     
                     try: 
                         await update.message.delete()
@@ -23634,6 +23692,9 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if user.id == bowler.user_id and match.current_ball_data.get("bowler_number") is None:
                     match.current_ball_data["bowler_number"] = num
                     if match.ball_timeout_task: match.ball_timeout_task.cancel()
+                    # 🔧 GLITCH FIX: invalidate any timer that raced past its
+                    # cancel-window and is about to fire anyway.
+                    bump_solo_ball_seq(match)
                     
                     # ✅ FIX: Build "Watch in Group" redirect button for solo lock confirmation
                     _solo_lock_markup = None
@@ -28620,6 +28681,28 @@ async def setup_public_bot_commands(application: Application):
 def main():
     """Start the bot"""
 
+    # 🔧 GLITCH FIX: single-instance lock. If another cric.py process is
+    # already running (e.g. systemd restarted us but the old process hadn't
+    # fully died yet, or someone launched a second copy manually in
+    # screen/tmux), refuse to start. Two live processes on the same bot token
+    # each keep their own separate `active_matches` memory — Telegram's
+    # polling flip-flops between them, which is exactly what causes
+    # "2 games running in parallel" and "/endsolo only ends one of them".
+    import fcntl
+    _lock_file_path = "/tmp/cricoverse_bot.lock"
+    _lock_file = open(_lock_file_path, "w")
+    try:
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_file.write(str(os.getpid()))
+        _lock_file.flush()
+    except (IOError, OSError):
+        logger.error(
+            f"❌ Another instance of this bot is already running (lock held on {_lock_file_path}). "
+            "Exiting to avoid duplicate-process match glitches. "
+            "Run `ps aux | grep cric.py` to find and kill the stale process."
+        )
+        raise SystemExit(1)
+
     # Load data on startup
     load_data()
     ensure_fonts()
@@ -28946,6 +29029,11 @@ def main():
                 close_loop=False,
             )
             # run_polling only returns on a clean shutdown (e.g. Ctrl+C) — stop looping.
+            # 🔧 SCALE FIX: save_data() is now debounced/async — flush any
+            # pending write synchronously here so a clean shutdown never
+            # loses the last few seconds of stats.
+            if _save_data_dirty:
+                _save_data_sync()
             break
         except Conflict as e:
             logger.error(

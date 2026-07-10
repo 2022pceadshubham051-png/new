@@ -13726,53 +13726,63 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
         cap_y_bytes  = await get_pfp(cap_y_id)
         host_bytes   = await get_pfp(host_id)
 
-        # ── Circle paste helper ──
-        def paste_circle(img_overlay, avatar_bytes, cx, cy, r, initials="?"):
-            size = r * 2
-            pfp = Image.new("RGBA", (size, size), (50, 50, 50, 200))
-            if avatar_bytes:
-                try:
-                    src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
-                    src = ImageOps.fit(src, (size, size), method=Image.Resampling.LANCZOS)
-                    pfp = src
-                except Exception:
-                    pass
-            else:
-                d = ImageDraw.Draw(pfp)
-                d.ellipse([0, 0, size-1, size-1], fill=(30, 60, 120, 255))
-                try:
-                    fi = ImageFont.truetype("Roboto-Bold.ttf", size // 3)
-                except Exception:
-                    fi = ImageFont.load_default(size=size // 3)
-                ib = d.textbbox((0, 0), initials[:2], font=fi)
-                d.text(((size-(ib[2]-ib[0]))//2, (size-(ib[3]-ib[1]))//2), initials[:2],
-                       font=fi, fill=(255, 255, 255, 255))
+        # ── Heavy PIL compositing runs in a worker thread so it never blocks ──
+        # ── the event loop (and therefore never delays live gameplay). ──
+        def _render_squad_image(base_img, overlay_img, cap_x_bytes, cap_y_bytes, host_bytes,
+                                 team_x_name, team_y_name, host_name):
+            def paste_circle(img_overlay, avatar_bytes, cx, cy, r, initials="?"):
+                size = r * 2
+                pfp = Image.new("RGBA", (size, size), (50, 50, 50, 200))
+                if avatar_bytes:
+                    try:
+                        src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
+                        src = ImageOps.fit(src, (size, size), method=Image.Resampling.LANCZOS)
+                        pfp = src
+                    except Exception:
+                        pass
+                else:
+                    d = ImageDraw.Draw(pfp)
+                    d.ellipse([0, 0, size-1, size-1], fill=(30, 60, 120, 255))
+                    try:
+                        fi = ImageFont.truetype("Roboto-Bold.ttf", size // 3)
+                    except Exception:
+                        fi = ImageFont.load_default(size=size // 3)
+                    ib = d.textbbox((0, 0), initials[:2], font=fi)
+                    d.text(((size-(ib[2]-ib[0]))//2, (size-(ib[3]-ib[1]))//2), initials[:2],
+                           font=fi, fill=(255, 255, 255, 255))
 
-            mask = Image.new("L", (size, size), 0)
-            ImageDraw.Draw(mask).ellipse((0, 0, size-1, size-1), fill=255)
-            circle = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-            circle.paste(pfp, (0, 0), mask)
-            img_overlay.alpha_composite(circle, (cx - r, cy - r))
+                mask = Image.new("L", (size, size), 0)
+                ImageDraw.Draw(mask).ellipse((0, 0, size-1, size-1), fill=255)
+                circle = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                circle.paste(pfp, (0, 0), mask)
+                img_overlay.alpha_composite(circle, (cx - r, cy - r))
 
-        # Template layout (native 1598 x 984) — pixel-calibrated via color-mask detection:
-        # LEFT  circle (Team X cap) : cx=359,  cy=555, inner_r=155
-        # RIGHT circle (Team Y cap) : cx=1236, cy=555, inner_r=157
-        # CENTER small (Host)       : cx=801,  cy=356, inner_r=78
-        paste_circle(overlay, cap_x_bytes,  359, 555, 155,
-                     initials=(match.team_x.name or "X")[:2].upper())
-        paste_circle(overlay, cap_y_bytes,  1236, 555, 157,
-                     initials=(match.team_y.name or "Y")[:2].upper())
-        paste_circle(overlay, host_bytes,   801, 356,  78,
-                     initials=(getattr(match, "host_name", "H") or "H")[:2].upper())
+            # Template layout (native 1598 x 984) — pixel-calibrated via color-mask detection:
+            # LEFT  circle (Team X cap) : cx=359,  cy=555, inner_r=155
+            # RIGHT circle (Team Y cap) : cx=1236, cy=555, inner_r=157
+            # CENTER small (Host)       : cx=801,  cy=356, inner_r=78
+            paste_circle(overlay_img, cap_x_bytes,  359, 555, 155,
+                         initials=(team_x_name or "X")[:2].upper())
+            paste_circle(overlay_img, cap_y_bytes,  1236, 555, 157,
+                         initials=(team_y_name or "Y")[:2].upper())
+            paste_circle(overlay_img, host_bytes,   801, 356,  78,
+                         initials=(host_name or "H")[:2].upper())
 
-        # NOTE: This template has baked-in static labels ("TEAM X" / "TEAM Y" / "HOST")
-        # as part of the background art, so we don't draw duplicate text on top —
-        # only the profile pictures are pasted into the circles above.
+            # NOTE: This template has baked-in static labels ("TEAM X" / "TEAM Y" / "HOST")
+            # as part of the background art, so we don't draw duplicate text on top —
+            # only the profile pictures are pasted into the circles above.
 
-        final = Image.alpha_composite(base, overlay).convert("RGB")
-        bio = BytesIO()
-        final.save(bio, "JPEG", quality=92)
-        bio.seek(0)
+            final = Image.alpha_composite(base_img, overlay_img).convert("RGB")
+            bio = BytesIO()
+            final.save(bio, "JPEG", quality=92)
+            bio.seek(0)
+            return bio
+
+        bio = await asyncio.to_thread(
+            _render_squad_image,
+            base, overlay, cap_x_bytes, cap_y_bytes, host_bytes,
+            match.team_x.name, match.team_y.name, getattr(match, "host_name", "H")
+        )
         return bio
 
     except Exception as e:

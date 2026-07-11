@@ -2751,7 +2751,8 @@ async def update_joining_board(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
     keyboard = [
         [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
          InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")]
+        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")],
+        [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -6007,7 +6008,12 @@ async def end_team_join_phase(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         return
     
     match.phase = GamePhase.HOST_SELECTION
-    
+
+    # Reset host_id — the lobby creator's host_id was only used for force-start
+    # permissions during joining. Clear it now so "Become Host" actually works.
+    match.host_id = None
+    match.host_name = None
+
     keyboard = [[InlineKeyboardButton("🙋‍♂️ I Want to be Host", callback_data="become_host")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -11584,21 +11590,64 @@ async def solo_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # --- ACTION: START GAME ---
     if query.data == "solo_start_game":
-        # 1. Check Permissions (Host Only)
-        if user.id != match.host_id:
-            await query.answer("⚠️ Only the Host can start the match!", show_alert=True)
+        # 1. Check Permissions (Host OR group admin)
+        if not await _is_host_or_admin(context, chat.id, match, user.id):
+            await query.answer("⚠️ Only the Host or a group admin can start the match!", show_alert=True)
             return
-            
+
         # 2. Check Player Count
         if len(match.solo_players) < 2:
             await query.answer("⚠️ Need at least 2 players to start!", show_alert=True)
             return
 
-        # 3. Cancel Timer Task before starting
+        # 3. Ask for explicit Yes/No confirmation before force-starting
+        confirm_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, Force Start", callback_data="solo_start_confirm_yes"),
+             InlineKeyboardButton("❌ No, Cancel", callback_data="solo_start_confirm_no")]
+        ])
+        try:
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=(f"⚠️ <b>{html.escape(user.first_name)}</b> wants to force-start the match now, "
+                      f"skipping the rest of the join timer.\n\n"
+                      f"👥 <b>Players:</b> <code>{len(match.solo_players)}</code>\n\n"
+                      f"❓ Force start now?"),
+                parse_mode=ParseMode.HTML,
+                reply_markup=confirm_keyboard
+            )
+        except Exception as e:
+            logger.error(f"Failed to send solo force-start confirmation: {e}")
+        return
+
+    # --- ACTION: CONFIRM START GAME (Yes/No) ---
+    if query.data in ("solo_start_confirm_yes", "solo_start_confirm_no"):
+        if not await _is_host_or_admin(context, chat.id, match, user.id):
+            await query.answer("🚫 Only the Host or a group admin can confirm this!", show_alert=True)
+            return
+
+        if query.data == "solo_start_confirm_no":
+            try:
+                await query.edit_message_text("❌ <b>Force-start cancelled.</b> The lobby will continue normally.",
+                                               parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+            return
+
+        if match.phase != GamePhase.SOLO_JOINING or len(match.solo_players) < 2:
+            await query.answer("⚠️ Need at least 2 players to start!", show_alert=True)
+            return
+
+        try:
+            await query.edit_message_text("🚀 <b>Force-start confirmed!</b> Closing registration now...",
+                                           parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+        # Cancel Timer Task before starting
         if hasattr(match, 'solo_timer_task') and match.solo_timer_task:
             match.solo_timer_task.cancel()
 
-        # 4. Start the Game Logic
+        # Start the Game Logic
         await start_solo_mechanics(context, chat.id, match)
         return
 

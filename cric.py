@@ -201,7 +201,7 @@ IMAGE_COOLDOWN_SECONDS = 15
 image_cooldown_tracker: Dict[int, float] = defaultdict(float)
 
 # Players command 30-second cooldown (per group, only during active match)
-PLAYERS_COOLDOWN_SECONDS = 30
+PLAYERS_COOLDOWN_SECONDS = 120
 players_cooldown_tracker: Dict[int, float] = defaultdict(float)
 
 # Full scorecard command 2-minute cooldown (per group)
@@ -1238,7 +1238,8 @@ def init_db():
         drs_enabled INTEGER DEFAULT 0,
         commentary_style TEXT DEFAULT 'english',
         wide_enabled INTEGER DEFAULT 1,
-        lobby_time INTEGER DEFAULT 120
+        lobby_time INTEGER DEFAULT 120,
+        solo_wide_enabled INTEGER DEFAULT 1
     )''')
     # Migration: add gc_settings table if missing
     try:
@@ -1249,8 +1250,15 @@ def init_db():
             drs_enabled INTEGER DEFAULT 0,
             commentary_style TEXT DEFAULT 'english',
             wide_enabled INTEGER DEFAULT 1,
-            lobby_time INTEGER DEFAULT 120
+            lobby_time INTEGER DEFAULT 120,
+            solo_wide_enabled INTEGER DEFAULT 1
         )''')
+    # Migration: add solo_wide_enabled column to existing gc_settings tables
+    try:
+        c.execute("ALTER TABLE gc_settings ADD COLUMN solo_wide_enabled INTEGER DEFAULT 1")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
 
     # Create match_history table
     c.execute('''CREATE TABLE IF NOT EXISTS match_history (
@@ -1667,7 +1675,7 @@ def load_gc_settings():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT group_id, drs_enabled, commentary_style, wide_enabled, lobby_time FROM gc_settings")
+        c.execute("SELECT group_id, drs_enabled, commentary_style, wide_enabled, lobby_time, solo_wide_enabled FROM gc_settings")
         rows = c.fetchall()
         conn.close()
         gc_settings = {}
@@ -1676,7 +1684,8 @@ def load_gc_settings():
                 "drs_enabled": bool(row[1]),
                 "commentary_style": row[2],
                 "wide_enabled": bool(row[3]),
-                "lobby_time": row[4]
+                "lobby_time": row[4],
+                "solo_wide_enabled": bool(row[5]) if row[5] is not None else True
             }
     except Exception as e:
         logger.warning(f"gc_settings load error: {e}")
@@ -1689,13 +1698,14 @@ def save_gc_setting(group_id: int):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""INSERT OR REPLACE INTO gc_settings 
-            (group_id, drs_enabled, commentary_style, wide_enabled, lobby_time)
-            VALUES (?, ?, ?, ?, ?)""",
+            (group_id, drs_enabled, commentary_style, wide_enabled, lobby_time, solo_wide_enabled)
+            VALUES (?, ?, ?, ?, ?, ?)""",
             (group_id,
              int(s.get("drs_enabled", False)),
              s.get("commentary_style", "english"),
              int(s.get("wide_enabled", True)),
-             s.get("lobby_time", 120)))
+             s.get("lobby_time", 120),
+             int(s.get("solo_wide_enabled", True))))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -1708,11 +1718,12 @@ def get_gc_setting(group_id: int, key: str, default=None):
             "drs_enabled": False,
             "commentary_style": "english",
             "wide_enabled": True,
-            "lobby_time": 120
+            "lobby_time": 120,
+            "solo_wide_enabled": True
         }
     return gc_settings[group_id].get(key, default if default is not None else {
         "drs_enabled": False, "commentary_style": "english",
-        "wide_enabled": True, "lobby_time": 120
+        "wide_enabled": True, "lobby_time": 120, "solo_wide_enabled": True
     }.get(key))
 
 
@@ -2299,10 +2310,14 @@ def get_random_commentary(event_type: str) -> str:
     return ""
 
 
-def generate_mini_scorecard(match: Match) -> str:
+def generate_mini_scorecard(match: Match, wicket_mode: bool = False) -> str:
     """
     Generate Mini Scorecard with Current Stats
     Shows after: Wicket, Over Complete
+
+    wicket_mode=True → uses the new text-only "MATCH CENTRE" template
+    (no photo/chart attached, "Waiting for Striker" shown when the new
+    batsman hasn't been selected yet).
     """
     bat_team = match.current_batting_team
     bowl_team = match.current_bowling_team
@@ -2354,10 +2369,11 @@ def generate_mini_scorecard(match: Match) -> str:
             legal_count += 1
             if legal_count == target_legal:
                 break
-    over_str = ", ".join(cur_over_parts) if cur_over_parts else "-"
+    over_sep = " • " if wicket_mode else ", "
+    over_str = over_sep.join(cur_over_parts) if cur_over_parts else "-"
 
     # Build player tags (clickable mentions)
-    striker_tag = f'<a href="tg://user?id={striker.user_id}">{html.escape(striker.first_name)}</a>' if striker else "—"
+    striker_tag = f'<a href="tg://user?id={striker.user_id}">{html.escape(striker.first_name)}</a>' if striker else None
     non_striker_tag = f'<a href="tg://user?id={non_striker.user_id}">{html.escape(non_striker.first_name)}</a>' if non_striker else "—"
     bowler_tag = f'<a href="tg://user?id={last_bowler.user_id}">{html.escape(last_bowler.first_name)}</a>' if last_bowler else "—"
     ns_csr = round((non_striker.runs / non_striker.balls_faced) * 100, 2) if non_striker and non_striker.balls_faced > 0 else 0.0
@@ -2371,6 +2387,50 @@ def generate_mini_scorecard(match: Match) -> str:
     ty_overs = format_overs(ty.balls)
     ty_rr = round(ty.score / max(ty.balls / 6, 0.1), 2) if ty.balls > 0 else 0.0
 
+    if wicket_mode:
+        msg = "📺 𝗠𝗔𝗧𝗖𝗛 𝗖𝗘𝗡𝗧𝗥𝗘\n"
+        msg += "───────────────────\n"
+        msg += "🏏 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚\n"
+        msg += "┌───────────────────\n"
+        if striker_tag:
+            msg += f"├ 👤 {striker_tag} ➔ {striker_runs} ({striker_balls}b)\n"
+            msg += f"├ 📊 SR: {csr:.2f}\n"
+        else:
+            msg += "├ 👤 Waiting for Striker *\n"
+            msg += "├ 📊 SR: -\n"
+        msg += "│\n"
+        if non_striker:
+            msg += f"├ 👤 {non_striker_tag} ➔ {ns_runs} ({ns_balls}b)\n"
+            msg += f"├ 📊 SR: {ns_csr:.2f}\n"
+        else:
+            msg += "├ 👤 - ➔ 0 (0b)\n"
+            msg += "├ 📊 SR: -\n"
+        msg += "└───────────────────\n"
+
+        msg += "🎯 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚\n"
+        msg += "┌───────────────────\n"
+        msg += f"├ 👤 {bowler_tag}\n"
+        msg += f"├ 🍿 Over:  {over_str}\n"
+        msg += "└───────────────────\n"
+
+        msg += "📊 𝗠𝗔𝗧𝗖𝗛 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗\n"
+        msg += "┌───────────────────\n"
+        msg += f"├ 🔹 {html.escape(tx.name)}: {tx.score}/{tx.wickets} ({tx_overs} ov)\n"
+        msg += f"├ ↳ CRR: {tx_rr:.2f}\n"
+        msg += "│\n"
+        msg += f"├ 🔸 {html.escape(ty.name)}: {ty.score}/{ty.wickets} ({ty_overs} ov)\n"
+        msg += f"├ ↳ CRR: {ty_rr:.2f}\n"
+        msg += "└───────────────────\n"
+
+        if match.innings == 2:
+            runs_needed = match.target - bat_team.score
+            balls_left = (match.total_overs * 6) - bat_team.balls
+            rrr = round((runs_needed / balls_left) * 6, 2) if balls_left > 0 else 0
+            msg += f"\n⚠️ Target: Need {max(runs_needed,0)} runs in {max(balls_left,0)} balls (RRR: {rrr})"
+
+        return msg
+
+    striker_tag = striker_tag or "—"
     msg = f"🏏 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n"
     msg += f"┌─────────────────── \n"
     msg += f"├ 👤 {striker_tag} ➔ {striker_runs} ({striker_balls}) \n"
@@ -5678,22 +5738,26 @@ async def update_solo_board(context, chat_id, match):
     else:
         host_tag = "Unknown"
     
-    msg = "⚔️ <b>SOLO BATTLE ROYALE</b> ⚔️\n"
-    msg += "─────────────────\n"
-    msg += f"🎙 <b>Host:</b> {host_tag}\n"
-    msg += f"⏳ <b>Time Left:</b> <code>{mins:02d}:{secs:02d}</code>\n"
-    msg += f"👥 <b>Players Joined:</b> {count}\n\n"
-    
-    msg += "<b>PLAYER LIST:</b>\n"
+    SOLO_LINEUP_SIZE = 11
+    number_emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+
+    msg = "🏏 𝗧𝗛𝗘 𝗚𝗥𝗔𝗡𝗗 𝗠𝗔𝗧𝗖𝗛 🏏\n"
+    msg += "─────────────────────────\n"
+    msg += f"🏟️ 𝗛𝗼𝘀𝘁: {host_tag}\n"
+    msg += f"⏳ 𝗧𝗶𝗺𝗲 𝗟𝗲𝗳𝘁: {mins:02d}:{secs:02d}\n"
+    msg += f"👥 𝗣𝗹𝗮𝘆𝗲𝗿𝘀 𝗜𝗻 𝗗𝘂𝗴𝗼𝘂𝘁: {count}\n"
+    msg += "─────────────────────────\n"
+    msg += f"🏏 𝗟𝗜𝗡𝗘-𝗨𝗣 (𝗣𝗟𝗔𝗬𝗜𝗡𝗚 𝗫𝗜) ➔ {count}/{SOLO_LINEUP_SIZE}\n"
+    msg += "┌───────────────────────\n"
     if match.solo_players:
         for i, p in enumerate(match.solo_players, 1):
             ptag = f'<a href=\"tg://user?id={p.user_id}\">{p.first_name}</a>'
-            msg += f"  {i}. {ptag}\n"
+            crown = " 👑" if match.host_id and p.user_id == match.host_id else ""
+            emoji = number_emojis[i-1] if i <= len(number_emojis) else f"{i}."
+            msg += f"├ {emoji} {ptag}{crown}\n"
     else:
-        msg += "  <i>Waiting for players...</i>\n"
-        
-    msg += "\n─────────────────\n"
-    msg += "👇 <i>Click Join to Enter the Ground!</i>"
+        msg += "├ <i>Waiting for players...</i>\n"
+    msg += "└───────────────────────"
     
     # Buttons
     keyboard = [
@@ -5713,6 +5777,10 @@ async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user)
     match = Match(chat.id, chat.title)
     active_matches[chat.id] = match
     
+    # Track lobby creator — only they can force-start the match early
+    match.host_id = user.id
+    match.host_name = user.first_name
+    
     # Set time (2 minutes)
     match.team_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
     
@@ -5720,7 +5788,8 @@ async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user)
     keyboard = [
         [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
          InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")]
+        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")],
+        [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -5788,7 +5857,29 @@ def get_team_join_message(match: Match) -> str:
     return msg
 
 
-async def team_join_countdown(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
+async def team_start_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🚀 Host force-starts the team lobby early, skipping the rest of the join timer."""
+    query = update.callback_query
+    chat_id = query.message.chat.id
+    match = active_matches.get(chat_id)
+
+    if not match or match.phase != GamePhase.TEAM_JOINING:
+        await query.answer("⚠️ No active joining lobby!", show_alert=True)
+        return
+
+    if query.from_user.id != match.host_id:
+        await query.answer("🚫 Only the host who started this lobby can force-start!", show_alert=True)
+        return
+
+    total_players = len(match.team_x.players) + len(match.team_y.players)
+    if total_players < 4:
+        await query.answer("⚠️ Need at least 4 players (2 per team) to start!", show_alert=True)
+        return
+
+    await query.answer("🚀 Starting now!")
+    if match.join_phase_task:
+        match.join_phase_task.cancel()
+    await end_team_join_phase(context, chat_id, match)
     """Countdown timer that updates the Board safely"""
     try:
         warning_sent = False
@@ -6078,13 +6169,13 @@ async def open_fantasy_squad_window(context: ContextTypes.DEFAULT_TYPE, group_id
     cap = get_fantasy_squad_cap(match)
 
     lines = [
-        f"🎮 Tap players below to build your squad (max <b>{cap}</b>).",
-        f"🏃 <b>+1</b> pt/run · 🚀 <b>+{FANTASY_PTS_PER_SIX_BONUS}</b> bonus/six · 🎯 <b>+{FANTASY_PTS_PER_WICKET}</b>/wicket",
-        f"🙋 <i>Anyone in the group can play — you don't need to be in the match!</i>",
-        f"⏰ You have <b>{FANTASY_PICK_WINDOW_SECONDS} seconds</b> — toss starts right after!",
-        f"📋 Tap <b>My Squad</b> anytime to check your picks.",
+        f"⚡Tap players below to pick your top {cap} squad!",
+        f"📈 Points System: +1 pt/Run • +{FANTASY_PTS_PER_SIX_BONUS}/Six • +{FANTASY_PTS_PER_WICKET}/Wicket",
+        f"⏳ Deadline: {FANTASY_PICK_WINDOW_SECONDS} seconds left before the Toss!",
+        f"📊 Tap My Squad anytime to review your playing {cap}.",
     ]
-    msg = themed(f"🏆 FANTASY DREAM III — PICK YOUR SQUAD ({FANTASY_PICK_WINDOW_SECONDS}s)", lines, "🏏")
+    msg = themed("🏆 FANTASY LEAGUE ", lines, "")
+    msg += "\n📢 Open for everyone in the group — Jump in now!"
 
     keyboard = []
     row = []
@@ -6839,11 +6930,11 @@ async def start_match(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
     captain_tag = get_user_tag(captain)
     
     opener_lines = [
-        f"👑 {captain_tag}, select your opening batsman:",
-        f"⌨️ Use <code>/batting [number]</code> to select.",
-        f"👥 <b>Squad Pool:</b> {len(match.current_batting_team.players)} players available",
+        f"{captain_tag}, select your opening batsman:",
+        f"Use <code>/batting [number]</code> to select.",
+        f"Squad Pool: {len(match.current_batting_team.players)} players available",
     ]
-    msg = themed("🏏 SELECT OPENING BATSMAN", opener_lines, "🏏")
+    msg = themed("SELECT OPENING BATSMAN", opener_lines, "")
 
     
     await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
@@ -7151,6 +7242,69 @@ async def batting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await request_bowler_selection(context, chat.id, match)        
         return
 
+async def _build_players_text(match: Match) -> str:
+    """Rebuild the /players text (used by both the command and the Refresh button)."""
+    toss_winner_team = getattr(match, 'toss_winner', None)
+
+    NUM_EMOJI = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟",
+                 "1️⃣1️⃣","1️⃣2️⃣","1️⃣3️⃣","1️⃣4️⃣","1️⃣5️⃣"]
+
+    def _get_player_status_icons(player, team):
+        if player.is_out:
+            return "❌"
+        icons = []
+        if player.user_id == team.captain_id:
+            icons.append("👑")
+        if match.current_batting_team == team:
+            bat_idx = team.current_batsman_idx
+            ns_idx = team.current_non_striker_idx
+            if bat_idx is not None and bat_idx < len(team.players) and team.players[bat_idx].user_id == player.user_id:
+                icons.append("🏏")
+            elif ns_idx is not None and ns_idx < len(team.players) and team.players[ns_idx].user_id == player.user_id:
+                icons.append("🏃‍♂️")
+        if match.current_bowling_team == team:
+            bowl_idx = team.current_bowler_idx
+            if bowl_idx is not None and bowl_idx < len(team.players) and team.players[bowl_idx].user_id == player.user_id:
+                icons.append("‼️")
+        return " ".join(icons) if icons else ""
+
+    def _build_player_row(player, team, num):
+        tag = f'<a href="tg://user?id={player.user_id}">{html.escape(player.first_name)}</a>'
+        status = _get_player_status_icons(player, team)
+        num_icon = NUM_EMOJI[num-1] if num <= len(NUM_EMOJI) else f"{num}."
+        row = f"├ {num_icon} {tag}"
+        if status:
+            row += f" {status}"
+        row += "\n"
+        return row
+
+    def _build_team_block(team, color, num_players):
+        toss_icon = " 🪙" if toss_winner_team == team else ""
+        score_str = ""
+        if match.phase == GamePhase.MATCH_IN_PROGRESS or match.innings >= 1:
+            score_str = f" ➔ {team.score}/{team.wickets} ({format_overs(team.balls)} ov)"
+        color_icon = "🧊" if team == match.team_x else "🔥"
+        block = f"{color_icon} <b>𝗧𝗘𝗔𝗠 {html.escape(team.name)}</b>{toss_icon}{score_str}\n"
+        block += "┌───────────────────\n"
+        for i, player in enumerate(team.players, 1):
+            block += _build_player_row(player, team, i)
+        block += "└───────────────────\n"
+        return block
+
+    host_tag = f'<a href="tg://user?id={match.host_id}">{html.escape(match.host_name or "Host")}</a>'
+    overs_info = getattr(match, 'total_overs', 0)
+    text = f"👑 𝗛𝗼𝘀𝘁: {host_tag}\n"
+    text += f"⏳ 𝗢𝘃𝗲𝗿𝘀: {overs_info}\n"
+    text += "─────────────────\n"
+    text += _build_team_block(match.team_x, "❄️", len(match.team_x.players))
+    text += _build_team_block(match.team_y, "🔥", len(match.team_y.players))
+    text += f"\n🕒 <i>Last updated: {datetime.now().strftime('%H:%M:%S')}</i>"
+    return text
+
+
+PLAYERS_CMD_MAX_USES = 6  # /players can only be run this many times per match (Refresh button doesn't count)
+
+
 async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏏 Show playing squads with player tags and live real-time status"""
     group_id = update.effective_chat.id
@@ -7175,88 +7329,26 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "─────────────────"
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
-    
-    # ─── Determine toss winner ───
-    toss_winner_team = getattr(match, 'toss_winner', None)
-    
-    NUM_EMOJI = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟",
-                 "1️⃣1️⃣","1️⃣2️⃣","1️⃣3️⃣","1️⃣4️⃣","1️⃣5️⃣"]
 
-    def _get_player_status_icons(player, team):
-        """Return status icons for a player (emoji only, no text labels)"""
-        if player.is_out:
-            return "❌"
-        icons = []
-        # Captain
-        if player.user_id == team.captain_id:
-            icons.append("👑")
-        # Batting / Non-Striker
-        if match.current_batting_team == team:
-            bat_idx = team.current_batsman_idx
-            ns_idx = team.current_non_striker_idx
-            if bat_idx is not None and bat_idx < len(team.players) and team.players[bat_idx].user_id == player.user_id:
-                icons.append("🏏")
-            elif ns_idx is not None and ns_idx < len(team.players) and team.players[ns_idx].user_id == player.user_id:
-                icons.append("🏃‍♂️")
-        # Bowling
-        if match.current_bowling_team == team:
-            bowl_idx = team.current_bowler_idx
-            if bowl_idx is not None and bowl_idx < len(team.players) and team.players[bowl_idx].user_id == player.user_id:
-                icons.append("‼️")
-        return " ".join(icons) if icons else ""
+    # ── Usage limit: /players can only be used 6 times per match ──
+    uses = getattr(match, 'players_cmd_uses', 0)
+    if uses >= PLAYERS_CMD_MAX_USES:
+        await update.message.reply_text(
+            f"⚠️ <b>/players limit reached</b> ({PLAYERS_CMD_MAX_USES}/match). "
+            f"Use the 🔄 Refresh button on the last card instead.",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
-    def _build_player_row(player, team, num):
-        """Build a player row in new UI format"""
-        tag = f'<a href="tg://user?id={player.user_id}">{html.escape(player.first_name)}</a>'
-        status = _get_player_status_icons(player, team)
-        num_icon = NUM_EMOJI[num-1] if num <= len(NUM_EMOJI) else f"{num}."
-        row = f"├ {num_icon} {tag}"
-        if status:
-            row += f" {status}"
-        row += "\n"
-        return row
-
-    def _build_team_block(team, color, num_players):
-        toss_icon = " 🪙" if toss_winner_team == team else ""
-        batting_icon = ""
-        if match.current_batting_team == team:
-            batting_icon = " 🏏"
-        elif match.current_bowling_team == team:
-            batting_icon = " 🔥"
-
-        score_str = ""
-        if match.phase == GamePhase.MATCH_IN_PROGRESS or match.innings >= 1:
-            score_str = f" ➔ {team.score}/{team.wickets} ({format_overs(team.balls)} ov)"
-
-        color_icon = "🧊" if team == match.team_x else "🔥"
-        block = f"{color_icon} <b>𝗧𝗘𝗔𝗠 {html.escape(team.name)}</b>{toss_icon}{score_str}\n"
-        block += "┌───────────────────\n"
-        for i, player in enumerate(team.players, 1):
-            block += _build_player_row(player, team, i)
-        block += "└───────────────────\n"
-        return block
-
-    # Header
-    host_tag = f'<a href="tg://user?id={match.host_id}">{html.escape(match.host_name or "Host")}</a>'
-    overs_info = getattr(match, 'total_overs', 0)
-    text = f"👑 𝗛𝗼𝘀𝘁: {host_tag}\n"
-    text += f"⏳ 𝗢𝘃𝗲𝗿𝘀: {overs_info}\n"
-    text += "─────────────────\n"
-
-    x_players = len(match.team_x.players)
-    y_players = len(match.team_y.players)
-
-    text += _build_team_block(match.team_x, "❄️", x_players)
-    text += _build_team_block(match.team_y, "🔥", y_players)
-    
-    
-    # 30-second cooldown for players command during active match
+    # ── 2-minute cooldown for players command during active match ──
     if match.phase == GamePhase.MATCH_IN_PROGRESS:
         remaining = check_players_cooldown(group_id)
         if remaining is not None:
             secs = math.ceil(remaining)
+            mins = secs // 60
+            sec_part = secs % 60
             cool_msg = await update.message.reply_text(
-                f"⏳ <b>Players command cooldown:</b> Wait <b>{secs}s</b> more!",
+                f"⏳ <b>Players command cooldown:</b> Wait <b>{mins}m {sec_part}s</b> more!",
                 parse_mode=ParseMode.HTML
             )
             asyncio.get_event_loop().call_later(
@@ -7266,17 +7358,23 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         set_players_cooldown(group_id)
 
+    match.players_cmd_uses = uses + 1
+    text = await _build_players_text(match)
+    refresh_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Refresh", callback_data=f"players_refresh_{group_id}")
+    ]])
+
     try:
         players_img = await generate_players_squad_image(match, context)
         if players_img:
             sent = await update.message.reply_photo(
-                photo=players_img, caption=text, parse_mode=ParseMode.HTML
+                photo=players_img, caption=text, parse_mode=ParseMode.HTML, reply_markup=refresh_kb
             )
         else:
-            sent = await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+            sent = await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=refresh_kb)
     except Exception:
         try:
-            sent = await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+            sent = await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=refresh_kb)
         except Exception:
             await update.message.reply_text("🏏 Players list unavailable right now.")
             return
@@ -7289,6 +7387,34 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         pass
+
+
+async def players_refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔄 Refresh button on /players — updates the text in place, doesn't count against the 6-use limit."""
+    query = update.callback_query
+    try:
+        group_id = int(query.data.split("_")[-1])
+    except Exception:
+        await query.answer("Invalid request", show_alert=True)
+        return
+
+    match = active_matches.get(group_id)
+    if not match:
+        await query.answer("⚠️ No active match anymore!", show_alert=True)
+        return
+
+    text = await _build_players_text(match)
+    refresh_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Refresh", callback_data=f"players_refresh_{group_id}")
+    ]])
+    try:
+        if query.message.photo:
+            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=refresh_kb)
+        else:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=refresh_kb)
+        await query.answer("✅ Refreshed!")
+    except Exception:
+        await query.answer("Already up to date!")
 
 
 
@@ -7414,12 +7540,12 @@ async def request_bowler_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: 
     # Build message → properly initialized
     over_num = len(match.team_x_over_runs if match.current_batting_team == match.team_x else match.team_y_over_runs) + 1
     bowler_lines = [
-        f"🥎 {captain_tag} ➔ Send in your strike bowler!",
-        f"⚙ Use: <code>/bowling [number]</code>",
+        f"{captain_tag} ➔ Send in your strike bowler!",
+        f"Use: <code>/bowling [number]</code>",
         f"Use <code>/qbowling</code> to pre-queue a bowler.",
-        f"🛟 Host can also send this if the captain's away.",
+        f"Host can also send this if the captain's away.",
     ]
-    msg = themed("SELECT BOWLER", bowler_lines, "🥎")
+    msg = themed("SELECT BOWLER", bowler_lines, "")
     
     # Group URL for "Go to Group" button
     try:
@@ -10002,35 +10128,10 @@ async def confirm_wicket_and_continue(context: ContextTypes.DEFAULT_TYPE, group_
     # 🎉 CHECK BOWLING MILESTONE
     await check_and_celebrate_milestones(context, group_id, match, bowler, 'bowling')
     
-    # 📄 Send Mini Scorecard with dynamic over-by-over bar chart
+    # 📄 Send Mini Scorecard (text-only, no photo)
     try:
-        mini_card = generate_mini_scorecard(match)
-        # Try dynamic bar chart first
-        chart_sent = False
-        try:
-            chart_bio = await asyncio.to_thread(generate_over_bar_chart, match)
-            if chart_bio:
-                await context.bot.send_photo(
-                    group_id,
-                    photo=chart_bio,
-                    caption=mini_card,
-                    parse_mode=ParseMode.HTML
-                )
-                chart_sent = True
-        except Exception as chart_err:
-            logger.warning(f"Bar chart (wicket) failed: {chart_err}")
-        if not chart_sent:
-            # Fallback: static photo
-            try:
-                await context.bot.send_photo(
-                    group_id,
-                    photo=MINI_SCORECARD_PHOTO,
-                    caption=mini_card,
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception as photo_error:
-                logger.error(f"Error sending mini scorecard photo: {photo_error}")
-                await context.bot.send_message(group_id, mini_card, parse_mode=ParseMode.HTML)
+        mini_card = generate_mini_scorecard(match, wicket_mode=True)
+        await context.bot.send_message(group_id, mini_card, parse_mode=ParseMode.HTML)
         logger.info("📨 Mini scorecard sent")
     except Exception as e:
         logger.error(f"🚫 Failed to send mini scorecard: {e}")
@@ -10103,12 +10204,12 @@ async def confirm_wicket_and_continue(context: ContextTypes.DEFAULT_TYPE, group_
         await end_innings(context, group_id, match)
         return
     
-    msg = themed("🏏 SELECT NEW BATSMAN", [
-        f"💀 {available_count} batsman(s) available",
-    ], "🏏")
-    msg += f"\n👑 {captain_tag} → send in your next batter!\n"
-    msg += f"⌨️ <code>/batting [number]</code>  ⏳ <i>4 min window</i>\n"
-    msg += f"🛟 <i>Host can also send this if the captain's away.</i>"
+    msg = themed("SELECT NEW BATSMAN", [
+        f"{available_count} batsman(s) available",
+    ], "")
+    msg += f"\n{captain_tag} → send in your next batter!\n"
+    msg += f"<code>/batting [number]</code>  <i>4 min window</i>\n"
+    msg += f"<i>Host can also send this if the captain's away.</i>"
     
     await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
     logger.info("📨 New batsman request sent to group")
@@ -10345,24 +10446,7 @@ async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             await context.bot.send_message(group_id, combined_caption, parse_mode=ParseMode.HTML)
     logger.info("📨 Combined over-summary + mini scorecard sent")
 
-    # ── Mid-match random image every 2 overs (after over 2+ and randomly chosen)
-    try:
-        overs_done = len(match.team_x_over_runs) + len(match.team_y_over_runs)
-        last_img_over = mid_match_image_tracker.get(group_id, 0)
-        # Trigger if at least 2 overs since last image, with 50% random chance
-        if (overs_done - last_img_over) >= 2 and random.random() < 0.5:
-            mid_bio = await asyncio.to_thread(generate_mid_match_image, match)
-            if mid_bio:
-                caption = _build_mid_match_caption(match)
-                await context.bot.send_photo(
-                    chat_id=group_id,
-                    photo=mid_bio,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML
-                )
-                mid_match_image_tracker[group_id] = overs_done
-    except Exception as mid_e:
-        logger.error(f"Mid-match image error: {mid_e}")
+    # (Mid-match "LIVE MATCH CENTER" image removed per request — no longer sent)
     
     # ✅ DRINKS BREAK CHECK (10th over = 60 balls)
     if bat_team.balls == 60:
@@ -23700,6 +23784,59 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bowler = match.solo_players[match.current_solo_bowl_idx]
                 
                 if user.id == bowler.user_id and match.current_ball_data.get("bowler_number") is None:
+                    # 🚫 SOLO WIDE BALL CHECK (separate gc_setting from team mode)
+                    if get_gc_setting(gid, "solo_wide_enabled", True):
+                        banned_num = getattr(bowler, 'wide_banned_number', None)
+                        if banned_num is not None and num == banned_num:
+                            await update.message.reply_text(
+                                f"🚫 <b>Number Blocked!</b>\n"
+                                f"⚠️ You just got a wide bowling <b>{num}</b> — you can't bowl the same number again right now.\n"
+                                f"🎲 Send a <b>different number</b> (0-6).",
+                                parse_mode=ParseMode.HTML
+                            )
+                            return
+
+                        if not hasattr(bowler, 'spam_history'):
+                            bowler.spam_history = []
+                        bowler.spam_history.append(num)
+
+                        if len(bowler.spam_history) >= 3 and bowler.spam_history[-1] == bowler.spam_history[-2] == bowler.spam_history[-3]:
+                            bowler.spam_history = []
+                            bowler.wide_banned_number = num
+
+                            wide_gif = get_random_gif(MatchEvent.WIDE)
+                            await update.message.reply_text(
+                                "🚫 <b>WIDE BALL!</b>\n"
+                                "⚠️ <b>Reason:</b> You spammed the same number 3 times!\n"
+                                "🎲 Ball cancelled. Bowl again with a different number.\n\n"
+                                "📉 <b>Penalty:</b> +1 Run to Batsman's Team.",
+                                parse_mode=ParseMode.HTML
+                            )
+
+                            batting_player = match.solo_players[match.current_solo_bat_idx] if match.current_solo_bat_idx < len(match.solo_players) else None
+                            if batting_player:
+                                batting_player.runs += 1
+
+                            wide_group_msg = (
+                                f"🚫 <b>WIDE BALL!</b> {bowler.first_name} bowled the same number 3 times!\n"
+                                f"🔄 <i>Bowler must bowl again with a different number...</i>"
+                            )
+                            try:
+                                if wide_gif:
+                                    await context.bot.send_animation(gid, animation=wide_gif, caption=wide_group_msg, parse_mode=ParseMode.HTML)
+                                else:
+                                    await context.bot.send_message(gid, wide_group_msg, parse_mode=ParseMode.HTML)
+                            except Exception:
+                                await context.bot.send_message(gid, wide_group_msg, parse_mode=ParseMode.HTML)
+
+                            if match.ball_timeout_task: match.ball_timeout_task.cancel()
+                            bump_solo_ball_seq(match)
+                            match.ball_timeout_task = asyncio.create_task(
+                                solo_game_timer(context, gid, match, "bowler", bowler.first_name)
+                            )
+                            return
+
+                    bowler.wide_banned_number = None
                     match.current_ball_data["bowler_number"] = num
                     if match.ball_timeout_task: match.ball_timeout_task.cancel()
                     # 🔧 GLITCH FIX: invalidate any timer that raced past its
@@ -23762,6 +23899,17 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # 🚫 WIDE BALL CHECK LOGIC STARTS
                         is_wide = False
                         if get_gc_setting(gid, "wide_enabled", True):
+                            # 🔁 Can't immediately re-bowl the number that just caused a wide
+                            banned_num = getattr(bowler, 'wide_banned_number', None)
+                            if banned_num is not None and num == banned_num:
+                                await update.message.reply_text(
+                                    f"🚫 <b>Number Blocked!</b>\n"
+                                    f"⚠️ You just got a wide bowling <b>{num}</b> — you can't bowl the same number again right now.\n"
+                                    f"🎲 Send a <b>different number</b> (0-6).",
+                                    parse_mode=ParseMode.HTML
+                                )
+                                return
+
                             # Initialize history list if not exists
                             if not hasattr(bowler, 'spam_history'):
                                 bowler.spam_history = []
@@ -23776,13 +23924,16 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     is_wide = True
                                     # Reset history so 4th ball counts as fresh start
                                     bowler.spam_history = [] 
+                                    # 🔁 Ban this exact number for the very next delivery
+                                    bowler.wide_banned_number = num
 
                         if is_wide:
                             # 🚫 IT IS A WIDE!
+                            wide_gif = get_random_gif(MatchEvent.WIDE)
                             await update.message.reply_text(
                                 "🚫 <b>WIDE BALL!</b>\n"
                                 "⚠️ <b>Reason:</b> You spammed the same number 3 times!\n"
-                                "🎲 Ball cancelled. Bowl again.\n\n"
+                                "🎲 Ball cancelled. Bowl again with a different number.\n\n"
                                 "📉 <b>Penalty:</b> +1 Run to Batting Team.",
                                 parse_mode=ParseMode.HTML
                             )
@@ -23800,14 +23951,19 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             else:
                                 match.current_batting_team.penalty_runs_history.append(1)
                             
-                            # Notify Group
-                            await context.bot.send_message(
-                                gid,
+                            # Notify Group (with GIF)
+                            wide_group_msg = (
                                 f"🚫 <b>WIDE BALL!</b> {bowler.first_name} bowled the same number 3 times!\n"
                                 f"📊 <b>Score:</b> {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
-                                f"🔄 <i>Bowler must bowl again...</i>",
-                                parse_mode=ParseMode.HTML
+                                f"🔄 <i>Bowler must bowl again with a different number...</i>"
                             )
+                            try:
+                                if wide_gif:
+                                    await context.bot.send_animation(gid, animation=wide_gif, caption=wide_group_msg, parse_mode=ParseMode.HTML)
+                                else:
+                                    await context.bot.send_message(gid, wide_group_msg, parse_mode=ParseMode.HTML)
+                            except Exception:
+                                await context.bot.send_message(gid, wide_group_msg, parse_mode=ParseMode.HTML)
                             
                             # Check if Target Chased via Wide
                             if match.innings == 2 and match.current_batting_team.score >= match.target:
@@ -23829,6 +23985,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             return
                         
                         # ✅ NORMAL DELIVERY (NOT WIDE)
+                        bowler.wide_banned_number = None
                         match.current_ball_data["bowler_number"] = num
                         match.current_ball_data["bowler_id"] = user.id
                         
@@ -24177,6 +24334,7 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Get current settings
     drs_on = get_gc_setting(group_id, "drs_enabled", False)
     wide_on = get_gc_setting(group_id, "wide_enabled", True)
+    solo_wide_on = get_gc_setting(group_id, "solo_wide_enabled", True)
     commentary = get_gc_setting(group_id, "commentary_style", "english")
     lobby_time = get_gc_setting(group_id, "lobby_time", 120)
     
@@ -24188,7 +24346,8 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"🏟️ <b>{html.escape(update.effective_chat.title)}</b>\n"
         f"─────────────────\n"
         f"📺 <b>DRS:</b> {'✅ Enabled' if drs_on else '❌ Disabled'}\n"
-        f"🌀 <b>Wide Ball:</b> {'✅ Enabled' if wide_on else '❌ Disabled'}\n"
+        f"🌀 <b>Wide Ball (Team):</b> {'✅ Enabled' if wide_on else '❌ Disabled'}\n"
+        f"🎲 <b>Wide Ball (Solo):</b> {'✅ Enabled' if solo_wide_on else '❌ Disabled'}\n"
         f"🎙️ <b>Commentary:</b> {commentary_display}\n"
         f"⏱️ <b>Lobby Time:</b> {lobby_time} seconds ({lobby_time//60}m {lobby_time%60}s)\n"
         f"─────────────────\n"
@@ -24199,6 +24358,9 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [
             InlineKeyboardButton(f"📺 DRS: {'ON ✅' if drs_on else 'OFF ❌'}", callback_data=f"gcs_drs_{group_id}"),
             InlineKeyboardButton(f"🌀 Wide: {'ON ✅' if wide_on else 'OFF ❌'}", callback_data=f"gcs_wide_{group_id}"),
+        ],
+        [
+            InlineKeyboardButton(f"🎲 Solo Wide: {'ON ✅' if solo_wide_on else 'OFF ❌'}", callback_data=f"gcs_solowide_{group_id}"),
         ],
         [
             InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
@@ -24244,12 +24406,14 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # Ensure settings exist
     if group_id not in gc_settings:
-        gc_settings[group_id] = {"drs_enabled": False, "commentary_style": "english", "wide_enabled": True, "lobby_time": 120}
+        gc_settings[group_id] = {"drs_enabled": False, "commentary_style": "english", "wide_enabled": True, "lobby_time": 120, "solo_wide_enabled": True}
     
     if data == f"gcs_drs_{group_id}":
         gc_settings[group_id]["drs_enabled"] = not gc_settings[group_id].get("drs_enabled", False)
     elif data == f"gcs_wide_{group_id}":
         gc_settings[group_id]["wide_enabled"] = not gc_settings[group_id].get("wide_enabled", True)
+    elif data == f"gcs_solowide_{group_id}":
+        gc_settings[group_id]["solo_wide_enabled"] = not gc_settings[group_id].get("solo_wide_enabled", True)
     elif data.startswith(f"gcs_comm_"):
         style = parts[-2]  # e.g. english, hinglish
         gc_settings[group_id]["commentary_style"] = style
@@ -24265,6 +24429,7 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Rebuild message
     drs_on = gc_settings[group_id].get("drs_enabled", False)
     wide_on = gc_settings[group_id].get("wide_enabled", True)
+    solo_wide_on = gc_settings[group_id].get("solo_wide_enabled", True)
     commentary = gc_settings[group_id].get("commentary_style", "english")
     lobby_time = gc_settings[group_id].get("lobby_time", 120)
     
@@ -24281,7 +24446,8 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🏟️ <b>{html.escape(chat_title)}</b>\n"
         f"─────────────────\n"
         f"📺 <b>DRS:</b> {'✅ Enabled' if drs_on else '❌ Disabled'}\n"
-        f"🌀 <b>Wide Ball:</b> {'✅ Enabled' if wide_on else '❌ Disabled'}\n"
+        f"🌀 <b>Wide Ball (Team):</b> {'✅ Enabled' if wide_on else '❌ Disabled'}\n"
+        f"🎲 <b>Wide Ball (Solo):</b> {'✅ Enabled' if solo_wide_on else '❌ Disabled'}\n"
         f"🎙️ <b>Commentary:</b> {commentary_display}\n"
         f"⏱️ <b>Lobby Time:</b> {lobby_time} seconds ({lobby_time//60}m {lobby_time%60}s)\n"
         f"─────────────────\n"
@@ -24293,7 +24459,10 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             InlineKeyboardButton(f"📺 DRS: {'ON' if drs_on else 'OFF'}", callback_data=f"gcs_drs_{group_id}"),
         ],
         [
-            InlineKeyboardButton(f"🌀 Wide: {'ON' if wide_on else 'OFF'}", callback_data=f"gcs_wide_{group_id}"),
+            InlineKeyboardButton(f"🌀 Wide (Team): {'ON' if wide_on else 'OFF'}", callback_data=f"gcs_wide_{group_id}"),
+        ],
+        [
+            InlineKeyboardButton(f"🎲 Wide (Solo): {'ON' if solo_wide_on else 'OFF'}", callback_data=f"gcs_solowide_{group_id}"),
         ],
         [
             InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
@@ -27337,17 +27506,25 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════
 # SPAM TRACKER → per-user, per-group rate limiting
 # ═══════════════════════════════════════════════════════════════
-_spam_tracker: Dict[str, float] = {}   # key = f"{user_id}:{group_id}"
-_SPAM_WINDOW = 1.5   # seconds → min gap between game-related commands
+_spam_tracker: Dict[str, list] = {}   # key = f"{user_id}:{group_id}" -> list of recent timestamps
+_SPAM_WINDOW = 1.5    # seconds → window to look for repeated messages
+_SPAM_MAX_MSGS = 3    # only flag as spam if 3+ messages land inside the window
 
 def _is_spamming(user_id: int, group_id: int) -> bool:
+    """
+    ✅ FIX: A single quick ball input (fast typers, or bot moving to the
+    next ball quickly) was being treated as spam because the old version
+    blocked ANY second message within 1.5s of the previous one — even a
+    completely legit run/ball. Now we only flag real rapid-fire spam
+    (3+ messages within the window), not normal gameplay timing.
+    """
     key = f"{user_id}:{group_id}"
     now = time.time()
-    last = _spam_tracker.get(key, 0.0)
-    if now - last < _SPAM_WINDOW:
-        return True
-    _spam_tracker[key] = now
-    return False
+    timestamps = _spam_tracker.get(key, [])
+    timestamps = [t for t in timestamps if now - t < _SPAM_WINDOW]
+    timestamps.append(now)
+    _spam_tracker[key] = timestamps
+    return len(timestamps) > _SPAM_MAX_MSGS
 
 # ═══════════════════════════════════════════════════════════════
 # BATTING / BOWLING QUEUE  (/qbatting, /qbowling)
@@ -28909,6 +29086,8 @@ def main():
 
     # ================== CALLBACK HANDLERS ==================
     application.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
+    application.add_handler(CallbackQueryHandler(players_refresh_callback, pattern="^players_refresh_"))
+    application.add_handler(CallbackQueryHandler(team_start_now_callback, pattern="^team_start_now$"))
     application.add_handler(CallbackQueryHandler(midauc_base_callback, pattern="^midauc_base_"))
     application.add_handler(CallbackQueryHandler(bulk_base_price_callback, pattern="^bulk_base_"))
 

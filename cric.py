@@ -5857,8 +5857,20 @@ def get_team_join_message(match: Match) -> str:
     return msg
 
 
+async def _is_host_or_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match, user_id: int) -> bool:
+    """True if the user is the lobby host OR a group admin/creator."""
+    if match.host_id and user_id == match.host_id:
+        return True
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        return member.status in ("administrator", "creator")
+    except Exception as e:
+        logger.error(f"Admin check failed: {e}")
+        return False
+
+
 async def team_start_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🚀 Host force-starts the team lobby early, skipping the rest of the join timer."""
+    """🚀 Host or a group admin force-starts the team lobby early (with confirmation)."""
     query = update.callback_query
     chat_id = query.message.chat.id
     match = active_matches.get(chat_id)
@@ -5867,8 +5879,62 @@ async def team_start_now_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("⚠️ No active joining lobby!", show_alert=True)
         return
 
-    if query.from_user.id != match.host_id:
-        await query.answer("🚫 Only the host who started this lobby can force-start!", show_alert=True)
+    if not await _is_host_or_admin(context, chat_id, match, query.from_user.id):
+        await query.answer("🚫 Only the host or a group admin can force-start!", show_alert=True)
+        return
+
+    total_players = len(match.team_x.players) + len(match.team_y.players)
+    if total_players < 4:
+        await query.answer("⚠️ Need at least 4 players (2 per team) to start!", show_alert=True)
+        return
+
+    await query.answer()
+
+    # Ask for explicit Yes/No confirmation before force-starting
+    confirm_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes, Force Start", callback_data="team_start_confirm_yes"),
+         InlineKeyboardButton("❌ No, Cancel", callback_data="team_start_confirm_no")]
+    ])
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(f"⚠️ <b>{html.escape(query.from_user.first_name)}</b> wants to force-start the match now, "
+                  f"skipping the rest of the join timer.\n\n"
+                  f"👥 <b>Players:</b> <code>{total_players}</code>\n\n"
+                  f"❓ Force start now?"),
+            parse_mode=ParseMode.HTML,
+            reply_markup=confirm_keyboard
+        )
+    except Exception as e:
+        logger.error(f"Failed to send force-start confirmation: {e}")
+
+
+async def team_start_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles Yes/No confirmation for force-starting the team lobby."""
+    query = update.callback_query
+    chat_id = query.message.chat.id
+    match = active_matches.get(chat_id)
+    choice = query.data  # "team_start_confirm_yes" or "team_start_confirm_no"
+
+    if not match or match.phase != GamePhase.TEAM_JOINING:
+        await query.answer("⚠️ This lobby is no longer active!", show_alert=True)
+        try:
+            await query.edit_message_text("⚠️ This confirmation has expired — the lobby is no longer active.")
+        except Exception:
+            pass
+        return
+
+    if not await _is_host_or_admin(context, chat_id, match, query.from_user.id):
+        await query.answer("🚫 Only the host or a group admin can confirm this!", show_alert=True)
+        return
+
+    if choice == "team_start_confirm_no":
+        await query.answer("❌ Force-start cancelled.")
+        try:
+            await query.edit_message_text("❌ <b>Force-start cancelled.</b> The lobby will continue normally.",
+                                           parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
         return
 
     total_players = len(match.team_x.players) + len(match.team_y.players)
@@ -5877,38 +5943,48 @@ async def team_start_now_callback(update: Update, context: ContextTypes.DEFAULT_
         return
 
     await query.answer("🚀 Starting now!")
+    try:
+        await query.edit_message_text("🚀 <b>Force-start confirmed!</b> Closing registration now...",
+                                       parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
     if match.join_phase_task:
         match.join_phase_task.cancel()
     await end_team_join_phase(context, chat_id, match)
-    """Countdown timer that updates the Board safely"""
+
+
+async def team_join_countdown(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
+    """Countdown timer that updates the board and auto-ends the lobby when time is up."""
     try:
         warning_sent = False
         while True:
-            # ✅ FIX: Agar Phase Joining nahi hai, to Timer band kar do
+            # Stop the timer if we've left the joining phase (e.g. force-started)
             if match.phase != GamePhase.TEAM_JOINING:
                 break
 
             remaining = match.team_join_end_time - time.time()
-            
+
             # 30 Seconds Warning
             if remaining <= 30 and remaining > 20 and not warning_sent:
                 await context.bot.send_message(
-                    group_id, 
-                    "⏰ <b>LAST CALL!</b> 30 seconds left to join!\n─────────────────\n👇 Tap below NOW → hurry up! 🏏", 
+                    group_id,
+                    "⏰ <b>LAST CALL!</b> 30 seconds left to join!\n─────────────────\n👇 Tap below NOW → hurry up! 🏏",
                     parse_mode=ParseMode.HTML
                 )
                 warning_sent = True
+
             if remaining <= 0:
                 await end_team_join_phase(context, group_id, match)
                 break
-            
-            # Wait 10 seconds
-            await asyncio.sleep(10)
-            
-            # ✅ FIX: Update karne se pehle phir check karo
+
+            # Wait up to 10 seconds, but don't overshoot the deadline
+            await asyncio.sleep(min(10, max(1, remaining)))
+
+            # Re-check phase before touching the board
             if match.phase == GamePhase.TEAM_JOINING:
                 await update_joining_board(context, group_id, match)
-            
+
     except asyncio.CancelledError:
         pass
     except Exception as e:
@@ -29088,6 +29164,7 @@ def main():
     application.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
     application.add_handler(CallbackQueryHandler(players_refresh_callback, pattern="^players_refresh_"))
     application.add_handler(CallbackQueryHandler(team_start_now_callback, pattern="^team_start_now$"))
+    application.add_handler(CallbackQueryHandler(team_start_confirm_callback, pattern="^team_start_confirm_(yes|no)$"))
     application.add_handler(CallbackQueryHandler(midauc_base_callback, pattern="^midauc_base_"))
     application.add_handler(CallbackQueryHandler(bulk_base_price_callback, pattern="^bulk_base_"))
 

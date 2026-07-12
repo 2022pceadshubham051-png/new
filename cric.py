@@ -1378,9 +1378,9 @@ def init_tournament_db():
     logger.info("✅ Tournament database initialized")
 
 
-def save_tour_state(group_id: int):
-    """Persist the in-progress tour state for one group so it survives restarts.
-    Called after every tour mutation (team edits, fixtures generated, result recorded)."""
+def _save_tour_state_sync(group_id: int):
+    """Actual blocking DB write — always run this inside a background thread,
+    never directly on the event loop (see save_tour_state below)."""
     try:
         conn = sqlite3.connect(TOURNAMENT_DB_PATH)
         c = conn.cursor()
@@ -1403,6 +1403,23 @@ def save_tour_state(group_id: int):
         conn.close()
     except Exception as e:
         logger.error(f"❌ Error saving tour state for {group_id}: {e}")
+
+
+def save_tour_state(group_id: int):
+    """Persist the in-progress tour state for one group so it survives restarts.
+    Called after every tour mutation (team edits, fixtures generated, result recorded).
+
+    🔧 SCALE FIX: this used to open a sqlite connection and write to disk
+    directly on the event loop. With many groups/tournaments running at
+    once, every single result/edit would freeze ball-detection and result
+    messages for EVERY other group for as long as the write took. Now the
+    actual DB write runs in a background thread, so the event loop is
+    never blocked."""
+    try:
+        asyncio.create_task(asyncio.to_thread(_save_tour_state_sync, group_id))
+    except RuntimeError:
+        # No running event loop (e.g. startup/shutdown code) — write inline.
+        _save_tour_state_sync(group_id)
 
 
 def load_tour_state():
@@ -11768,10 +11785,11 @@ async def end_solo_game_logic(context, chat_id, match):
         del active_matches[chat_id]
     
     # ✅ GENERATE AND SEND FINAL IMAGE FIRST
-    try:
-        await generate_solo_end_image_v2(context, chat_id, match)
-    except Exception as e:
-        logger.error(f"Error generating solo end image: {e}")
+    if "generate_solo_end_image_v2" in globals():
+        try:
+            await generate_solo_end_image_v2(context, chat_id, match)
+        except Exception as e:
+            logger.error(f"Error generating solo end image: {e}")
     
     await asyncio.sleep(2)
     
@@ -13451,26 +13469,27 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
         logger.info("📊 Sending scorecard...")
         
         # === TEAM MODE SCORECARD IMAGE ===
-        if match.game_mode == "TEAM":
-            # Note: Ensure 'generate_team_scorecard_image' function is defined
-            # If img is a PIL object, you might need to convert it to bytes (bio) first like:
-            # bio = io.BytesIO()
-            # img.save(bio, 'JPEG')
-            # bio.seek(0)
-            
-            img = generate_team_scorecard_image(match) 
-            
-            # Agar function direct image object return kar raha hai to use save karke bhejein:
-            import io
-            bio = io.BytesIO()
-            img.save(bio, 'PNG')
-            bio.seek(0)
+        # 🔧 BUG FIX: 'generate_team_scorecard_image' was never defined anywhere
+        # in this file, so this call crashed EVERY time a TEAM match ended —
+        # and because it was crashing inside the same try block as
+        # send_final_scorecard below, the real text scorecard never got sent
+        # either. Isolated in its own try/except now so a missing/failing
+        # image generator can never block the actual scorecard message.
+        if match.game_mode == "TEAM" and "generate_team_scorecard_image" in globals():
+            try:
+                img = generate_team_scorecard_image(match)
+                import io
+                bio = io.BytesIO()
+                img.save(bio, 'PNG')
+                bio.seek(0)
 
-            await context.bot.send_photo(
-                chat_id=match.group_id,
-                photo=bio,  # img object directly work nahi karega, bio use karein
-                parse_mode="HTML"
-            )
+                await context.bot.send_photo(
+                    chat_id=match.group_id,
+                    photo=bio,
+                    parse_mode="HTML"
+                )
+            except Exception as _img_e:
+                logger.error(f"❌ Team scorecard image error (skipped, text scorecard still sent): {_img_e}")
         # ---------------------------------
 
         await send_final_scorecard(context, group_id, match) # Existing Text Scorecard
@@ -14510,7 +14529,7 @@ def generate_solo_top3_image(sorted_players) -> Optional[BytesIO]:
 async def generate_team_end_image_v3(match, winner_name: str, context) -> Optional[BytesIO]:
     """Generate final match summary image - uses worm graph as summary."""
     try:
-        return generate_worm_graph(match)
+        return await asyncio.to_thread(generate_worm_graph, match)
     except Exception as e:
         logger.error(f"generate_team_end_image_v3 error: {e}")
         return None
@@ -16541,18 +16560,20 @@ async def send_potm_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, m
         player_stats[best_player.user_id] = _mom_stats
 
         # ✅ FIX: Also update DB directly right here
-        try:
-            _mom_conn = sqlite3.connect(DB_PATH)
-            _mom_c = _mom_conn.cursor()
-            _mom_c.execute(
-                "INSERT INTO user_stats (user_id, player_of_match_count) VALUES (?, 1) "
-                "ON CONFLICT(user_id) DO UPDATE SET player_of_match_count = player_of_match_count + 1",
-                (best_player.user_id,)
-            )
-            _mom_conn.commit()
-            _mom_conn.close()
-        except Exception as _mom_e:
-            logger.error(f"MOM DB update error: {_mom_e}")
+        def _update_mom_db(uid):
+            try:
+                _mom_conn = sqlite3.connect(DB_PATH)
+                _mom_c = _mom_conn.cursor()
+                _mom_c.execute(
+                    "INSERT INTO user_stats (user_id, player_of_match_count) VALUES (?, 1) "
+                    "ON CONFLICT(user_id) DO UPDATE SET player_of_match_count = player_of_match_count + 1",
+                    (uid,)
+                )
+                _mom_conn.commit()
+                _mom_conn.close()
+            except Exception as _mom_e:
+                logger.error(f"MOM DB update error: {_mom_e}")
+        await asyncio.to_thread(_update_mom_db, best_player.user_id)
 
         player_tag = get_user_tag(best_player)
         
@@ -17224,106 +17245,114 @@ async def update_player_stats_after_match(match: Match, winner: Team, loser: Tea
         player_stats[user_id] = stats
 
     # ── sync to DB ──
-    try:
-        conn_s = sqlite3.connect(DB_PATH)
-        cs = conn_s.cursor()
-        for player in all_players:
-            uid   = player.user_id
-            is_w  = 1 if (winner and player in winner.players) else 0
-            _sixes    = getattr(player, 'sixes', 0)
-            _fours    = getattr(player, 'boundaries', 0)
-            _dots     = getattr(player, 'dot_balls_faced', 0)
-            _is_duck  = 1 if (player.runs == 0 and player.balls_faced > 0 and player.is_out) else 0
-            _is_100   = 1 if player.runs >= 100 else 0
-            _is_50    = 1 if 50 <= player.runs < 100 else 0
-            _is_fifer = 1 if player.balls_bowled > 0 and player.wickets >= 5 else 0
+    # 🔧 SCALE FIX: this used to run a full upsert query per player directly
+    # on the event loop, every single time ANY match ended in ANY group.
+    # With hundreds of groups finishing matches around the same time, this
+    # was blocking ball-detection/messages everywhere else. Now it runs in
+    # a background thread.
+    def _sync_player_stats_to_db(all_players, winner):
+        try:
+            conn_s = sqlite3.connect(DB_PATH)
+            cs = conn_s.cursor()
+            for player in all_players:
+                uid   = player.user_id
+                is_w  = 1 if (winner and player in winner.players) else 0
+                _sixes    = getattr(player, 'sixes', 0)
+                _fours    = getattr(player, 'boundaries', 0)
+                _dots     = getattr(player, 'dot_balls_faced', 0)
+                _is_duck  = 1 if (player.runs == 0 and player.balls_faced > 0 and player.is_out) else 0
+                _is_100   = 1 if player.runs >= 100 else 0
+                _is_50    = 1 if 50 <= player.runs < 100 else 0
+                _is_fifer = 1 if player.balls_bowled > 0 and player.wickets >= 5 else 0
 
-            cs.execute("""
-                INSERT INTO user_stats
-                    (user_id, username, first_name,
-                     matches_played, matches_won,
-                     total_runs, total_balls_faced,
-                     total_wickets, total_balls_bowled,
-                     total_sixes, total_fours,
-                     highest_score, total_hundreds,
-                     total_fifties, total_ducks, total_dots,
-                     best_bowling_wickets, best_bowling_runs,
-                     five_wicket_hauls,
-                     team_matches_played, team_matches_won,
-                     team_total_runs, team_total_balls_faced,
-                     team_total_wickets, team_total_balls_bowled,
-                     team_total_sixes, team_total_fours,
-                     team_highest_score, team_total_hundreds,
-                     team_total_fifties, team_total_ducks, team_total_dots)
-                VALUES (?,?,?,
-                        1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                        1,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    username              = excluded.username,
-                    first_name            = excluded.first_name,
-                    matches_played        = matches_played + 1,
-                    matches_won           = matches_won + ?,
-                    total_runs            = total_runs + ?,
-                    total_balls_faced     = total_balls_faced + ?,
-                    total_wickets         = total_wickets + ?,
-                    total_balls_bowled    = total_balls_bowled + ?,
-                    total_sixes           = total_sixes + ?,
-                    total_fours           = total_fours + ?,
-                    highest_score         = MAX(highest_score, ?),
-                    total_hundreds        = total_hundreds + ?,
-                    total_fifties         = total_fifties + ?,
-                    total_ducks           = total_ducks + ?,
-                    total_dots            = total_dots + ?,
-                    best_bowling_wickets  = CASE WHEN ? > best_bowling_wickets THEN ? ELSE best_bowling_wickets END,
-                    best_bowling_runs     = CASE WHEN ? > best_bowling_wickets THEN ? WHEN ? = best_bowling_wickets THEN MIN(best_bowling_runs, ?) ELSE best_bowling_runs END,
-                    five_wicket_hauls     = five_wicket_hauls + ?,
-                    team_matches_played   = team_matches_played + 1,
-                    team_matches_won      = team_matches_won + ?,
-                    team_total_runs       = team_total_runs + ?,
-                    team_total_balls_faced= team_total_balls_faced + ?,
-                    team_total_wickets    = team_total_wickets + ?,
-                    team_total_balls_bowled=team_total_balls_bowled + ?,
-                    team_total_sixes      = team_total_sixes + ?,
-                    team_total_fours      = team_total_fours + ?,
-                    team_highest_score    = MAX(team_highest_score, ?),
-                    team_total_hundreds   = team_total_hundreds + ?,
-                    team_total_fifties    = team_total_fifties + ?,
-                    team_total_ducks      = team_total_ducks + ?,
-                    team_total_dots       = team_total_dots + ?
-            """, (
-                # INSERT values
-                uid, player.username or "", player.first_name,
-                # flat insert
-                is_w, player.runs, player.balls_faced,
-                player.wickets, player.balls_bowled,
-                _sixes, _fours,
-                player.runs, _is_100, _is_50, _is_duck, _dots,
-                player.wickets, player.runs_conceded,
-                _is_fifer,
-                # team insert
-                is_w, player.runs, player.balls_faced,
-                player.wickets, player.balls_bowled,
-                _sixes, _fours,
-                player.runs, _is_100, _is_50, _is_duck, _dots,
-                # ON CONFLICT flat update params
-                is_w, player.runs, player.balls_faced,
-                player.wickets, player.balls_bowled,
-                _sixes, _fours,
-                player.runs, _is_100, _is_50, _is_duck, _dots,
-                # best bowling update (needs wickets x3, runs x2)
-                player.wickets, player.wickets,
-                player.wickets, player.runs_conceded, player.wickets, player.runs_conceded,
-                _is_fifer,
-                # ON CONFLICT team update params
-                is_w, player.runs, player.balls_faced,
-                player.wickets, player.balls_bowled,
-                _sixes, _fours,
-                player.runs, _is_100, _is_50, _is_duck, _dots,
-            ))
-        conn_s.commit()
-        conn_s.close()
-    except Exception as db_e:
-        logger.error(f"DB sync error in update_player_stats: {db_e}")
+                cs.execute("""
+                    INSERT INTO user_stats
+                        (user_id, username, first_name,
+                         matches_played, matches_won,
+                         total_runs, total_balls_faced,
+                         total_wickets, total_balls_bowled,
+                         total_sixes, total_fours,
+                         highest_score, total_hundreds,
+                         total_fifties, total_ducks, total_dots,
+                         best_bowling_wickets, best_bowling_runs,
+                         five_wicket_hauls,
+                         team_matches_played, team_matches_won,
+                         team_total_runs, team_total_balls_faced,
+                         team_total_wickets, team_total_balls_bowled,
+                         team_total_sixes, team_total_fours,
+                         team_highest_score, team_total_hundreds,
+                         team_total_fifties, team_total_ducks, team_total_dots)
+                    VALUES (?,?,?,
+                            1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                            1,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        username              = excluded.username,
+                        first_name            = excluded.first_name,
+                        matches_played        = matches_played + 1,
+                        matches_won           = matches_won + ?,
+                        total_runs            = total_runs + ?,
+                        total_balls_faced     = total_balls_faced + ?,
+                        total_wickets         = total_wickets + ?,
+                        total_balls_bowled    = total_balls_bowled + ?,
+                        total_sixes           = total_sixes + ?,
+                        total_fours           = total_fours + ?,
+                        highest_score         = MAX(highest_score, ?),
+                        total_hundreds        = total_hundreds + ?,
+                        total_fifties         = total_fifties + ?,
+                        total_ducks           = total_ducks + ?,
+                        total_dots            = total_dots + ?,
+                        best_bowling_wickets  = CASE WHEN ? > best_bowling_wickets THEN ? ELSE best_bowling_wickets END,
+                        best_bowling_runs     = CASE WHEN ? > best_bowling_wickets THEN ? WHEN ? = best_bowling_wickets THEN MIN(best_bowling_runs, ?) ELSE best_bowling_runs END,
+                        five_wicket_hauls     = five_wicket_hauls + ?,
+                        team_matches_played   = team_matches_played + 1,
+                        team_matches_won      = team_matches_won + ?,
+                        team_total_runs       = team_total_runs + ?,
+                        team_total_balls_faced= team_total_balls_faced + ?,
+                        team_total_wickets    = team_total_wickets + ?,
+                        team_total_balls_bowled=team_total_balls_bowled + ?,
+                        team_total_sixes      = team_total_sixes + ?,
+                        team_total_fours      = team_total_fours + ?,
+                        team_highest_score    = MAX(team_highest_score, ?),
+                        team_total_hundreds   = team_total_hundreds + ?,
+                        team_total_fifties    = team_total_fifties + ?,
+                        team_total_ducks      = team_total_ducks + ?,
+                        team_total_dots       = team_total_dots + ?
+                """, (
+                    # INSERT values
+                    uid, player.username or "", player.first_name,
+                    # flat insert
+                    is_w, player.runs, player.balls_faced,
+                    player.wickets, player.balls_bowled,
+                    _sixes, _fours,
+                    player.runs, _is_100, _is_50, _is_duck, _dots,
+                    player.wickets, player.runs_conceded,
+                    _is_fifer,
+                    # team insert
+                    is_w, player.runs, player.balls_faced,
+                    player.wickets, player.balls_bowled,
+                    _sixes, _fours,
+                    player.runs, _is_100, _is_50, _is_duck, _dots,
+                    # ON CONFLICT flat update params
+                    is_w, player.runs, player.balls_faced,
+                    player.wickets, player.balls_bowled,
+                    _sixes, _fours,
+                    player.runs, _is_100, _is_50, _is_duck, _dots,
+                    # best bowling update (needs wickets x3, runs x2)
+                    player.wickets, player.wickets,
+                    player.wickets, player.runs_conceded, player.wickets, player.runs_conceded,
+                    _is_fifer,
+                    # ON CONFLICT team update params
+                    is_w, player.runs, player.balls_faced,
+                    player.wickets, player.balls_bowled,
+                    _sixes, _fours,
+                    player.runs, _is_100, _is_50, _is_duck, _dots,
+                ))
+            conn_s.commit()
+            conn_s.close()
+        except Exception as db_e:
+            logger.error(f"DB sync error in update_player_stats: {db_e}")
+
+    await asyncio.to_thread(_sync_player_stats_to_db, all_players, winner)
 
     save_data()
 
@@ -17428,8 +17457,10 @@ def check_achievements(player: Player):
     if player.balls_bowled >= 12 and player.get_economy() < 5 and "Economical" not in user_achievements:
         user_achievements.append("Economical")
 
-async def save_match_to_history(match, winner_team: str):
-    """Save team match stats to database"""
+def _save_match_to_history_sync(match, winner_team: str):
+    """All the blocking DB work for save_match_to_history — always run via
+    asyncio.to_thread. This runs at the end of EVERY team match in EVERY
+    group, so keeping it off the event loop matters a lot at scale."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
@@ -17532,6 +17563,11 @@ async def save_match_to_history(match, winner_team: str):
     
     conn.commit()
     conn.close()
+
+
+async def save_match_to_history(match, winner_team: str):
+    """Save team match stats to database"""
+    await asyncio.to_thread(_save_match_to_history_sync, match, winner_team)
 
 
 def build_team_stats_text(user_id: int, user_name: str) -> str:
@@ -17775,15 +17811,12 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.answer()
 
-async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Optional[bytes] = None, mode: str = "overall") -> Optional[BytesIO]:
-    """
-    ✅ TEMPLATE-BASED mystats card.
-    Uses mystats_template.jpg as background and overlays:
-      - Player pfp in the circular area (right side)
-      - Player name below the crown (top area)
-      - Stats (matches, runs, wickets, 50/100, strike rate, highest score)
-        at the exact positions shown in the template
-    """
+def _render_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Optional[bytes], mode: str) -> Optional[BytesIO]:
+    """Actual blocking PIL work for the mystats/scorecard card.
+    Always call this via asyncio.to_thread — never directly on the event
+    loop — since the 3x supersampled compositing here can take a real
+    chunk of CPU time and used to freeze every group's live game while
+    one group's scorecard was being drawn."""
     try:
         import os
         from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -17903,6 +17936,22 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
         return None
 
 
+async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Optional[bytes] = None, mode: str = "overall") -> Optional[BytesIO]:
+    """
+    ✅ TEMPLATE-BASED mystats card.
+    Uses mystats_template.jpg as background and overlays:
+      - Player pfp in the circular area (right side)
+      - Player name below the crown (top area)
+      - Stats (matches, runs, wickets, 50/100, strike rate, highest score)
+        at the exact positions shown in the template
+
+    🔧 SCALE FIX: the actual PIL drawing now runs in a background thread
+    via _render_stats_image, so building one group's scorecard never
+    stalls ball-detection/messages in every other group.
+    """
+    return await asyncio.to_thread(_render_stats_image, user_id, name, stats, avatar_bytes, mode)
+
+
 
 def fetch_overall_stats(user_id: int) -> dict:
     """Fetch overall player statistics from user_stats and calculate derived values."""
@@ -17998,8 +18047,10 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # ── Default view is Team stats ──
-    stats = fetch_team_stats_for_card(user_id)
-    caption = build_team_stats_text(user_id, user_name)
+    # 🔧 SCALE FIX: these do direct sqlite3 queries; run off the event loop
+    # so other groups' games don't stall while this card is built.
+    stats = await asyncio.to_thread(fetch_team_stats_for_card, user_id)
+    caption = await asyncio.to_thread(build_team_stats_text, user_id, user_name)
 
     wait_msg = await send_photo_generation_status(
         update,
@@ -21105,6 +21156,37 @@ async def end_auction(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction:
         del active_auctions[chat_id]
 
 
+def _fetch_stats_view_data(target_id: int):
+    """Blocking DB reads for stats_view_callback — always call this via
+    asyncio.to_thread, never directly on the event loop."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("SELECT * FROM user_stats WHERE user_id = ?", (target_id,))
+    db_stats = c.fetchone()
+
+    # Count solo matches
+    c.execute("""
+        SELECT COUNT(*) FROM match_history 
+        WHERE match_type = 'SOLO' 
+        AND (player_of_match = ? OR group_id IN 
+            (SELECT group_id FROM match_history WHERE match_type = 'SOLO'))
+    """, (target_id,))
+    row = c.fetchone()
+    solo_matches = row[0] if row else 0
+
+    # Count solo wins (top 3 finishes)
+    c.execute("""
+        SELECT COUNT(*) FROM match_history 
+        WHERE match_type = 'SOLO' AND player_of_match = ?
+    """, (target_id,))
+    row = c.fetchone()
+    solo_wins = row[0] if row else 0
+
+    conn.close()
+    return db_stats, solo_matches, solo_wins
+
+
 async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles Stats Menu Clicks with Tree-Style Formatting - DATABASE VERSION"""
     query = update.callback_query
@@ -21118,29 +21200,9 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     # ========== FETCH FROM DATABASE ==========
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    c.execute("SELECT * FROM user_stats WHERE user_id = ?", (target_id,))
-    db_stats = c.fetchone()
-    
-    # Count solo matches
-    c.execute("""
-        SELECT COUNT(*) FROM match_history 
-        WHERE match_type = 'SOLO' 
-        AND (player_of_match = ? OR group_id IN 
-            (SELECT group_id FROM match_history WHERE match_type = 'SOLO'))
-    """, (target_id,))
-    solo_matches = c.fetchone()[0] if c.fetchone() else 0
-    
-    # Count solo wins (top 3 finishes)
-    c.execute("""
-        SELECT COUNT(*) FROM match_history 
-        WHERE match_type = 'SOLO' AND player_of_match = ?
-    """, (target_id,))
-    solo_wins = c.fetchone()[0] if c.fetchone() else 0
-    
-    conn.close()
+    # 🔧 SCALE FIX: runs in a background thread so this group's stats lookup
+    # never blocks ball-processing/messages in other groups.
+    db_stats, solo_matches, solo_wins = await asyncio.to_thread(_fetch_stats_view_data, target_id)
     
     # Get Player Name
     try:
@@ -21563,22 +21625,14 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(_do_broadcast())
 
-async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🏏 Enhanced bot statistics with group info — OWNER ONLY"""
-    user = update.effective_user
-    if user.id != OWNER_ID:
-        await update.message.reply_text(
-            "🚫 <b>Access Denied!</b>\n\nOnly the bot owner can view bot stats.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    start_time = time.time()
-    msg = await update.message.reply_text("⏳ <b>Fetching stats...</b>", parse_mode=ParseMode.HTML)
-    ping_ms = round((time.time() - start_time) * 1000, 2)
-    
+def _fetch_botstats_data():
+    """All the blocking sqlite reads for /botstats — always call via
+    asyncio.to_thread, never directly on the event loop (owner-only command,
+    but a dozen sequential queries here used to freeze every group's game
+    for however long this took)."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
+
     # User stats from DB
     c.execute('SELECT COUNT(DISTINCT user_id) FROM user_stats')
     db_users = c.fetchone()[0] or 0
@@ -21601,6 +21655,44 @@ async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ✅ FIX: Count DM users (users table = all users who started/messaged bot)
     c.execute('SELECT COUNT(DISTINCT user_id) FROM users')
     db_dm_users = c.fetchone()[0] or 0
+
+    # Group stats
+    try:
+        c.execute('SELECT COUNT(*) FROM groups')
+        total_groups = c.fetchone()[0] or 0
+    except:
+        total_groups = len(registered_groups)
+
+    # AI match stats
+    try:
+        c.execute('SELECT COUNT(*), SUM(total_matches), SUM(wins) FROM ai_stats')
+        ai_row = c.fetchone()
+        ai_players = ai_row[0] or 0
+        ai_total = ai_row[1] or 0
+        ai_wins = ai_row[2] or 0
+    except:
+        ai_players = ai_total = ai_wins = 0
+
+    conn.close()
+    return (db_users, db_matches, db_runs, db_wickets, db_sixes, db_fours,
+            db_dm_users, total_groups, ai_players, ai_total, ai_wins)
+
+
+async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🏏 Enhanced bot statistics with group info — OWNER ONLY"""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text(
+            "🚫 <b>Access Denied!</b>\n\nOnly the bot owner can view bot stats.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    start_time = time.time()
+    msg = await update.message.reply_text("⏳ <b>Fetching stats...</b>", parse_mode=ParseMode.HTML)
+    ping_ms = round((time.time() - start_time) * 1000, 2)
+    
+    (db_users, db_matches, db_runs, db_wickets, db_sixes, db_fours,
+     db_dm_users, total_groups, ai_players, ai_total, ai_wins) = await asyncio.to_thread(_fetch_botstats_data)
     
     # Also check player_stats in-memory (some data may only be there)
     mem_users = len(player_stats)
@@ -21619,25 +21711,6 @@ async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_sixes = db_sixes
     total_fours = db_fours
     
-    # Group stats
-    try:
-        c.execute('SELECT COUNT(*) FROM groups')
-        total_groups = c.fetchone()[0] or 0
-    except:
-        total_groups = len(registered_groups)
-    
-    # AI match stats
-    try:
-        c.execute('SELECT COUNT(*), SUM(total_matches), SUM(wins) FROM ai_stats')
-        ai_row = c.fetchone()
-        ai_players = ai_row[0] or 0
-        ai_total = ai_row[1] or 0
-        ai_wins = ai_row[2] or 0
-    except:
-        ai_players = ai_total = ai_wins = 0
-    
-    conn.close()
-    
     # Active matches and auctions
     active_match_count = len(active_matches)
     active_auction_count = len(active_auctions)
@@ -21650,7 +21723,7 @@ async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cpu = memory = disk = 0
     if psutil:
         try:
-            cpu = psutil.cpu_percent(interval=0.1)
+            cpu = await asyncio.to_thread(psutil.cpu_percent, 0.1)
             memory = psutil.virtual_memory().percent
             disk = psutil.disk_usage('/').percent
         except:
@@ -26202,6 +26275,41 @@ async def reglist_next_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query.data = f"reglist_page_{group_id}_{page_idx}"
     await reglist_page_callback(update, context)
 
+def _check_tournament_power_user_db(user_id: int, group_id: int) -> bool:
+    conn_chk = sqlite3.connect(TOURNAMENT_DB_PATH)
+    c_chk = conn_chk.cursor()
+    c_chk.execute(
+        'SELECT user_id FROM tournament_power_users WHERE user_id = ? AND group_id = ?',
+        (user_id, group_id)
+    )
+    has_power = c_chk.fetchone()
+    conn_chk.close()
+    return bool(has_power)
+
+
+def _fetch_registeredlist_data(group_id: int):
+    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        'SELECT user_id, username, full_name, base_price, registered_at '
+        'FROM registered_players WHERE group_id = ? ORDER BY base_price DESC, registered_at',
+        (group_id,)
+    )
+    players = c.fetchall()
+    c.execute('SELECT group_name FROM tournament_groups WHERE group_id = ?', (group_id,))
+    res = c.fetchone()
+    group_name = res[0] if res else "Unknown Group"
+
+    # Also fetch registration period info
+    c.execute(
+        'SELECT end_date, tournament_name FROM registration_periods WHERE group_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1',
+        (group_id,)
+    )
+    reg_info = c.fetchone()
+    conn.close()
+    return players, group_name, reg_info
+
+
 async def registeredlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏏 Show registered players list with Prev/Next/Close pagination"""
     user_id = update.effective_user.id
@@ -26229,14 +26337,7 @@ async def registeredlist_command(update: Update, context: ContextTypes.DEFAULT_T
             if member.status not in ['creator', 'administrator']:
                 # Also allow TOURNAMENT_POWER_USERS
                 if (user_id, group_id) not in TOURNAMENT_POWER_USERS:
-                    conn_chk = sqlite3.connect(TOURNAMENT_DB_PATH)
-                    c_chk = conn_chk.cursor()
-                    c_chk.execute(
-                        'SELECT user_id FROM tournament_power_users WHERE user_id = ? AND group_id = ?',
-                        (user_id, group_id)
-                    )
-                    has_power = c_chk.fetchone()
-                    conn_chk.close()
+                    has_power = await asyncio.to_thread(_check_tournament_power_user_db, user_id, group_id)
                     if not has_power:
                         await update.message.reply_text(
                             "🏏 <b>Admin Only!</b>\nOnly group admins can use this command.",
@@ -26248,25 +26349,8 @@ async def registeredlist_command(update: Update, context: ContextTypes.DEFAULT_T
             return
 
     # ── Fetch data ──
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        'SELECT user_id, username, full_name, base_price, registered_at '
-        'FROM registered_players WHERE group_id = ? ORDER BY base_price DESC, registered_at',
-        (group_id,)
-    )
-    players = c.fetchall()
-    c.execute('SELECT group_name FROM tournament_groups WHERE group_id = ?', (group_id,))
-    res = c.fetchone()
-    group_name = res[0] if res else "Unknown Group"
-
-    # Also fetch registration period info
-    c.execute(
-        'SELECT end_date, tournament_name FROM registration_periods WHERE group_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1',
-        (group_id,)
-    )
-    reg_info = c.fetchone()
-    conn.close()
+    # 🔧 SCALE FIX: run off the event loop so this doesn't stall other groups' games.
+    players, group_name, reg_info = await asyncio.to_thread(_fetch_registeredlist_data, group_id)
 
     if not players:
         reg_status = ""
@@ -27026,7 +27110,7 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     metric = "runs"
     offset = 0
     PAGE_SIZE = 10
-    title, rows, total = _lb_query(metric, offset, PAGE_SIZE)
+    title, rows, total = await asyncio.to_thread(_lb_query, metric, offset, PAGE_SIZE)
 
     text  = "🏆 <b>CRICOVERSE GLOBAL LEADERBOARD</b>\n"
     text += "─────────────────\n"
@@ -27176,7 +27260,7 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         offset = 0
 
     PAGE_SIZE = 10
-    title, rows, total = _lb_query(metric, offset, PAGE_SIZE)
+    title, rows, total = await asyncio.to_thread(_lb_query, metric, offset, PAGE_SIZE)
 
     medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
     lines = []
@@ -29028,6 +29112,7 @@ def main():
         .read_timeout(60)
         .write_timeout(60)
         .connect_timeout(60)
+        .concurrent_updates(256)
         .build()
     )
 

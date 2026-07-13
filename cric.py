@@ -1752,6 +1752,47 @@ def format_name_with_jersey(user_id: int, name: str) -> str:
     return name
 
 
+def jersey_number_prefix(user_id: int) -> str:
+    """Returns '(#18) ' if the user has a jersey number set, else ''. Used for compact join lists."""
+    number = user_data.get(user_id, {}).get("jersey_number")
+    if number:
+        return f"(#{number}) "
+    return ""
+
+
+def find_user_id_by_jersey(number: int) -> Optional[int]:
+    """Look up a user_id by their jersey number. Returns None if unclaimed."""
+    for uid, data in user_data.items():
+        if data.get("jersey_number") == number:
+            return uid
+    return None
+
+
+# ── Jersey inactivity retirement settings ──
+JERSEY_WARNING_DAYS = 60   # DM warning after this many days of inactivity
+JERSEY_RETIRE_DAYS = 90    # number auto-released after this many days of inactivity
+JERSEY_SWAP_COOLDOWN_HOURS = 24  # one swap request per requester per day
+
+
+def touch_jersey_activity(user_ids) -> None:
+    """Marks the given user_ids as 'active today' — call this whenever they finish a match.
+    Keeps their jersey number safe from inactivity auto-release."""
+    now_iso = datetime.now().isoformat()
+    changed = False
+    for uid in user_ids:
+        if uid is None:
+            continue
+        if uid not in user_data:
+            continue
+        user_data[uid]["jersey_last_active"] = now_iso
+        # Clear any pending inactivity warning since they've played again
+        if user_data[uid].get("jersey_warned_at"):
+            user_data[uid]["jersey_warned_at"] = None
+        changed = True
+    if changed:
+        save_data()
+
+
 def init_player_stats(user_id: int):
     """Initialize stats structure"""
     default_team = {
@@ -2755,6 +2796,12 @@ def save_match_stats(match, winner_team, loser_team):
         except Exception as db_err:
             logger.error(f"Team stats DB sync error: {db_err}")
         
+        # 🎽 Mark all participants as active today so their jersey numbers stay safe
+        try:
+            touch_jersey_activity([p.user_id for p in _all_team_players])
+        except Exception as jersey_err:
+            logger.error(f"Jersey activity touch error: {jersey_err}")
+
         logger.info("✅ Match stats saved with complete tracking")
         
     except Exception as e:
@@ -5777,7 +5824,8 @@ async def update_solo_board(context, chat_id, match):
     msg += "┌───────────────────────\n"
     if match.solo_players:
         for i, p in enumerate(match.solo_players, 1):
-            ptag = f'<a href=\"tg://user?id={p.user_id}\">{p.first_name}</a>'
+            jnum = jersey_number_prefix(p.user_id)
+            ptag = f'<a href=\"tg://user?id={p.user_id}\">{jnum}{p.first_name}</a>'
             crown = " 👑" if match.host_id and p.user_id == match.host_id else ""
             emoji = number_emojis[i-1] if i <= len(number_emojis) else f"{i}."
             msg += f"├ {emoji} {ptag}{crown}\n"
@@ -5859,7 +5907,8 @@ def get_team_join_message(match: Match) -> str:
     if match.team_x.players:
         for i, p in enumerate(match.team_x.players, 1):
             crown = "👑" if p.user_id == match.team_x.captain_id else "🔹"
-            msg += f" {crown} <b>{i}.</b> {p.first_name}\n"
+            jnum = jersey_number_prefix(p.user_id)
+            msg += f" {crown} <b>{i}.</b> {jnum}{p.first_name}\n"
     else:
         msg += "  ⏳ <i>Waiting for players...</i>\n"
     
@@ -5873,7 +5922,8 @@ def get_team_join_message(match: Match) -> str:
     if match.team_y.players:
         for i, p in enumerate(match.team_y.players, 1):
             crown = "👑" if p.user_id == match.team_y.captain_id else "🔸"
-            msg += f" {crown} <b>{i}.</b> {p.first_name}\n"
+            jnum = jersey_number_prefix(p.user_id)
+            msg += f" {crown} <b>{i}.</b> {jnum}{p.first_name}\n"
     else:
         msg += "  ⏳ <i>Waiting for players...</i>\n"
     
@@ -9098,6 +9148,12 @@ async def save_solo_match_stats(match):
     
     conn.commit()
     conn.close()
+
+    # 🎽 Mark all participants as active today so their jersey numbers stay safe
+    try:
+        touch_jersey_activity(list(match.solo_players.keys()))
+    except Exception as jersey_err:
+        logger.error(f"Jersey activity touch error: {jersey_err}")
 
 async def bangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -17805,17 +17861,24 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     number = int(raw)
 
     # 🎽 Ensure this number isn't already taken by someone else
-    for other_id, other_data in user_data.items():
-        if other_id != user_id and other_data.get("jersey_number") == number:
-            taken_name = other_data.get("first_name", "another player")
-            await update.message.reply_text(
-                f"🚫 <b>Number Taken!</b>\n"
-                f"─────────────────\n"
-                f"🎽 #{number} is already worn by <b>{html.escape(taken_name)}</b>.\n"
-                f"<i>Please choose a different number (1-999).</i>",
-                parse_mode=ParseMode.HTML
-            )
-            return
+    holder_id = find_user_id_by_jersey(number)
+    if holder_id is not None and holder_id != user_id:
+        holder_data = user_data.get(holder_id, {})
+        holder_name = holder_data.get("first_name", "another player")
+        holder_tag = f'<a href="tg://user?id={holder_id}">{html.escape(holder_name)}</a>'
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔁 Request Swap", callback_data=f"jswap_req_{holder_id}_{number}")
+        ]])
+        await update.message.reply_text(
+            f"🚫 <b>Number Taken!</b>\n"
+            f"─────────────────\n"
+            f"🎽 #{number} is already worn by {holder_tag}.\n"
+            f"<i>Please choose a different number (1-999), or send them a swap request below.</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+        return
 
     # Ensure user profile exists (edge case: /jersey before any /start)
     if user_id not in user_data:
@@ -17829,6 +17892,8 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         init_player_stats(user_id)
 
     user_data[user_id]["jersey_number"] = number
+    user_data[user_id]["jersey_last_active"] = datetime.now().isoformat()
+    user_data[user_id]["jersey_warned_at"] = None
     save_data()
 
     await update.message.reply_text(
@@ -17840,11 +17905,246 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def jersey_inactivity_job(context: ContextTypes.DEFAULT_TYPE):
+    """🎽 Runs daily. Frees up jersey numbers from players inactive for 90+ days,
+    so popular numbers (7, 10, 18, 1...) don't get locked forever.
+    DMs a warning at 60 days of inactivity, then releases the number at 90 days."""
+    now = datetime.now()
+    changed = False
+
+    for uid, data in list(user_data.items()):
+        number = data.get("jersey_number")
+        if not number:
+            continue
+
+        last_active_raw = data.get("jersey_last_active")
+        if last_active_raw:
+            try:
+                last_active = datetime.fromisoformat(last_active_raw)
+            except Exception:
+                last_active = data.get("started_at")
+                last_active = datetime.fromisoformat(last_active) if last_active else now
+        else:
+            # No activity recorded yet — fall back to when they joined, or set it now
+            started_raw = data.get("started_at")
+            if started_raw:
+                try:
+                    last_active = datetime.fromisoformat(started_raw)
+                except Exception:
+                    last_active = now
+            else:
+                last_active = now
+            data["jersey_last_active"] = last_active.isoformat()
+            changed = True
+
+        days_inactive = (now - last_active).days
+
+        if days_inactive >= JERSEY_RETIRE_DAYS:
+            # 🚫 Release the number
+            data["jersey_number"] = None
+            data["jersey_warned_at"] = None
+            changed = True
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        f"🎽 <b>Jersey Number Released</b>\n"
+                        f"─────────────────\n"
+                        f"Your number <b>#{number}</b> has been released after "
+                        f"{JERSEY_RETIRE_DAYS}+ days of inactivity.\n"
+                        f"<i>Play a match and grab a new number anytime with /jersey.</i>"
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+
+        elif days_inactive >= JERSEY_WARNING_DAYS and not data.get("jersey_warned_at"):
+            # ⚠️ Send a one-time warning DM
+            data["jersey_warned_at"] = now.isoformat()
+            changed = True
+            days_left = JERSEY_RETIRE_DAYS - days_inactive
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        f"⚠️ <b>Your Jersey Number May Be Released Soon</b>\n"
+                        f"─────────────────\n"
+                        f"You've been inactive for {days_inactive} days and your number "
+                        f"<b>#{number}</b> will be released in about {days_left} days if "
+                        f"you don't play a match.\n"
+                        f"<i>Stay active to keep it!</i>"
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+
+    if changed:
+        save_data()
+
+
+async def jersey_swap_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔁 Handles jersey swap request/accept/decline flow.
+    Callback data formats:
+      jswap_req_{holder_id}_{number}      -> requester wants holder's number
+      jswap_yes_{requester_id}_{number}   -> holder accepts (DM button)
+      jswap_no_{requester_id}_{number}    -> holder declines (DM button)
+    """
+    query = update.callback_query
+    requester = query.from_user
+    parts = query.data.split("_")
+    action = parts[1]  # req / yes / no
+
+    if action == "req":
+        holder_id = int(parts[2])
+        number = int(parts[3])
+        requester_id = requester.id
+
+        if requester_id == holder_id:
+            await query.answer("You already own this number!", show_alert=True)
+            return
+
+        # Requester must currently hold a jersey number themselves to swap
+        my_number = user_data.get(requester_id, {}).get("jersey_number")
+
+        # ── One swap request per requester per day ──
+        last_req_at = user_data.get(requester_id, {}).get("jersey_last_swap_request_at")
+        if last_req_at:
+            try:
+                elapsed_hours = (datetime.now() - datetime.fromisoformat(last_req_at)).total_seconds() / 3600
+            except Exception:
+                elapsed_hours = JERSEY_SWAP_COOLDOWN_HOURS
+            if elapsed_hours < JERSEY_SWAP_COOLDOWN_HOURS:
+                remaining_h = round(JERSEY_SWAP_COOLDOWN_HOURS - elapsed_hours, 1)
+                await query.answer(
+                    f"You can only send 1 swap request per day. Try again in ~{remaining_h}h.",
+                    show_alert=True
+                )
+                return
+
+        # Verify the number is still held by holder_id
+        current_holder = find_user_id_by_jersey(number)
+        if current_holder != holder_id:
+            await query.answer("That number is no longer held by them. Try /jersey again.", show_alert=True)
+            return
+
+        if requester_id not in user_data:
+            user_data[requester_id] = {
+                "user_id": requester_id,
+                "username": requester.username or "",
+                "first_name": requester.first_name,
+                "started_at": datetime.now().isoformat(),
+                "total_matches": 0
+            }
+            init_player_stats(requester_id)
+
+        user_data[requester_id]["jersey_last_swap_request_at"] = datetime.now().isoformat()
+        save_data()
+
+        await query.answer("Swap request sent! Waiting for their confirmation.", show_alert=True)
+
+        requester_tag = f'<a href="tg://user?id={requester_id}">{html.escape(requester.first_name)}</a>'
+        my_number_text = f"#{my_number}" if my_number else "no jersey number yet"
+        dm_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Accept Swap", callback_data=f"jswap_yes_{requester_id}_{number}"),
+            InlineKeyboardButton("❌ Decline", callback_data=f"jswap_no_{requester_id}_{number}")
+        ]])
+        try:
+            await context.bot.send_message(
+                chat_id=holder_id,
+                text=(
+                    f"🔁 <b>Jersey Swap Request!</b>\n"
+                    f"─────────────────\n"
+                    f"{requester_tag} wants your <b>🎽 #{number}</b>.\n"
+                    f"They currently wear <b>{my_number_text}</b>, which would become yours if you accept.\n"
+                    f"─────────────────\n"
+                    f"<i>Confirm below to swap numbers.</i>"
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=dm_keyboard
+            )
+        except Exception:
+            await query.message.reply_text(
+                "⚠️ Couldn't DM the number holder — ask them to start the bot in DM first.",
+                parse_mode=ParseMode.HTML
+            )
+        return
+
+    # ── Holder responding from their DM ──
+    requester_id = int(parts[2])
+    number = int(parts[3])
+    holder_id = requester.id  # whoever tapped the button in their own DM
+
+    if action == "no":
+        try:
+            await query.edit_message_text("❌ <b>Swap declined.</b>", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=requester_id,
+                text=f"❌ Your swap request for 🎽 #{number} was declined.",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+        return
+
+    # action == "yes"
+    current_holder = find_user_id_by_jersey(number)
+    if current_holder != holder_id:
+        await query.answer("You no longer hold this number.", show_alert=True)
+        return
+
+    requester_number = user_data.get(requester_id, {}).get("jersey_number")
+
+    # Perform the swap
+    user_data.setdefault(holder_id, {})["jersey_number"] = requester_number
+    user_data[holder_id]["jersey_last_active"] = datetime.now().isoformat()
+    user_data.setdefault(requester_id, {})["jersey_number"] = number
+    user_data[requester_id]["jersey_last_active"] = datetime.now().isoformat()
+    save_data()
+
+    try:
+        await query.edit_message_text(
+            f"✅ <b>Swap complete!</b> You now wear "
+            f"{'🎽 #' + str(requester_number) if requester_number else 'no number'}.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+    try:
+        await context.bot.send_message(
+            chat_id=requester_id,
+            text=f"✅ <b>Swap complete!</b> You now wear 🎽 #{number}.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+
 async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏏 Interactive cricket stats → per-mode with photo card"""
     query = update.callback_query
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
+
+    # 🎽 Jersey-number search: /mystats #7 or /mystats 7 → look up that player directly
+    if query is None and context.args:
+        raw = context.args[0].strip().lstrip("#")
+        if raw.isdigit():
+            jersey_num = int(raw)
+            target_id = find_user_id_by_jersey(jersey_num)
+            if target_id is None:
+                await update.message.reply_text(
+                    f"🎽 <b>No one is wearing #{jersey_num} right now.</b>\n"
+                    f"<i>Try /mystats without a number to view your own card.</i>",
+                    parse_mode=ParseMode.HTML
+                )
+                return
+            user_id = target_id
+            user_name = user_data.get(target_id, {}).get("first_name", "Player")
 
     if query is None:
         # ── Image cooldown check for groups ──
@@ -27484,8 +27784,9 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         for i, row in enumerate(rows):
             medal = medals[i] if i < 10 else f"<b>#{row['rank']}</b>"
             name = html.escape(row["first_name"])
+            jnum = jersey_number_prefix(row["user_id"])
             lines.append(
-                f'{medal} <a href="tg://user?id={row["user_id"]}">{name}</a>  '
+                f'{medal} <a href="tg://user?id={row["user_id"]}">{jnum}{name}</a>  '
                 f'⭐ {row["rating"]}  ({row["matches"]}M)  {row["trend"]}'
             )
 
@@ -29393,6 +29694,11 @@ def main():
             registration_expiry_checker_job, interval=3600, first=300
         )
 
+        # 🎽 Jersey inactivity checker (warn @60 days, release @90 days) - runs every 24 hours
+        application.job_queue.run_repeating(
+            jersey_inactivity_job, interval=86400, first=180
+        )
+
     # ================== BASIC COMMANDS ==================
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -29441,6 +29747,7 @@ def main():
     # ================== STATS ==================
     application.add_handler(CommandHandler("mystats", mystats_command_v2))
     application.add_handler(CommandHandler("jersey", jersey_command))
+    application.add_handler(CallbackQueryHandler(jersey_swap_callback, pattern="^jswap_"))
     application.add_handler(CommandHandler("addach", addach_command))
     application.add_handler(CommandHandler("removeach", removeach_command))
 

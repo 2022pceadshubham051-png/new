@@ -17804,6 +17804,19 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     number = int(raw)
 
+    # 🎽 Ensure this number isn't already taken by someone else
+    for other_id, other_data in user_data.items():
+        if other_id != user_id and other_data.get("jersey_number") == number:
+            taken_name = other_data.get("first_name", "another player")
+            await update.message.reply_text(
+                f"🚫 <b>Number Taken!</b>\n"
+                f"─────────────────\n"
+                f"🎽 #{number} is already worn by <b>{html.escape(taken_name)}</b>.\n"
+                f"<i>Please choose a different number (1-999).</i>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
     # Ensure user profile exists (edge case: /jersey before any /start)
     if user_id not in user_data:
         user_data[user_id] = {

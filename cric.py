@@ -1744,6 +1744,14 @@ def get_gc_setting(group_id: int, key: str, default=None):
     }.get(key))
 
 
+def format_name_with_jersey(user_id: int, name: str) -> str:
+    """Returns 'Name 🎽#7' if the user has set a jersey number, else just 'Name'."""
+    number = user_data.get(user_id, {}).get("jersey_number")
+    if number:
+        return f"{name} 🎽#{number}"
+    return name
+
+
 def init_player_stats(user_id: int):
     """Initialize stats structure"""
     default_team = {
@@ -17684,10 +17692,17 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
         bat_avg     = avg
         highest     = hs
 
+        _ccc_row = get_player_ccc_rank(user_id)
+        if _ccc_row:
+            ccc_line = f"┃ 🏅 CCC Rank: #{_ccc_row['rank']} · ⭐ {_ccc_row['rating']} {_ccc_row['trend']}\n"
+        else:
+            ccc_line = f"┃ 🏅 CCC Rank: Unranked (play {CCC_MIN_MATCHES}+ matches)\n"
+
         text = (
             f"╭━━ 👤 PLAYER PROFILE ━━🥎\n"
             f"┃ 🆔 ID: {user_id}\n"
-            f"┃ 👤 Player: {html.escape(user_name)}\n"
+            f"┃ 👤 Player: {format_name_with_jersey(user_id, html.escape(user_name))}\n"
+            f"{ccc_line}"
             f"╰━━━━━━━━\n"
             f"╭━━ 📈 PLAYER RECORD ━━━🥎\n"
             f"┃ 📊 Matches: {matches}\n"
@@ -17755,6 +17770,63 @@ def fetch_team_stats_for_card(user_id: int) -> dict:
     }
 
 
+async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🎽 /jersey <number> — Set your personal jersey number (1-999), shown on profile & squads."""
+    user = update.effective_user
+    user_id = user.id
+
+    if not context.args:
+        current = user_data.get(user_id, {}).get("jersey_number")
+        if current:
+            await update.message.reply_text(
+                f"🎽 <b>Your Jersey Number:</b> #{current}\n"
+                f"<i>Use /jersey <number> (1-999) to change it.</i>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_text(
+                "🎽 <b>Set Your Jersey Number!</b>\n"
+                "─────────────────\n"
+                "Usage: <code>/jersey [number]</code>\n"
+                "<i>Pick any number between 1-999.</i>",
+                parse_mode=ParseMode.HTML
+            )
+        return
+
+    raw = context.args[0].strip()
+    if not raw.isdigit() or not (1 <= int(raw) <= 999):
+        await update.message.reply_text(
+            "⚠️ Please pick a valid jersey number between <b>1</b> and <b>999</b>.\n"
+            "Usage: <code>/jersey 7</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    number = int(raw)
+
+    # Ensure user profile exists (edge case: /jersey before any /start)
+    if user_id not in user_data:
+        user_data[user_id] = {
+            "user_id": user_id,
+            "username": user.username or "",
+            "first_name": user.first_name,
+            "started_at": datetime.now().isoformat(),
+            "total_matches": 0
+        }
+        init_player_stats(user_id)
+
+    user_data[user_id]["jersey_number"] = number
+    save_data()
+
+    await update.message.reply_text(
+        f"✅ <b>Jersey Number Set!</b>\n"
+        f"─────────────────\n"
+        f"🎽 <b>#{number}</b> — {html.escape(user.first_name)}\n"
+        f"<i>This will show up on your profile & squad lineups.</i>",
+        parse_mode=ParseMode.HTML
+    )
+
+
 async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏏 Interactive cricket stats → per-mode with photo card"""
     query = update.callback_query
@@ -17783,7 +17855,7 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = f"─────────────────\n"
         caption += f"  🏏  C R I C K E T  C A R D  \n"
         caption += f"─────────────────\n"
-        caption += f"👤 <b>{user_name}</b>\n"
+        caption += f"👤 <b>{format_name_with_jersey(user_id, user_name)}</b>\n"
         caption += f"─────────────────\n"
         caption += "👇 <i>Select a mode to view your stats!</i>"
         
@@ -18217,7 +18289,7 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"─────────────────\n"
         text += f"  🏏  C R I C K E T  C A R D  \n"
         text += f"─────────────────\n"
-        text += f"👤 <b>{user_name}</b>\n"
+        text += f"👤 <b>{format_name_with_jersey(user_id, user_name)}</b>\n"
         text += f"─────────────────\n"
         text += f"👥 <b>Team</b> · ⚔️ <b>Solo</b> · 🏆 <b>Achievements</b>\n"
         text += f"─────────────────\n"
@@ -27119,6 +27191,7 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     text += "👇 <i>Choose a category to view rankings:</i>"
 
     kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏅 CCC Ranking",  callback_data="lb_ccc_0")],
         [InlineKeyboardButton("🏃 Top Runs",    callback_data="lb_runs_0"),
          InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0")],
         [InlineKeyboardButton("🏆 Most Wins",   callback_data="lb_wins_0"),
@@ -27134,6 +27207,136 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             set_image_cooldown(group_id)
     except:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+def ensure_ccc_rank_table():
+    """Create the CCC Ranking snapshot table if it doesn't exist yet (idempotent)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS ccc_rank_snapshot (
+        user_id INTEGER PRIMARY KEY,
+        rank INTEGER,
+        rating REAL,
+        snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    conn.commit()
+    conn.close()
+
+
+CCC_MIN_MATCHES = 5  # Minimum combined matches needed to appear on the CCC Ranking
+
+
+def _compute_ccc_ranking_rows():
+    """
+    🏅 CCC RANKING — CricoVerse's overall player rating, ICC-style.
+    Combines batting, bowling, wins and match-winning impact into a single rating,
+    averaged per match so grinders don't automatically outrank sharper performers.
+    Returns a strictly-ordered list (no ties) of dicts, richest performer first:
+    [{user_id, first_name, matches, wins, rating, rank}, ...]
+    """
+    ensure_ccc_rank_table()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT user_id, first_name,
+            (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS matches,
+            (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS wins,
+            (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS runs,
+            (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS wickets,
+            (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) AS sixes,
+            (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) AS fours,
+            (COALESCE(total_hundreds,0) + COALESCE(team_total_hundreds,0)) AS hundreds,
+            (COALESCE(total_fifties,0) + COALESCE(team_total_fifties,0)) AS fifties,
+            (COALESCE(total_ducks,0) + COALESCE(team_total_ducks,0)) AS ducks,
+            COALESCE(player_of_match_count,0) AS mom
+        FROM user_stats
+    """)
+    all_rows = c.fetchall()
+    conn.close()
+
+    scored = []
+    for (user_id, first_name, matches, wins, runs, wickets, sixes, fours,
+         hundreds, fifties, ducks, mom) in all_rows:
+        if matches < CCC_MIN_MATCHES:
+            continue
+
+        win_rate = (wins / matches) * 100 if matches else 0
+
+        # Weighted point system → then normalized to a per-match rating
+        points = (
+            runs * 1.0 +
+            wickets * 20 +
+            wins * 15 +
+            sixes * 2 +
+            fours * 1 +
+            hundreds * 50 +
+            fifties * 20 +
+            mom * 25 +
+            win_rate * matches * 0.5 -
+            ducks * 5
+        )
+        rating = round(points / matches, 2)
+
+        scored.append({
+            "user_id": user_id,
+            "first_name": first_name or "Player",
+            "matches": matches,
+            "wins": wins,
+            "rating": rating,
+        })
+
+    # Strict deterministic order → guarantees no two players ever share a rank
+    scored.sort(key=lambda r: (-r["rating"], -r["matches"], r["user_id"]))
+    for i, row in enumerate(scored):
+        row["rank"] = i + 1
+
+    return scored
+
+
+def get_ccc_rankings_with_trend(limit: Optional[int] = None):
+    """
+    Returns the CCC ranking rows (optionally truncated to `limit`), each tagged with a
+    'trend' field showing movement since the last time the ranking was checked:
+    '🆕' new entry, '🔼N' climbed N spots, '🔽N' dropped N spots, '➖' unchanged.
+    Also refreshes the snapshot table used for the next trend comparison.
+    """
+    rows = _compute_ccc_ranking_rows()
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, rank FROM ccc_rank_snapshot")
+    old_ranks = {uid: r for uid, r in c.fetchall()}
+
+    for row in rows:
+        old_rank = old_ranks.get(row["user_id"])
+        if old_rank is None:
+            row["trend"] = "🆕"
+        elif old_rank > row["rank"]:
+            row["trend"] = f"🔼{old_rank - row['rank']}"
+        elif old_rank < row["rank"]:
+            row["trend"] = f"🔽{row['rank'] - old_rank}"
+        else:
+            row["trend"] = "➖"
+
+        c.execute(
+            "INSERT INTO ccc_rank_snapshot (user_id, rank, rating, snapshot_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank, rating=excluded.rating, snapshot_at=excluded.snapshot_at",
+            (row["user_id"], row["rank"], row["rating"], datetime.now())
+        )
+
+    conn.commit()
+    conn.close()
+
+    return rows[:limit] if limit else rows
+
+
+def get_player_ccc_rank(user_id: int):
+    """Returns this player's single CCC ranking row (with trend), or None if not yet ranked."""
+    rows = get_ccc_rankings_with_trend()
+    for row in rows:
+        if row["user_id"] == user_id:
+            return row
+    return None
 
 
 def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
@@ -27238,6 +27441,7 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         main_text += "─────────────────\n"
         main_text += "👇 <i>Choose a category to view rankings:</i>"
         main_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏅 CCC Ranking",  callback_data="lb_ccc_0")],
             [InlineKeyboardButton("🏃 Top Runs",    callback_data="lb_runs_0"),
              InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0")],
             [InlineKeyboardButton("🏆 Most Wins",   callback_data="lb_wins_0"),
@@ -27258,6 +27462,39 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         metric = data
         offset = 0
+
+    # 🏅 CCC RANKING → always top 10 only, no pagination
+    if metric == "ccc":
+        rows = await asyncio.to_thread(get_ccc_rankings_with_trend, 10)
+        medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+        lines = []
+        for i, row in enumerate(rows):
+            medal = medals[i] if i < 10 else f"<b>#{row['rank']}</b>"
+            name = html.escape(row["first_name"])
+            lines.append(
+                f'{medal} <a href="tg://user?id={row["user_id"]}">{name}</a>  '
+                f'⭐ {row["rating"]}  ({row["matches"]}M)  {row["trend"]}'
+            )
+
+        text  = "🏅 <b>CCC RANKING</b> · CricoVerse Career Rating\n"
+        text += "─────────────────\n"
+        text += f"🌍 Overall skill ranking · min {CCC_MIN_MATCHES} matches\n"
+        text += "─────────────────\n\n"
+        if lines:
+            text += "\n".join(lines)
+        else:
+            text += f"<i>No one's qualified yet → play {CCC_MIN_MATCHES}+ matches! 🏏</i>"
+        text += "\n\n─────────────────"
+
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="lb_back")]])
+        try:
+            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except:
+            try:
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            except Exception:
+                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        return
 
     PAGE_SIZE = 10
     title, rows, total = await asyncio.to_thread(_lb_query, metric, offset, PAGE_SIZE)
@@ -29190,6 +29427,7 @@ def main():
 
     # ================== STATS ==================
     application.add_handler(CommandHandler("mystats", mystats_command_v2))
+    application.add_handler(CommandHandler("jersey", jersey_command))
     application.add_handler(CommandHandler("addach", addach_command))
     application.add_handler(CommandHandler("removeach", removeach_command))
 

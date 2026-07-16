@@ -2218,6 +2218,14 @@ class Match:
 
         # Game mode (for TEAM/SOLO distinction, default TEAM)
         self.game_mode = "TEAM"
+
+        # 🆕 Mid-game /join requests — user_ids who have already sent /join this
+        # match, so spamming /join repeatedly is ignored after the first request.
+        self.mid_game_join_requests: Set[int] = set()
+
+        # 🔒 Re-entrancy guard for end_innings() — prevents a duplicate ball event
+        # from triggering the innings-end / Super Over flow twice in a row.
+        self.innings_ending_lock = False
         
         # Super over
         self.is_super_over = False
@@ -2497,6 +2505,8 @@ def generate_mini_scorecard(match: Match, wicket_mode: bool = False) -> str:
         return msg
 
     striker_tag = striker_tag or "—"
+    partnership = striker_runs + ns_runs
+    partnership_balls = striker_balls + ns_balls
     msg = f"🏏 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n"
     msg += f"┌─────────────────── \n"
     msg += f"├ 👤 {striker_tag} ➔ {striker_runs} ({striker_balls}) \n"
@@ -2508,6 +2518,8 @@ def generate_mini_scorecard(match: Match, wicket_mode: bool = False) -> str:
     else:
         msg += f"├ 👤 - ➔ 0 (0) \n"
         msg += f"├ 📈 𝗖𝗦𝗥: 0.00 \n"
+    msg += f"├ \n"
+    msg += f"├ 🤝 𝗣𝗮𝗿𝘁𝗻𝗲𝗿𝘀𝗵𝗶𝗽 ➔ {partnership} ({partnership_balls}) \n"
     msg += f"└─────────────────── \n"
     
     msg += f"🥎 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 \n"
@@ -6518,6 +6530,168 @@ async def start_team_edit_phase(query, context: ContextTypes.DEFAULT_TYPE, match
     chat_id = query.message.chat.id
     await refresh_game_message(context, chat_id, match, edit_text, reply_markup=reply_markup, media_key="squads")
 
+
+# ═══════════════════════════════════════════════════════════════
+# 🆕 MID-GAME /join — request to join a match that's already running
+# ═══════════════════════════════════════════════════════════════
+async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🙋 Mid-game join request.
+    Works while a TEAM or SOLO match is already in progress. Sends a request
+    to the host, tagging them, with buttons to accept into Team X / Team Y
+    (or just Accept for solo) or Reject. Spam-proofed: a user can only send
+    one pending /join request per match — repeats are silently ignored.
+    """
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.id not in active_matches:
+        await update.message.reply_text("⚠️ No active match here to join.")
+        return
+
+    match = active_matches[chat.id]
+
+    if match.phase not in (GamePhase.MATCH_IN_PROGRESS, GamePhase.SOLO_MATCH, GamePhase.SUPER_OVER):
+        await update.message.reply_text("⚠️ No match is currently in progress to join.")
+        return
+
+    # Already playing?
+    if match.game_mode == "TEAM":
+        if match.team_x.get_player(user.id) or match.team_y.get_player(user.id):
+            await update.message.reply_text("🏏 You're already in this match!")
+            return
+    else:
+        if any(p.user_id == user.id for p in match.solo_players):
+            await update.message.reply_text("🏏 You're already in this match!")
+            return
+
+    # 🔁 One request per user per match — ignore repeat /join spam
+    if user.id in match.mid_game_join_requests:
+        return
+
+    match.mid_game_join_requests.add(user.id)
+
+    if not match.host_id:
+        await update.message.reply_text("⚠️ This match has no host to approve join requests.")
+        return
+
+    host_tag = get_user_tag_by_id(match.host_id) if "get_user_tag_by_id" in globals() else f'<a href="tg://user?id={match.host_id}">Host</a>'
+    requester_tag = get_user_tag(user)
+
+    if match.game_mode == "TEAM":
+        keyboard = [
+            [
+                InlineKeyboardButton("🧊 Team X", callback_data=f"midjoin_x_{user.id}"),
+                InlineKeyboardButton("🔥 Team Y", callback_data=f"midjoin_y_{user.id}")
+            ],
+            [InlineKeyboardButton("❌ Reject", callback_data=f"midjoin_reject_{user.id}")]
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("✅ Accept", callback_data=f"midjoin_solo_{user.id}")],
+            [InlineKeyboardButton("❌ Reject", callback_data=f"midjoin_reject_{user.id}")]
+        ]
+
+    msg = (
+        f"🙋 <b>Join Request</b>\n"
+        f"─────────────────\n"
+        f"👤 {requester_tag} wants to join the match!\n\n"
+        f"🧢 {host_tag}, please respond:"
+    )
+
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def mid_game_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles Team X / Team Y / Solo Accept / Reject buttons on a mid-game join request."""
+    query = update.callback_query
+    data = query.data  # midjoin_x_<uid> | midjoin_y_<uid> | midjoin_solo_<uid> | midjoin_reject_<uid>
+    chat = query.message.chat
+
+    if chat.id not in active_matches:
+        await query.answer("⚠️ Match no longer active.", show_alert=True)
+        return
+
+    match = active_matches[chat.id]
+
+    # Only the host can decide
+    if query.from_user.id != match.host_id:
+        await query.answer("🚫 Only the host can respond to this!", show_alert=True)
+        return
+
+    parts = data.split("_")
+    action = parts[1]  # x / y / solo / reject
+    target_id = int(parts[2])
+
+    await query.answer()
+
+    try:
+        target_chat = await context.bot.get_chat(target_id)
+        target_name = target_chat.first_name
+        target_username = target_chat.username or ""
+    except Exception:
+        target_name = user_data.get(target_id, {}).get("first_name", "Player")
+        target_username = user_data.get(target_id, {}).get("username", "")
+
+    if action == "reject":
+        await query.edit_message_text(
+            f"❌ <b>{target_name}</b>'s join request was rejected by the host.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Double-check they haven't already joined by some other route
+    already_in = False
+    if match.game_mode == "TEAM":
+        already_in = bool(match.team_x.get_player(target_id) or match.team_y.get_player(target_id))
+    else:
+        already_in = any(p.user_id == target_id for p in match.solo_players)
+
+    if already_in:
+        await query.edit_message_text(f"ℹ️ <b>{target_name}</b> is already in the match.", parse_mode=ParseMode.HTML)
+        return
+
+    new_player = Player(target_id, target_username, target_name)
+
+    if action == "x":
+        match.team_x.add_player(new_player)
+        team_label = "🧊 Team X"
+        joined_team = match.team_x
+    elif action == "y":
+        match.team_y.add_player(new_player)
+        team_label = "🔥 Team Y"
+        joined_team = match.team_y
+    elif action == "solo":
+        match.solo_players.append(new_player)
+        team_label = "the match"
+        joined_team = None
+    else:
+        return
+
+    # 🕐 Tell them exactly when they'll actually get to play, instead of a vague
+    # "welcome" — this was ambiguous before (mid-innings vs next innings).
+    timing_note = ""
+    if joined_team is not None:
+        if joined_team is match.current_batting_team:
+            timing_note = (
+                "\n🏏 You've been added to the <b>end of the batting order</b> — "
+                "you'll come in once the players ahead of you are out, still <b>this innings</b>."
+            )
+        elif joined_team is match.current_bowling_team:
+            timing_note = (
+                "\n⚾ You've joined the <b>bowling squad</b> — you'll be eligible to bowl "
+                "from the <b>next over</b> onward."
+            )
+        else:
+            timing_note = "\n📋 You've been added to the squad and will play from the <b>next innings</b>."
+
+    await query.edit_message_text(
+        f"✅ <b>{target_name}</b> has joined {team_label}! Welcome aboard 🏏{timing_note}",
+        parse_mode=ParseMode.HTML
+    )
+
+
+
 # Add/Remove player commands (Host only)
 async def add_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -7224,8 +7398,11 @@ async def batting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     match = active_matches[chat.id]
-    
-    if match.phase != GamePhase.MATCH_IN_PROGRESS:
+
+    # 🏏 Super Over uses its own batting lineup selection too, so allow that phase here —
+    # previously only MATCH_IN_PROGRESS was accepted, which made /batting wrongly say
+    # "Match is not in progress" during a Super Over.
+    if match.phase not in (GamePhase.MATCH_IN_PROGRESS, GamePhase.SUPER_OVER):
         logger.warning(f"⚠️ Match not in progress, phase={match.phase}")
         await update.message.reply_text("⚠️ Match is not in progress!")
         return
@@ -13205,107 +13382,117 @@ async def end_innings(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
     """
     ✅ FIXED: Proper innings end logic with Super Over support
     """
-    # ⚡ SUPER OVER HANDLING
-    if match.is_super_over:
-        if match.innings == 1:
-            await end_super_over_innings(context, group_id, match)
-            return
-        else:
-            await determine_super_over_winner(context, group_id, match)
-            return
-    
-    # 🏏 NORMAL MATCH LOGIC
-    if match.innings == 1:
-        bat_team = match.current_batting_team
-        bowl_team = match.current_bowling_team
-        
-        first_innings_score = bat_team.score
-        match.target = first_innings_score + 1
-        
-        overs_played = max(bat_team.balls / 6, 0.1)
-        rr = round(bat_team.score / overs_played, 2)
-
-        active_batters = [p for p in bat_team.players if p.balls_faced > 0 or p.is_out]
-        ib_lines = [
-            f"🏆 <b>{html.escape(bat_team.name)}</b> ➔ {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov)",
-            f"📈 <b>Run Rate:</b> {rr}",
-            f"🎯 <b>TARGET:</b> {match.target} Runs",
-        ]
-        if active_batters:
-            top_scorer = max(active_batters, key=lambda p: p.runs)
-            ib_lines.append(f"🏏 <b>Top Scorer:</b> {html.escape(top_scorer.first_name)} ➔ {top_scorer.runs} ({top_scorer.balls_faced}b)")
-        active_bowlers = [p for p in bowl_team.players if p.balls_bowled > 0]
-        if active_bowlers:
-            best_bowler = max(active_bowlers, key=lambda p: (p.wickets, -p.runs_conceded))
-            ib_lines.append(f"🥎 <b>Best Bowler:</b> {html.escape(best_bowler.first_name)} ➔ {best_bowler.wickets}/{best_bowler.runs_conceded}")
-        ib_lines.append("⏳ 2nd Innings begins in 30 seconds...")
-        msg = themed("⏸ INNINGS BREAK", ib_lines, "🥎")
-        
-        gif_url = get_random_gif(MatchEvent.INNINGS_BREAK)
-        try:
-            if gif_url:
-                await context.bot.send_animation(group_id, animation=gif_url, caption=msg, parse_mode=ParseMode.HTML)
+    # 🔒 Idempotency guard: block re-entrant calls so a second, near-simultaneous
+    # ball-processing coroutine can't trigger end_innings twice for the same
+    # innings (this was the cause of duplicate Super Over / scorecard messages).
+    if getattr(match, 'innings_ending_lock', False):
+        logger.warning("⚠️ Duplicate end_innings call blocked (already processing)")
+        return
+    match.innings_ending_lock = True
+    try:
+        # ⚡ SUPER OVER HANDLING
+        if match.is_super_over:
+            if match.innings == 1:
+                await end_super_over_innings(context, group_id, match)
+                return
             else:
+                await determine_super_over_winner(context, group_id, match)
+                return
+    
+        # 🏏 NORMAL MATCH LOGIC
+        if match.innings == 1:
+            bat_team = match.current_batting_team
+            bowl_team = match.current_bowling_team
+        
+            first_innings_score = bat_team.score
+            match.target = first_innings_score + 1
+        
+            overs_played = max(bat_team.balls / 6, 0.1)
+            rr = round(bat_team.score / overs_played, 2)
+
+            active_batters = [p for p in bat_team.players if p.balls_faced > 0 or p.is_out]
+            ib_lines = [
+                f"🏆 <b>{html.escape(bat_team.name)}</b> ➔ {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov)",
+                f"📈 <b>Run Rate:</b> {rr}",
+                f"🎯 <b>TARGET:</b> {match.target} Runs",
+            ]
+            if active_batters:
+                top_scorer = max(active_batters, key=lambda p: p.runs)
+                ib_lines.append(f"🏏 <b>Top Scorer:</b> {html.escape(top_scorer.first_name)} ➔ {top_scorer.runs} ({top_scorer.balls_faced}b)")
+            active_bowlers = [p for p in bowl_team.players if p.balls_bowled > 0]
+            if active_bowlers:
+                best_bowler = max(active_bowlers, key=lambda p: (p.wickets, -p.runs_conceded))
+                ib_lines.append(f"🥎 <b>Best Bowler:</b> {html.escape(best_bowler.first_name)} ➔ {best_bowler.wickets}/{best_bowler.runs_conceded}")
+            ib_lines.append("⏳ 2nd Innings begins in 30 seconds...")
+            msg = themed("⏸ INNINGS BREAK", ib_lines, "🥎")
+        
+            gif_url = get_random_gif(MatchEvent.INNINGS_BREAK)
+            try:
+                if gif_url:
+                    await context.bot.send_animation(group_id, animation=gif_url, caption=msg, parse_mode=ParseMode.HTML)
+                else:
+                    await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
+            except:
                 await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-        except:
+        
+            await asyncio.sleep(30)
+        
+            # Start 2nd innings
+            match.innings = 2
+            match.current_over_runs = 0  # Reset for 2nd innings tracking
+            match.current_over_wickets = 0
+            match.current_batting_team = match.get_other_team(match.current_batting_team)
+            match.current_bowling_team = match.get_other_team(match.current_bowling_team)
+            match.current_batting_team.innings_start_squad_size = len(match.current_batting_team.players)
+        
+            # ✅ FIX: Reset ball counts so 2nd innings always starts from ball 0
+            match.current_batting_team.balls = 0
+        
+            match.current_batting_team.current_batsman_idx = None
+            match.current_batting_team.current_non_striker_idx = None
+            match.current_bowling_team.current_bowler_idx = None
+            match.current_batting_team.out_players_indices = set()
+        
+            chase_team = match.current_batting_team
+            runs_needed = match.target
+            balls_available = match.total_overs * 6
+            rrr = round((runs_needed / balls_available) * 6, 2)
+        
+            chase_lines = [
+                f"🏏 <b>{html.escape(chase_team.name)}</b>",
+                f"🎯 Need  <b>{runs_needed} runs</b>",
+                f"⚾ In  <b>{balls_available} balls</b>  ({match.total_overs} overs)",
+                f"📉 Required RR:  <b>{rrr}</b>",
+            ]
+            start_msg = themed("🚀 THE CHASE IS ON", chase_lines, "🏏")
+        
+            await context.bot.send_message(group_id, start_msg, parse_mode=ParseMode.HTML)
+            await asyncio.sleep(2)
+        
+            match.waiting_for_batsman = True
+            match.waiting_for_bowler = False
+        
+            captain = match.get_captain(chase_team)
+            captain_tag = get_user_tag(captain)
+        
+            opener_lines = [
+                f"👉 {captain_tag}, who's walking in first?",
+                f"⌨️ <code>/batting [serial_number]</code>",
+            ]
+            msg = themed("🏏 SELECT YOUR OPENER", opener_lines, "🏏")
+
             await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
         
-        await asyncio.sleep(30)
+            match.batsman_selection_time = time.time()
+            match.batsman_selection_task = asyncio.create_task(
+                batsman_selection_timeout(context, group_id, match)
+            )
         
-        # Start 2nd innings
-        match.innings = 2
-        match.current_over_runs = 0  # Reset for 2nd innings tracking
-        match.current_over_wickets = 0
-        match.current_batting_team = match.get_other_team(match.current_batting_team)
-        match.current_bowling_team = match.get_other_team(match.current_bowling_team)
-        match.current_batting_team.innings_start_squad_size = len(match.current_batting_team.players)
-        
-        # ✅ FIX: Reset ball counts so 2nd innings always starts from ball 0
-        match.current_batting_team.balls = 0
-        
-        match.current_batting_team.current_batsman_idx = None
-        match.current_batting_team.current_non_striker_idx = None
-        match.current_bowling_team.current_bowler_idx = None
-        match.current_batting_team.out_players_indices = set()
-        
-        chase_team = match.current_batting_team
-        runs_needed = match.target
-        balls_available = match.total_overs * 6
-        rrr = round((runs_needed / balls_available) * 6, 2)
-        
-        chase_lines = [
-            f"🏏 <b>{html.escape(chase_team.name)}</b>",
-            f"🎯 Need  <b>{runs_needed} runs</b>",
-            f"⚾ In  <b>{balls_available} balls</b>  ({match.total_overs} overs)",
-            f"📉 Required RR:  <b>{rrr}</b>",
-        ]
-        start_msg = themed("🚀 THE CHASE IS ON", chase_lines, "🏏")
-        
-        await context.bot.send_message(group_id, start_msg, parse_mode=ParseMode.HTML)
-        await asyncio.sleep(2)
-        
-        match.waiting_for_batsman = True
-        match.waiting_for_bowler = False
-        
-        captain = match.get_captain(chase_team)
-        captain_tag = get_user_tag(captain)
-        
-        opener_lines = [
-            f"👉 {captain_tag}, who's walking in first?",
-            f"⌨️ <code>/batting [serial_number]</code>",
-        ]
-        msg = themed("🏏 SELECT YOUR OPENER", opener_lines, "🏏")
-
-        await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-        
-        match.batsman_selection_time = time.time()
-        match.batsman_selection_task = asyncio.create_task(
-            batsman_selection_timeout(context, group_id, match)
-        )
-        
-    else:
-        # ✅ Second innings complete - determine winner
-        await determine_match_winner(context, group_id, match)
+        else:
+            # ✅ Second innings complete - determine winner
+            await determine_match_winner(context, group_id, match)
+    finally:
+        match.innings_ending_lock = False
 
 
 async def finalize_fantasy_results(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
@@ -13504,30 +13691,14 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
             logger.error(f"❌ CRITICAL: Even fallback failed: {e}")
     
     await asyncio.sleep(4)
-    
+
     # ==========================================
     # 📋 SEND SCORECARD (With error handling)
-    # ==========================================
-    try:
-        logger.info("📊 Sending scorecard...")
-        await send_final_scorecard(context, group_id, match)
-        await asyncio.sleep(3)
-        logger.info("✅ Scorecard sent")
-    except Exception as e:
-        logger.error(f"❌ Scorecard error: {e}")
-        # Try simple text scorecard
-        try:
-            simple_card = (
-                f"📊 <b>MATCH SUMMARY</b>\n\n"
-                f"🧊 {first.name}: {first.score}/{first.wickets}\n"
-                f"🔥 {second.name}: {second.score}/{second.wickets}\n\n"
-                f"🏆 Winner: {winner.name}"
-            )
-            await context.bot.send_message(group_id, simple_card, parse_mode=ParseMode.HTML)
-        except: pass
-    
-    # ==========================================
-    # 📋 SEND SCORECARD (With error handling)
+    # 🔧 BUG FIX: send_final_scorecard used to be called twice here (once in this
+    # block, once again right below), which is why the scorecard showed up
+    # duplicated at the end of every match — especially noticeable in TEAM mode
+    # where the image scorecard was also involved. Merged into a single block
+    # with a plain-text fallback if everything else fails.
     # ==========================================
     try:
         logger.info("📊 Sending scorecard...")
@@ -13561,6 +13732,16 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
         logger.info("✅ Scorecard sent")
     except Exception as e:
         logger.error(f"❌ Scorecard error: {e}")
+        # Try simple text scorecard
+        try:
+            simple_card = (
+                f"📊 <b>MATCH SUMMARY</b>\n\n"
+                f"🧊 {first.name}: {first.score}/{first.wickets}\n"
+                f"🔥 {second.name}: {second.score}/{second.wickets}\n\n"
+                f"🏆 Winner: {winner.name}"
+            )
+            await context.bot.send_message(group_id, simple_card, parse_mode=ParseMode.HTML)
+        except: pass
 
 
     # ==========================================
@@ -17473,18 +17654,33 @@ ACHIEVEMENT_ICONS = ["🥇", "⭐", "🟠", "🟣", "🏅", "🎖️", "🔥", "
 
 def build_achievements_text(user_id: int, user_name: str) -> str:
     """Build the 🏆 Achievements section text shown in /mystats."""
-    user_achievements = achievements.get(user_id, [])
-    SEP = "━━━━━━━━━━━━━━"
+    user_achievements = list(achievements.get(user_id, []))
 
-    text = f"🏆 <b>{html.escape(user_name)}'s Achievements</b>\n"
-    text += f"{SEP}\n"
+    # 👑 Special badge for the bot owner
+    if user_id == OWNER_ID and "Owner of Bot" not in user_achievements:
+        user_achievements.insert(0, "Owner of Bot")
+
+    BAR = "────────────────────"
+
+    text = (
+        f"🏆 𝗔𝗖𝗛𝗜𝗘𝗩𝗘𝗠𝗘𝗡𝗧𝗦\n"
+        f"{BAR}\n"
+        f"👤 𝗣𝗹𝗮𝘆𝗲𝗿 ➜ {html.escape(user_name)}\n\n"
+        f"🏅 𝗕𝗔𝗗𝗚𝗘𝗦\n"
+        f"┌{BAR}\n"
+    )
+
     if not user_achievements:
-        text += "No achievements yet."
+        text += "├ 🔒 No badges earned yet — keep playing!\n"
     else:
         for i, ach in enumerate(user_achievements):
             icon = ACHIEVEMENT_ICONS[i % len(ACHIEVEMENT_ICONS)]
-            text += f"{icon} {html.escape(ach)}\n"
-        text = text.rstrip("\n")
+            connector = "└" if i == len(user_achievements) - 1 else "├"
+            text += f"{connector} {icon} {html.escape(ach)}\n"
+            continue
+        text = text.rstrip("\n") + "\n"
+
+    text += f"└{BAR}"
     return text
 
 
@@ -17750,39 +17946,62 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
 
         _ccc_row = get_player_ccc_rank(user_id)
         if _ccc_row:
-            ccc_line = f"┃ 🏅 CCC Rank: #{_ccc_row['rank']} · ⭐ {_ccc_row['rating']} {_ccc_row['trend']}\n"
+            ccc_line = f"├👑 𝗖𝗖𝗖     ➜ #{_ccc_row['rank']} ⭐ {_ccc_row['rating']}\n"
         else:
-            ccc_line = f"┃ 🏅 CCC Rank: Unranked (play {CCC_MIN_MATCHES}+ matches)\n"
+            ccc_line = f"├👑 𝗖𝗖𝗖     ➜ Unranked\n"
+
+        jersey_num = user_data.get(user_id, {}).get("jersey_number")
+        jersey_line = f"#{jersey_num}" if jersey_num else "—"
+
+        # Recent form dots only (most recent last, same order as before)
+        _form_results = mem_team.get("last_5_results", player_stats.get(user_id, {}).get("last_5_results", []))
+        if _form_results:
+            form_dots = "".join("🟢" if r == "W" else "🔴" for r in _form_results)
+        else:
+            _form_s = player_stats.get(user_id, {}).get("last_5_scores", [])[-5:]
+            form_dots = "".join("🟢" if s >= 50 else "🟡" if s >= 20 else "🔴" if s == 0 else "🟠" for s in _form_s) or "—"
+
+        BAR = "────────────────────"
 
         text = (
-            f"╭━━ 👤 PLAYER PROFILE ━━🥎\n"
-            f"┃ 🆔 ID: {user_id}\n"
-            f"┃ 👤 Player: {format_name_with_jersey(user_id, html.escape(user_name))}\n"
+            f"👤 𝗣𝗟𝗔𝗬𝗘𝗥 𝗣𝗥𝗢𝗙𝗜𝗟𝗘\n"
+            f"┌{BAR}\n"
+            f"├🆔 𝗜𝗗      ➜ {user_id}\n"
+            f"├👤 𝗡𝗮𝗺𝗲    ➜ {html.escape(user_name)}\n"
+            f"├🎽 𝗝𝗲𝗿𝘀𝗲𝘆  ➜ {jersey_line}\n"
             f"{ccc_line}"
-            f"╰━━━━━━━━\n"
-            f"╭━━ 📈 PLAYER RECORD ━━━🥎\n"
-            f"┃ 📊 Matches: {matches}\n"
-            f"┃ ✅ Wins: {wins} | ❌ Losses: {matches - wins}\n"
-            f"┃ 🔥 Recent Form: [ {_form_bar} ]\n"
-            f"┃ 👑 Captaincy: {cap_wins}/{cap_matches} Wins ({cap_rate}%)\n"
-            f"┃ 🏅 Man of Match: {mom}\n"
-            f"╰━━━━━━━━\n"
-            f"╭━━ 🏏 BATTING ARSENAL ━🥎\n"
-            f"┃ 🏏 Runs: {runs} | 🥎 Balls: {balls_faced}\n"
-            f"┃ 📈 Average: {bat_avg}\n"
-            f"┃ ⚡ Strike Rate: {bat_sr}\n"
-            f"┃ 🔝 Highest Score: {highest}\n"
-            f"┃ 💥 Fours: {fours} | 🚀 Sixes: {sixes}\n"
-            f"┃ 💯 100s: {hundreds} | ✨ 50s: {fifties}\n"
-            f"╰━━━━━━━━\n"
-            f"╭━━ 🥎 BOWLING ATTACK ━━🥎\n"
-            f"┃ 🎯 Wickets: {wickets}\n"
-            f"┃ ⏳ Overs: {overs_text} | 📉 Economy: {eco}\n"
-            f"┃ 📊 Average: {bowl_avg}\n"
-            f"┃ 💎 Best Figures: {best_bowl}\n"
-            f"┃ 🎩 Hat-tricks: {hat_tricks}\n"
-            f"┃ 🔥 5-Wickets: {fifer}\n"
-            f"╰━━━━━━━━"
+            f"└{BAR}\n\n"
+            f"📊 𝗖𝗔𝗥𝗘𝗘𝗥 𝗥𝗘𝗖𝗢𝗥𝗗\n"
+            f"┌{BAR}\n"
+            f"├ 🎮 Matches      ➜ {matches}\n"
+            f"├ ✅ Wins         ➜ {wins}\n"
+            f"├ ❌ Losses       ➜ {losses}\n"
+            f"├ 👑 Captaincy    ➜ {cap_wins}/{cap_matches} ({cap_rate}%)\n"
+            f"├ 🏅 MOTM         ➜ {mom}\n"
+            f"├ 🔥 Recent Form  ➜ {form_dots}\n"
+            f"└{BAR}\n\n"
+            f"🏏 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 𝗦𝗧𝗔𝗧𝗦\n"
+            f"┌{BAR}\n"
+            f"├ 🏏 Runs         ➜ {runs}\n"
+            f"├ 🥎 Balls        ➜ {balls_faced}\n"
+            f"├ 📈 Average      ➜ {bat_avg}\n"
+            f"├ ⚡ Strike Rate  ➜ {bat_sr}\n"
+            f"├ 🎯 Highest      ➜ {highest}\n"
+            f"├ 💥 Fours        ➜ {fours}\n"
+            f"├ 🚀 Sixes        ➜ {sixes}\n"
+            f"├ ✨ Half Cent.   ➜ {fifties}\n"
+            f"├ 💯 Centuries    ➜ {hundreds}\n"
+            f"└{BAR}\n\n"
+            f"🥎 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 𝗦𝗧𝗔𝗧𝗦\n"
+            f"┌{BAR}\n"
+            f"├ 🎯 Wickets      ➜ {wickets}\n"
+            f"├ ⏳ Overs        ➜ {overs_text}\n"
+            f"├ 📉 Economy      ➜ {eco}\n"
+            f"├ 📊 Average      ➜ {bowl_avg}\n"
+            f"├ 💎 Best Figures ➜ {best_bowl}\n"
+            f"├ 🎩 Hat-tricks   ➜ {hat_tricks}\n"
+            f"├ 🔥 5-Wickets    ➜ {fifer}\n"
+            f"└{BAR}"
         )
 
     return text
@@ -18414,6 +18633,22 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_name = update.effective_user.first_name or "Player"
     group_id = update.effective_chat.id
 
+    # 🎽 Jersey-number search: /mystats #7 or /mystats 7 → look up that player directly
+    if context.args:
+        raw = context.args[0].strip().lstrip("#")
+        if raw.isdigit():
+            jersey_num = int(raw)
+            target_id = find_user_id_by_jersey(jersey_num)
+            if target_id is None:
+                await update.message.reply_text(
+                    f"🎽 <b>No one is wearing #{jersey_num} right now.</b>\n"
+                    f"<i>Try /mystats without a number to view your own card.</i>",
+                    parse_mode=ParseMode.HTML
+                )
+                return
+            user_id = target_id
+            user_name = user_data.get(target_id, {}).get("first_name", "Player")
+
     if update.effective_chat.type != "private":
         remaining = check_image_cooldown(group_id)
         if remaining is not None:
@@ -18474,25 +18709,44 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     user_id = int(data.split("_")[-1])
-    
-    # Security check
-    if query.from_user.id != user_id:
-        await query.answer("❌ These aren't your stats!", show_alert=True)
-        return
-    
-    user_name = query.from_user.first_name
 
-    # Standard back button
-    back_button = InlineKeyboardButton("🔙 Back", callback_data=f"mystats_team_{user_id}")
+    # Note: no owner-only lock here — /mystats #<jersey> lets someone open another
+    # player's public card, so the viewer clicking Team/Solo/Achievements tabs is fine.
+    user_name = user_data.get(user_id, {}).get("first_name") or query.from_user.first_name
+
+    # Standard back button → returns to the main menu (Team/Solo/Achievements), not straight to Team
+    back_button = InlineKeyboardButton("🔙 Back", callback_data=f"mystats_menu_{user_id}")
     
     # ──────────────── SECTION SEPARATOR HELPER ────────────────
     SEP = "─────────────────"
     SEP2 = "─────────────────"
     
     # ══════════════════════════════════════
+    #   MAIN MENU (Back button target)
+    # ══════════════════════════════════════
+    if "mystats_menu" in data:
+        keyboard = [
+            [
+                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
+                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
+            ],
+            [
+                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
+            ]
+        ]
+        menu_text = f"📊 <b>{user_name}'s STATS</b>\n{SEP}\n👇 <i>Choose a category to view:</i>"
+        try:
+            await query.edit_message_caption(caption=menu_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+        except:
+            try:
+                await query.edit_message_text(menu_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+            except:
+                await query.message.reply_text(menu_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # ══════════════════════════════════════
     #   TEAM STATS
     # ══════════════════════════════════════
-    if "mystats_team" in data:
+    elif "mystats_team" in data:
         text = build_team_stats_text(user_id, user_name)
 
         keyboard = [[back_button]]
@@ -18533,31 +18787,38 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bat_sr = sr
 
             target_id = user_id
+            jersey_num = user_data.get(user_id, {}).get("jersey_number")
+            jersey_line = f"#{jersey_num}" if jersey_num else "—"
+
+            BAR = "───────────────────"
 
             text = (
-                f"─────────────────\n"
-                f"👤 <b>SOLO CAREER PROFILE</b>\n"
-                f"─────────────────\n"
-                f"├ 📛 <b>Player:</b> {user_name.upper()}\n"
-                f"└ 🆔 <b>ID:</b> <code>{target_id}</code>\n\n"
-                f"─────────────────\n"
-                f"🏆 <b>PLAYER RECORD</b>\n"
-                f"─────────────────\n"
-                f"├ 🏟 <b>Matches:</b> {matches}\n"
-                f"├ 👑 <b>Wins:</b> {wins}\n"
-                f"├ 📈 <b>Win Rate:</b> {win_rate}%\n"
-                f"└ 🥉 <b>Top 3 Finishes:</b> {top3}\n\n"
-                f"─────────────────\n"
-                f"🏏 <b>BATTING SKILLS</b>\n"
-                f"─────────────────\n"
-                f"├ 🏃 <b>Total Runs:</b> {runs}\n"
-                f"├ ⚾ <b>Balls Faced:</b> {balls}\n"
-                f"├ ⚡ <b>Strike Rate:</b> {bat_sr}\n"
-                f"├ 🚀 <b>High Score:</b> {hs}\n"
-                f"├ 4️⃣ <b>Fours:</b> {fours} | 6️⃣ <b>Sixes:</b> {sixes}\n"
-                f"├ 💯 <b>100s:</b> {centuries} | 50 <b>50s:</b> {fifties}\n"
-                f"└ 🦆 <b>Ducks:</b> {ducks}\n\n"
-                f"<i>⚠️ Solo mode doesn't count wickets.</i>"
+                f"👤 𝗦𝗢𝗟𝗢 𝗖𝗔𝗥𝗘𝗘𝗥 𝗣𝗥𝗢𝗙𝗜𝗟𝗘\n\n"
+                f"┌{BAR}\n"
+                f"├ 📛 Player ➜ {html.escape(user_name).upper()}\n"
+                f"├ 🎽 Jersey ➜ {jersey_line}\n"
+                f"├ 🆔 ID ➜ {target_id}\n"
+                f"└{BAR}\n\n\n"
+                f"🏆 𝗣𝗟𝗔𝗬𝗘𝗥 𝗥𝗘𝗖𝗢𝗥𝗗\n"
+                f"┌{BAR}\n"
+                f"├ 🏟️ Matches ➜ {matches}\n"
+                f"├ 👑 Wins ➜ {wins}\n"
+                f"├ 📈 Win Rate ➜ {win_rate}%\n"
+                f"├🥉 Top 3 ➜ {top3}\n"
+                f"└{BAR}\n\n"
+                f"🏏 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 𝗦𝗧𝗔𝗧𝗦\n"
+                f"┌{BAR}\n"
+                f"├ 🏃 Runs ➜ {runs}\n"
+                f"├ 🥎 Balls ➜ {balls}\n"
+                f"├ ⚡ Strike Rate ➜ {bat_sr}\n"
+                f"├ 🚀 Highest ➜ {hs}\n"
+                f"├ 4️⃣ Fours ➜ {fours}\n"
+                f"├ 6️⃣ Sixes ➜ {sixes}\n"
+                f"├ 💯 100s ➜ {centuries}\n"
+                f"├ ✨ 50s ➜ {fifties}\n"
+                f"├ 🦆 Ducks ➜ {ducks}\n"
+                f"└{BAR}\n\n\n"
+                f"⚠️ Solo mode doesn't track bowling statistics."
             )
 
         keyword = [[back_button]]
@@ -18585,36 +18846,11 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
     # ══════════════════════════════════════
-    #   BACK TO MAIN MENU
+    #   BACK TO MAIN MENU (legacy — now handled earlier in this if/elif chain
+    #   by the "mystats_menu" branch at the top; kept as elif so it's simply
+    #   unreachable dead code rather than a syntax problem)
     # ══════════════════════════════════════
-    elif "mystats_menu" in data:
-        keyboard = [
-            [
-                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
-                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
-            ],
-            [
-                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        text = f"─────────────────\n"
-        text += f"  🏏  C R I C K E T  C A R D  \n"
-        text += f"─────────────────\n"
-        text += f"👤 <b>{format_name_with_jersey(user_id, user_name)}</b>\n"
-        text += f"─────────────────\n"
-        text += f"👥 <b>Team</b> · ⚔️ <b>Solo</b> · 🏆 <b>Achievements</b>\n"
-        text += f"─────────────────\n"
-        text += "👇 <i>Select a mode to view your stats!</i>"
-        
-        try:
-            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-        except:
-            try:
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-            except:
-                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
 async def groupapprove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🔐 Approve Tournament Mode (Owner / Second Approver)"""
     user = update.effective_user
@@ -22277,13 +22513,16 @@ async def send_milestone_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int, p
     
     if milestone_type == "half_century":
         gif = "CgACAgUAAxkBAAIjvGlViB_k4xno1I7SvP_yjqat_swhAALjGAACQdfwV3nPGMVrF3YgOAQ"
-        msg = f"{ce('fifty', '🎉')} <b>HALF CENTURY!</b> {ce('fifty', '🎉')}\n"
-        msg += "─────────────────\n"
-        msg += f"🏏 <b>{player_tag}</b> reaches FIFTY!\n"
-        msg += f"📊 <b>Score:</b> {player.runs} ({player.balls_faced})\n"
-        msg += f"⚡ <b>Strike Rate:</b> {round((player.runs/max(player.balls_faced,1))*100, 1)}\n\n"
-        msg += f"{ce('fire', '🔥')} <i>What a brilliant knock!</i>\n"
-        msg += "─────────────────"
+        sr = round((player.runs/max(player.balls_faced,1))*100, 2)
+        BAR = "────────────────────"
+        msg = f"🎉 𝗛𝗔𝗟𝗙 𝗖𝗘𝗡𝗧𝗨𝗥𝗬!\n\n"
+        msg += f"┌{BAR}\n"
+        msg += f"├ 👤 𝗕𝗮𝘁𝘁𝗲𝗿 ➜ {player_tag}\n"
+        msg += f"├ 🏏 𝗦𝗰𝗼𝗿𝗲 ➜ {player.runs} ({player.balls_faced})\n"
+        msg += f"├ ⚡ 𝗦𝘁𝗿𝗶𝗸𝗲 𝗥𝗮𝘁𝗲 ➜ {sr}\n"
+        msg += f"├ 🎯 𝗠𝗶𝗹𝗲𝘀𝘁𝗼𝗻𝗲 ➜ 50 Runs\n"
+        msg += f"└{BAR}\n\n"
+        msg += f"🔥 What a brilliant knock! Keep it up"
         
     elif milestone_type == "century":
         gif = "CgACAgUAAxkBAAIjvmlViDWGHyeIZrWAraXgMumQeYd4AAIhBgACJWaIVY0cR_DZgUHEOAQ"
@@ -27567,7 +27806,20 @@ def _compute_ccc_ranking_rows():
     all_rows = c.fetchall()
     conn.close()
 
-    scored = []
+    # First pass: gather raw points-per-match for every qualified player so we can
+    # compute a league-average baseline. A *pure* per-match average (old formula)
+    # rewards a handful of lucky matches over sustained volume, since one bad game
+    # drags a small sample down just as hard as a big one — so grinders who keep
+    # playing (and inevitably rack up a few average/bad games too) end up looking
+    # worse than someone who played the bare minimum and got lucky. We fix this
+    # two ways:
+    #   1. Bayesian smoothing — shrink each player's average toward the league
+    #      baseline by a fixed number of "phantom" matches (K). This tames small
+    #      sample swings without capping anyone's ceiling once they have real volume.
+    #   2. Explicit experience bonus — a small flat bonus per matches played
+    #      (capped) so consistent grinders get real credit for volume rather than
+    #      being purely at the mercy of an average.
+    prelim = []
     for (user_id, first_name, matches, wins, runs, wickets, sixes, fours,
          hundreds, fifties, ducks, mom) in all_rows:
         if matches < CCC_MIN_MATCHES:
@@ -27575,7 +27827,7 @@ def _compute_ccc_ranking_rows():
 
         win_rate = (wins / matches) * 100 if matches else 0
 
-        # Weighted point system → then normalized to a per-match rating
+        # Weighted point system (total career points, not yet normalized)
         points = (
             runs * 1.0 +
             wickets * 20 +
@@ -27588,13 +27840,44 @@ def _compute_ccc_ranking_rows():
             win_rate * matches * 0.5 -
             ducks * 5
         )
-        rating = round(points / matches, 2)
 
-        scored.append({
+        prelim.append({
             "user_id": user_id,
             "first_name": first_name or "Player",
             "matches": matches,
             "wins": wins,
+            "points": points,
+        })
+
+    if not prelim:
+        return []
+
+    # League baseline = average points-per-match across all qualified players
+    baseline = sum(p["points"] / p["matches"] for p in prelim) / len(prelim)
+
+    K = 15          # regularization strength (in "phantom" matches) — bigger K = more shrinkage for low-volume players
+    EXP_BONUS_PER_MATCH = 0.25   # flat reward per real match played, rewarding volume/experience
+    EXP_BONUS_CAP_MATCHES = 300  # bonus stops growing past this many matches
+
+    scored = []
+    for p in prelim:
+        matches = p["matches"]
+        points = p["points"]
+
+        # Bayesian-smoothed average: pulls low-sample players toward the baseline
+        # instead of letting a handful of great matches rocket them to the top,
+        # while barely affecting players who already have a lot of matches.
+        smoothed_avg = (points + K * baseline) / (matches + K)
+
+        experience_bonus = min(matches, EXP_BONUS_CAP_MATCHES) * EXP_BONUS_PER_MATCH
+
+        rating = round(smoothed_avg + experience_bonus, 2)
+
+        scored.append({
+            "user_id": p["user_id"],
+            "first_name": p["first_name"],
+            "matches": matches,
+            "wins": p["wins"],
             "rating": rating,
         })
 
@@ -27783,11 +28066,12 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         lines = []
         for i, row in enumerate(rows):
             medal = medals[i] if i < 10 else f"<b>#{row['rank']}</b>"
-            name = html.escape(row["first_name"])
+            name = html.escape(row["first_name"] or "Player")
+            name = name if len(name) <= 16 else name[:15] + "…"
             jnum = jersey_number_prefix(row["user_id"])
             lines.append(
-                f'{medal} <a href="tg://user?id={row["user_id"]}">{jnum}{name}</a>  '
-                f'⭐ {row["rating"]}  ({row["matches"]}M)  {row["trend"]}'
+                f'{medal} <a href="tg://user?id={row["user_id"]}">{jnum}{name}</a>\n'
+                f'     <code>⭐ {row["rating"]:>7} · {row["matches"]}M</code>  {row["trend"]}'
             )
 
         text  = "🏅 <b>CCC RANKING</b> · CricoVerse Career Rating\n"
@@ -27816,44 +28100,49 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
     lines = []
 
+    def _lb_name(name):
+        """Truncate long names so rows don't wrap unevenly on mobile."""
+        name = html.escape(name or "Player")
+        return name if len(name) <= 16 else name[:15] + "…"
+
     if metric == "runs":
         for i, row in enumerate(rows):
             uid, name, tr, mp = row
             rank = offset + i + 1
             avg = round(tr/max(mp,1),1)
             medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href=\"tg://user?id={uid}\">{html.escape(name or 'Player')}</a>  {tr} runs  avg {avg}')
+            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{tr:>6} runs · avg {avg}</code>')
     elif metric == "wickets":
         for i, row in enumerate(rows):
             uid, name, tw = row
             rank = offset + i + 1
             medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href=\"tg://user?id={uid}\">{html.escape(name or 'Player')}</a>  {tw} wkts')
+            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{tw:>6} wkts</code>')
     elif metric == "wins":
         for i, row in enumerate(rows):
             uid, name, tw, tp = row
             rank = offset + i + 1
             medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href=\"tg://user?id={uid}\">{html.escape(name or 'Player')}</a>  {tw}W / {tp} played')
+            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{tw:>4}W / {tp} played</code>')
     elif metric == "winrate":
         for i, row in enumerate(rows):
             uid, name, tw, tp = row
             rank = offset + i + 1
             wr = round(tw/max(tp,1)*100,1)
             medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href=\"tg://user?id={uid}\">{html.escape(name or 'Player')}</a>  {wr}%  ({tw}/{tp})')
+            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{wr:>5}% ({tw}/{tp})</code>')
     elif metric == "sixes":
         for i, row in enumerate(rows):
             uid, name, ts = row
             rank = offset + i + 1
             medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href=\"tg://user?id={uid}\">{html.escape(name or 'Player')}</a>  {ts} 🚀')
+            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{ts:>6} 🚀</code>')
     elif metric == "mom":
         for i, row in enumerate(rows):
             uid, name, mom = row
             rank = offset + i + 1
             medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href=\"tg://user?id={uid}\">{html.escape(name or 'Player')}</a>  {mom} 🌟')
+            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{mom:>6} 🌟</code>')
 
     text  = f"🏆 <b>{title}</b>\n"
     text += "─────────────────\n"
@@ -29711,6 +30000,8 @@ def main():
     application.add_handler(CommandHandler("timeout", timeout_command))
 
     application.add_handler(CommandHandler("add", add_command))
+    application.add_handler(CommandHandler("join", join_command))
+    application.add_handler(CallbackQueryHandler(mid_game_join_callback, pattern="^midjoin_"))
     application.add_handler(CommandHandler("remove", remove_command))
 
     application.add_handler(CommandHandler("batting", batting_command))

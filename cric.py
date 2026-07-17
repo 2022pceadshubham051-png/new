@@ -4586,7 +4586,6 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
         match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
 
         active_matches[chat.id] = match
-        await announce_resume_code(context, chat.id, match)
 
         if user.id not in player_stats:
             init_player_stats(user.id)
@@ -4699,7 +4698,6 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
         match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
 
         active_matches[chat.id] = match
-        await announce_resume_code(context, chat.id, match)
 
         if user.id not in player_stats:
             init_player_stats(user.id)
@@ -5286,7 +5284,6 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             match.team_y.captain_id = ty_data["captain"]
 
         active_matches[group_id] = match
-        await announce_resume_code(context, group_id, match)
         pending_tour_match[group_id]["active_match"] = True
 
         # Move to team edit phase (same as team mode)
@@ -6020,7 +6017,6 @@ async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user)
     # Create new match
     match = Match(chat.id, chat.title)
     active_matches[chat.id] = match
-    await announce_resume_code(context, chat.id, match)
     
     # Track lobby creator — only they can force-start the match early
     match.host_id = user.id
@@ -7399,6 +7395,8 @@ async def start_match(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
     decision_method = "chose to" if not auto_decision else "will"
     toss_summary = "🏟️ <b>MATCH HAS BEGUN!</b>\n"
     toss_summary += "─────────────────\n"
+    toss_summary += f"🎙️ <b>Host:</b> {html.escape(match.host_name or 'Host')}\n"
+    toss_summary += f"🔑 <b>Code:</b> <code>{match.resume_code}</code>\n"
     toss_summary += f"🪙 <b>Toss Winner:</b> {match.toss_winner.name}\n"
     toss_summary += f"🏏 <b>Decision:</b> {match.batting_first.name} {decision_method} bat first\n"
     toss_summary += f"📏 <b>Format:</b> <code>{match.total_overs} Overs</code> per innings\n"
@@ -11657,6 +11655,8 @@ async def start_solo_mechanics(context, chat_id, match):
     
     # Announce Order
     order_msg = "╭━━ 🎲 BATTING ORDER ━━━━━━🏏\n"
+    order_msg += f"┃ 🎙️ Host: {html.escape(match.host_name or 'Host')}\n"
+    order_msg += f"┃ 🔑 Code: {match.resume_code}\n"
     order_msg += "┃ 🔀 The order has been shuffled!\n"
     order_msg += "┃\n"
     
@@ -12356,7 +12356,6 @@ async def magicball_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
     
     active_matches[group_id] = match
-    await announce_resume_code(context, group_id, match)
     
     if user.id not in player_stats:
         init_player_stats(user.id)
@@ -17183,7 +17182,6 @@ async def rematch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_match.magic_ball_mode = True
     new_match.phase = GamePhase.TEAM_JOINING
     active_matches[group_id] = new_match
-    await announce_resume_code(context, group_id, new_match)
 
     msg = f"🔁 <b>REMATCH STARTING!</b>\n"
     msg += f"─────────────────\n"

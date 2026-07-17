@@ -16,6 +16,9 @@ import json
 import sqlite3
 import shutil
 import os
+import pickle
+import secrets
+import string
 import html
 import io
 import requests
@@ -1948,8 +1951,153 @@ def award_fantasy_runs(match: 'Match', striker: 'Player', runs: int):
                 squad.setdefault("log", []).append(f"🚀 +{pts} · {striker.first_name} smashed a SIX")
 
 
-class Player:
-    """Represents a player in the match"""
+# ═══════════════════════════════════════════════════════════════
+# RESUMABLE MATCH SYSTEM → /regame <code>
+# When a match is force-stopped mid-way (host used /endmatch or /endsolo
+# WITHOUT a result/winner being declared), a snapshot is saved to disk for
+# 12 hours under a unique 8-char code. The ORIGINAL HOST can bring that
+# exact game state back with /regame <code>, in the SAME group only.
+# Matches that finished naturally (winner announced) are NEVER snapshotted.
+# ═══════════════════════════════════════════════════════════════
+
+RESUMABLE_DIR = "resumable_matches"
+RESUMABLE_INDEX_FILE = os.path.join(RESUMABLE_DIR, "resumable_index.json")
+RESUMABLE_MATCHES: Dict[str, Dict] = {}   # code -> {group_id, group_name, host_id, file_path, created_at, expires_at}
+RESUMABLE_TTL_HOURS = 12
+
+# asyncio Task / lock handles can't be pickled — strip them before saving,
+# they get recreated naturally as the resumed match continues.
+_RESUME_STRIP_ATTRS = [
+    'ball_timeout_task', 'batsman_selection_task', 'bowler_selection_task',
+    'join_phase_task', 'solo_timer_task', 'pause_task', 'active_ball_task',
+]
+
+
+def _generate_resume_code(length: int = 8) -> str:
+    """8-character alphanumeric code, unambiguous enough for players to type in chat."""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _save_resumable_index():
+    """Persist the resumable-match code index to disk so it survives restarts."""
+    try:
+        os.makedirs(RESUMABLE_DIR, exist_ok=True)
+        with open(RESUMABLE_INDEX_FILE, "w") as f:
+            json.dump(RESUMABLE_MATCHES, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save resumable match index: {e}")
+
+
+def _load_resumable_index():
+    """Load the resumable-match code index on startup."""
+    global RESUMABLE_MATCHES
+    try:
+        if os.path.exists(RESUMABLE_INDEX_FILE):
+            with open(RESUMABLE_INDEX_FILE, "r") as f:
+                RESUMABLE_MATCHES = json.load(f)
+            logger.info(f"✅ Loaded {len(RESUMABLE_MATCHES)} resumable match entries")
+    except Exception as e:
+        logger.error(f"Failed to load resumable match index: {e}")
+
+
+def _discard_resumable(code: str):
+    """Remove a resumable snapshot (used, or expired) from disk + index."""
+    meta = RESUMABLE_MATCHES.pop(code, None)
+    if meta:
+        try:
+            fp = meta.get("file_path")
+            if fp and os.path.exists(fp):
+                os.remove(fp)
+        except Exception as e:
+            logger.error(f"Failed to remove resumable snapshot file for {code}: {e}")
+    _save_resumable_index()
+
+
+def save_match_for_resume(match, group_id: int, group_name: str, host_id: int) -> Optional[str]:
+    """
+    Snapshot a mid-game-stopped match (NO result declared) to disk so
+    /regame <code> can restore it within RESUME_TTL_HOURS. Reuses the code
+    that was already assigned to this match at creation time (match.resume_code)
+    so the same code shown at match-start still works at match-end.
+    """
+    try:
+        os.makedirs(RESUMABLE_DIR, exist_ok=True)
+
+        code = getattr(match, 'resume_code', None) or _generate_resume_code()
+        while code in RESUMABLE_MATCHES:
+            code = _generate_resume_code()
+
+        # Strip un-picklable live asyncio Task handles before pickling.
+        stripped = {}
+        for attr in _RESUME_STRIP_ATTRS:
+            if hasattr(match, attr):
+                stripped[attr] = getattr(match, attr)
+                setattr(match, attr, None)
+
+        file_path = os.path.join(RESUMABLE_DIR, f"resume_{code}.pkl")
+        try:
+            with open(file_path, "wb") as f:
+                pickle.dump(match, f, protocol=pickle.HIGHEST_PROTOCOL)
+        finally:
+            for attr, val in stripped.items():
+                setattr(match, attr, val)
+
+        expires_at = (datetime.now() + timedelta(hours=RESUMABLE_TTL_HOURS)).isoformat()
+        RESUMABLE_MATCHES[code] = {
+            "group_id": group_id,
+            "group_name": group_name,
+            "host_id": host_id,
+            "file_path": file_path,
+            "created_at": datetime.now().isoformat(),
+            "expires_at": expires_at,
+        }
+        _save_resumable_index()
+        logger.info(f"💾 Saved resumable snapshot for group {group_id} → code {code}")
+        return code
+    except Exception as e:
+        logger.error(f"Failed to save resumable match snapshot: {e}")
+        return None
+
+
+async def announce_resume_code(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match):
+    """Send the resume code to the group right after a match starts."""
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"🔑 <b>Resume Code:</b> <code>{match.resume_code}</code>\n"
+                f"If this match gets force-stopped mid-way, the host can bring it "
+                f"back exactly where it left off with <code>/regame {match.resume_code}</code> "
+                f"— valid for {RESUMABLE_TTL_HOURS} hours."
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.debug(f"Could not announce resume code: {e}")
+
+
+async def resumable_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
+    """Background job: delete resumable snapshots older than RESUMABLE_TTL_HOURS."""
+    try:
+        now = datetime.now()
+        expired = []
+        for code, meta in list(RESUMABLE_MATCHES.items()):
+            try:
+                expires_at = datetime.fromisoformat(meta["expires_at"])
+            except Exception:
+                expires_at = now - timedelta(seconds=1)
+            if now > expires_at:
+                expired.append(code)
+        for code in expired:
+            _discard_resumable(code)
+        if expired:
+            logger.info(f"🧹 Auto-deleted {len(expired)} expired resumable match snapshot(s)")
+    except Exception as e:
+        logger.error(f"Error in resumable_cleanup_job: {e}")
+
+
+
     def __init__(self, user_id: int, username: str, first_name: str):
         self.user_id = user_id
         self.username = username
@@ -2218,6 +2366,12 @@ class Match:
 
         # Game mode (for TEAM/SOLO distinction, default TEAM)
         self.game_mode = "TEAM"
+
+        # ── RESUME / /regame FEATURE ──
+        # Unique 8-char code assigned at match creation. If the match gets
+        # force-stopped mid-way (no result declared), this same code is used
+        # to save a 12h-resumable snapshot. Shown to players at start & end.
+        self.resume_code: str = _generate_resume_code()
 
         # 🆕 Mid-game /join requests — user_ids who have already sent /join this
         # match, so spamming /join repeatedly is ignored after the first request.
@@ -4431,6 +4585,7 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
         match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
 
         active_matches[chat.id] = match
+        await announce_resume_code(context, chat.id, match)
 
         if user.id not in player_stats:
             init_player_stats(user.id)
@@ -4543,6 +4698,7 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
         match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
 
         active_matches[chat.id] = match
+        await announce_resume_code(context, chat.id, match)
 
         if user.id not in player_stats:
             init_player_stats(user.id)
@@ -5129,6 +5285,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             match.team_y.captain_id = ty_data["captain"]
 
         active_matches[group_id] = match
+        await announce_resume_code(context, group_id, match)
         pending_tour_match[group_id]["active_match"] = True
 
         # Move to team edit phase (same as team mode)
@@ -5862,6 +6019,7 @@ async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user)
     # Create new match
     match = Match(chat.id, chat.title)
     active_matches[chat.id] = match
+    await announce_resume_code(context, chat.id, match)
     
     # Track lobby creator — only they can force-start the match early
     match.host_id = user.id
@@ -12197,6 +12355,7 @@ async def magicball_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
     
     active_matches[group_id] = match
+    await announce_resume_code(context, group_id, match)
     
     if user.id not in player_stats:
         init_player_stats(user.id)
@@ -17023,6 +17182,7 @@ async def rematch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_match.magic_ball_mode = True
     new_match.phase = GamePhase.TEAM_JOINING
     active_matches[group_id] = new_match
+    await announce_resume_code(context, group_id, new_match)
 
     msg = f"🔁 <b>REMATCH STARTING!</b>\n"
     msg += f"─────────────────\n"
@@ -23655,7 +23815,91 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-async def timeout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def regame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /regame <code>
+    Resume a match that was force-stopped mid-way (no result declared), within
+    12 hours of stopping — picks up EXACTLY where it left off. Only the
+    ORIGINAL HOST of that specific match can use it, and only in the same
+    group where it was stopped. Works for both Team and Solo modes.
+    """
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("❌ Use this command in the group where the match was stopped!")
+        return
+
+    group_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚙️ <b>Usage:</b> <code>/regame [code]</code>\n\n"
+            "Resumes a match that was force-stopped mid-way, within 12 hours.\n"
+            "The code was shown in-chat when the match started and again when it stopped.\n"
+            "Only the host of that match can use it.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    code = context.args[0].strip()
+    meta = RESUMABLE_MATCHES.get(code)
+
+    if not meta:
+        await update.message.reply_text("❌ Invalid or expired code!")
+        return
+
+    try:
+        expires_at = datetime.fromisoformat(meta["expires_at"])
+    except Exception:
+        expires_at = datetime.now() - timedelta(seconds=1)
+    if datetime.now() > expires_at:
+        _discard_resumable(code)
+        await update.message.reply_text("❌ This code has expired (valid for 12 hours only).")
+        return
+
+    if meta["group_id"] != group_id:
+        await update.message.reply_text("❌ This code belongs to a different group!")
+        return
+
+    if meta["host_id"] != user_id:
+        await update.message.reply_text("❌ Only the host of that match can use this code!")
+        return
+
+    if group_id in active_matches:
+        await update.message.reply_text("❌ A match is already active in this group! End it first with /endmatch.")
+        return
+
+    file_path = meta.get("file_path")
+    if not file_path or not os.path.exists(file_path):
+        _discard_resumable(code)
+        await update.message.reply_text("❌ Saved match data not found (may have already expired).")
+        return
+
+    try:
+        with open(file_path, "rb") as f:
+            match = await asyncio.to_thread(pickle.load, f)
+    except Exception as e:
+        logger.error(f"Failed to load resumable match {code}: {e}")
+        await update.message.reply_text(f"❌ Failed to load saved match: {e}")
+        return
+
+    active_matches[group_id] = match
+
+    # Single-use: this exact snapshot is consumed once resumed.
+    _discard_resumable(code)
+
+    mode_label = "Solo" if getattr(match, 'game_mode', None) == "SOLO" else "Team"
+    await update.message.reply_text(
+        f"♻️ <b>MATCH RESUMED!</b>\n"
+        f"─────────────────\n"
+        f"🎮 <b>Mode:</b> {mode_label}\n"
+        f"📍 Picking up exactly where it was stopped.\n"
+        f"─────────────────\n"
+        f"Continue play as normal!",
+        parse_mode=ParseMode.HTML
+    )
+
+
+
     """
     ⏸️ TIMEOUT → Host pauses game for 2 minutes.
     Usage: /timeout  (host only, once per team per match)
@@ -25947,6 +26191,11 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             await query.edit_message_text("❌ No active match found.")
             return
         
+        # 💾 RESUME SNAPSHOT: save BEFORE mutating phase/state, so /regame
+        # restores the exact in-progress state. Only for mid-game force-stops
+        # (no result/winner declared) — never for a naturally completed match.
+        resume_code = save_match_for_resume(match, group_id, match.group_name, match.host_id)
+
         # 🔐 CANCEL ALL TASKS
         match.phase = GamePhase.MATCH_ENDED
         
@@ -26006,6 +26255,8 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             "┃ ⚠ Match was forcefully stopped!\n"
             "┃ ❌ Stats were NOT saved to the database.\n"
             "┣━─────────────────\n"
+            + (f"┃ 🔑 Resume within 12h: /regame {resume_code}\n" if resume_code else "")
+            + "┣━─────────────────\n"
             "┃ 🎮 Use /game to start a new match!\n"
             "╰━━━━━━━━\n",
             parse_mode=ParseMode.HTML
@@ -26024,6 +26275,9 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         
         match = active_matches[chat_id]
         
+        # 💾 RESUME SNAPSHOT: before state mutation, mid-game force-stop only.
+        resume_code = save_match_for_resume(match, chat_id, match.group_name, match.host_id)
+
         # 🔐 TRIPLE LOCK MECHANISM
         match.phase = GamePhase.MATCH_ENDED
         
@@ -26048,8 +26302,9 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         del active_matches[chat_id]
 
         # 🎬 DONE MESSAGE (removed animation URL fetch that fails on some servers)
+        extra = f"\n🔑 Resume within 12h: /regame {resume_code}" if resume_code else ""
         await query.message.reply_text(
-            "🏁 <b>MATCH ENDED!</b>\n\nThe match was forcefully stopped.\n🎮 Use /game to start again!",
+            f"🏁 <b>MATCH ENDED!</b>\n\nThe match was forcefully stopped.{extra}\n🎮 Use /game to start again!",
             parse_mode=ParseMode.HTML
         )
 
@@ -26076,6 +26331,9 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         
         match = active_matches[chat_id]
         
+        # 💾 RESUME SNAPSHOT: before state mutation, mid-game force-stop only.
+        resume_code = save_match_for_resume(match, chat_id, match.group_name, match.host_id)
+
         # 🔐 CANCEL ALL TASKS
         match.phase = GamePhase.MATCH_ENDED
         
@@ -26121,7 +26379,8 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             "🏁 <b>SOLO MATCH ENDED!</b>\n\n"
             "⚠️ Match was forcefully stopped.\n"
             "❌ Stats were NOT saved.\n\n"
-            "🎮 Use /game to start a new match!",
+            + (f"🔑 Resume within 12h: /regame {resume_code}\n\n" if resume_code else "")
+            + "🎮 Use /game to start a new match!",
             parse_mode=ParseMode.HTML
         )
         return
@@ -28685,6 +28944,24 @@ def _generate_clone_script(token: str, clone_id: str) -> str:
         f'CLONE_BOTS_FILE = "clone_{clone_id}_clones.json"'
     )
 
+    # 🔧 FIX: single-instance lock file was hardcoded to the SAME path as the
+    # parent bot ("/tmp/cricoverse_bot.lock"). Since the clone is a full
+    # source copy, it tried to grab the same lock, always found it already
+    # held by the parent, and hit `raise SystemExit(1)` immediately after
+    # launch — clone died silently right after Popen reported a PID.
+    source = source.replace(
+        '_lock_file_path = "/tmp/cricoverse_bot.lock"',
+        f'_lock_file_path = "/tmp/cricoverse_bot_clone_{clone_id}.lock"'
+    )
+
+    # 🔧 FIX: clone inherits the parent's PORT env var and tried to bind the
+    # same health-check port on 0.0.0.0 → conflict with parent's already-bound
+    # port. Give each clone a deterministic-but-unique port instead.
+    source = source.replace(
+        "PORT = int(os.environ.get('PORT', 8080))",
+        f"PORT = int(os.environ.get('PORT', 8080)) + 1000 + (int('{clone_id}') % 8000 if '{clone_id}'.isdigit() else 0)"
+    )
+
     return source
 
 
@@ -28693,13 +28970,18 @@ def _launch_clone_process(token: str, clone_id: str, script_path: str) -> "subpr
     import subprocess
     import sys
     try:
+        log_path = os.path.join(
+            os.path.dirname(os.path.abspath(script_path)),
+            f"clone_{clone_id}.log"
+        )
+        log_file = open(log_path, "a")
         proc = subprocess.Popen(
             [sys.executable, script_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
             start_new_session=True  # detach from parent process group
         )
-        logger.info(f"🤖 Clone {clone_id} launched as PID {proc.pid}")
+        logger.info(f"🤖 Clone {clone_id} launched as PID {proc.pid} (logs: {log_path})")
         return proc
     except Exception as e:
         logger.error(f"Failed to launch clone {clone_id}: {e}")
@@ -28821,6 +29103,25 @@ async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     proc = await asyncio.to_thread(_launch_clone_process, token, clone_id, clone_script_path)
     if not proc:
         await status_msg.edit_text("❌ Failed to launch clone process. Check server logs.")
+        return
+
+    # 🔧 FIX: previously we trusted Popen's immediate return as "success",
+    # but the clone could crash a split-second later (e.g. lock file clash)
+    # and we'd still report ✅ Launched. Give it a moment and verify.
+    await asyncio.sleep(3)
+    if proc.poll() is not None:
+        log_path = os.path.join(os.path.dirname(clone_script_path), f"clone_{clone_id}.log")
+        tail = ""
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                tail = f.read()[-800:]
+        except Exception:
+            pass
+        await status_msg.edit_text(
+            f"❌ Clone process died immediately (exit code {proc.returncode}).\n\n"
+            f"<b>Last log lines:</b>\n<code>{tail or 'no logs captured'}</code>",
+            parse_mode=ParseMode.HTML
+        )
         return
 
     expires_at = (datetime.now() + timedelta(days=30)).isoformat()
@@ -30419,6 +30720,9 @@ def main():
         application.job_queue.run_repeating(
             clone_expiry_checker_job, interval=86400, first=120
         )
+        application.job_queue.run_repeating(
+            resumable_cleanup_job, interval=1800, first=60
+        )
 
         # Registration expiry + daily reminder checker - runs every hour
         application.job_queue.run_repeating(
@@ -30438,6 +30742,7 @@ def main():
     application.add_handler(CommandHandler("game", game_command))
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CommandHandler("endmatch", endmatch_command))
+    application.add_handler(CommandHandler("regame", regame_command))
     application.add_handler(CommandHandler("refresh", refresh_command))
     application.add_handler(CommandHandler("timeout", timeout_command))
 
@@ -30701,6 +31006,7 @@ def main():
     init_tournament_db()
     load_tournament_data()
     _load_clone_bots_meta()  # Restore clone bot tracking from disk
+    _load_resumable_index()  # Restore /regame resumable-match tracking from disk
     
     logger.info("Cricoverse bot starting...")
 

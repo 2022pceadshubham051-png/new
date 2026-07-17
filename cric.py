@@ -2097,7 +2097,8 @@ async def resumable_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in resumable_cleanup_job: {e}")
 
 
-
+class Player:
+    """Represents a player in the match"""
     def __init__(self, user_id: int, username: str, first_name: str):
         self.user_id = user_id
         self.username = username

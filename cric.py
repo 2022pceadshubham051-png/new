@@ -23901,6 +23901,7 @@ async def regame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+async def timeout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     ⏸️ TIMEOUT → Host pauses game for 2 minutes.
     Usage: /timeout  (host only, once per team per match)

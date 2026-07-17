@@ -18045,6 +18045,426 @@ def fetch_team_stats_for_card(user_id: int) -> dict:
     }
 
 
+# ═══════════════════════════════════════════════════════════════
+# ⚔️ HEAD TO HEAD (/h2h) — Team Mode player comparison card
+# ═══════════════════════════════════════════════════════════════
+
+H2H_STAT_ROWS = [
+    # (label, stats_key, formatter)
+    ("Matches",       "matches",     lambda v: str(v)),
+    ("Wins",          "wins",        lambda v: str(v)),
+    ("Win Rate",      "win_rate",    lambda v: f"{v:.1f}%"),
+    ("Runs",          "runs",        lambda v: str(v)),
+    ("Highest Score", "highest",     lambda v: str(v)),
+    ("Strike Rate",   "strike_rate", lambda v: f"{v:.1f}%"),
+    ("Wickets",       "wickets",     lambda v: str(v)),
+    ("Fifties",       "fifties",     lambda v: str(v)),
+    ("Hundreds",      "hundreds",    lambda v: str(v)),
+]
+
+
+def _h2h_verdict_text(name1: str, stats1: dict, name2: str, stats2: dict) -> Tuple[str, int, int]:
+    """Count category wins for each player (higher value wins each category)."""
+    score1 = score2 = 0
+    for _, key, _ in H2H_STAT_ROWS:
+        v1, v2 = stats1.get(key, 0), stats2.get(key, 0)
+        if v1 > v2:
+            score1 += 1
+        elif v2 > v1:
+            score2 += 1
+    if score1 == score2:
+        return ("🤝 <b>It's a Dead Heat!</b> Both players are evenly matched.", score1, score2)
+    winner = name1 if score1 > score2 else name2
+    win_score, lose_score = max(score1, score2), min(score1, score2)
+    return (
+        f"🏆 <b>Verdict: {html.escape(winner)} wins the Head-to-Head!</b> "
+        f"({win_score} categories to {lose_score})",
+        score1, score2
+    )
+
+
+def _h2h_caption_stats_block(name1: str, stats1: dict, name2: str, stats2: dict) -> str:
+    """Build the full team-mode stat comparison as HTML text for the caption,
+    with a 🔥 emoji marking whichever player leads that category."""
+    n1 = html.escape((name1 or "P1")[:14])
+    n2 = html.escape((name2 or "P2")[:14])
+    lines = [f"📊 <b>Team Mode — {n1} vs {n2}</b>"]
+    for label, key, fmt in H2H_STAT_ROWS:
+        v1, v2 = stats1.get(key, 0), stats2.get(key, 0)
+        s1, s2 = fmt(v1), fmt(v2)
+        if v1 > v2:
+            lines.append(f"• <b>{label}:</b> {s1} 🔥  vs  {s2}")
+        elif v2 > v1:
+            lines.append(f"• <b>{label}:</b> {s1}  vs  🔥 {s2}")
+        else:
+            lines.append(f"• <b>{label}:</b> {s1}  vs  {s2} 🤝")
+    return "\n".join(lines)
+
+
+H2H_TEMPLATE_CANDIDATES = ["h2h_template.png", "/home/cricoverse/h2h_template.png"]
+
+# Pixel-measured positions on the h2h_template.png reference card (native 1536x1024):
+H2H_TPL_LEFT_CX, H2H_TPL_LEFT_CY   = 385, 505
+H2H_TPL_RIGHT_CX, H2H_TPL_RIGHT_CY = 1150, 505
+H2H_TPL_CIRCLE_R = 195
+H2H_TPL_LEFT_BOX  = (214, 741, 557, 818)
+H2H_TPL_RIGHT_BOX = (978, 741, 1319, 818)
+
+
+def _render_h2h_image_from_template(
+    template_path: str,
+    name1: str, uname1: str, avatar1_bytes: Optional[bytes],
+    name2: str, uname2: str, avatar2_bytes: Optional[bytes],
+) -> Optional[BytesIO]:
+    """Overlay pfp + username onto the branded h2h_template.png card."""
+    base = Image.open(template_path).convert("RGBA")
+    Wt, Ht = base.size
+    # Positions were measured on a 1536x1024 reference; scale if the
+    # actual template file is a different resolution.
+    sx, sy = Wt / 1536.0, Ht / 1024.0
+
+    overlay = Image.new("RGBA", (Wt, Ht), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    def paste_avatar(cx, cy, r, avatar_bytes, initials):
+        size = max(int(r * 2), 2)
+        hq = size * 3  # render at 3x then downsample for crisp edges
+        av = _create_avatar_image(avatar_bytes, hq, initials)
+        av = av.resize((size, size), Image.Resampling.LANCZOS)
+        overlay.alpha_composite(av, (int(cx - size / 2), int(cy - size / 2)))
+
+    paste_avatar(H2H_TPL_LEFT_CX * sx, H2H_TPL_LEFT_CY * sy, H2H_TPL_CIRCLE_R * min(sx, sy),
+                 avatar1_bytes, (name1 or "P1")[:2].upper())
+    paste_avatar(H2H_TPL_RIGHT_CX * sx, H2H_TPL_RIGHT_CY * sy, H2H_TPL_CIRCLE_R * min(sx, sy),
+                 avatar2_bytes, (name2 or "P2")[:2].upper())
+
+    base_font_size = 30 * min(sx, sy)
+    uname_font_size = 20 * min(sx, sy)
+    f_name  = _get_font(True, max(int(base_font_size), 10))
+    f_uname = _get_font(False, max(int(uname_font_size), 8))
+    DARK = (10, 60, 60, 255)
+    GRAY = (95, 105, 105, 255)
+
+    def draw_box_text(box, name, username):
+        x0, y0, x1, y1 = [v * (sx if i % 2 == 0 else sy) for i, v in enumerate(box)]
+        cx = (x0 + x1) / 2
+        nm = (name or "Player")[:16]
+        un = (username or "")[:20]
+        nb = draw.textbbox((0, 0), nm, font=f_name)
+        nh = nb[3] - nb[1]
+        ub = draw.textbbox((0, 0), un, font=f_uname)
+        uh = ub[3] - ub[1]
+        gap = 6 * min(sx, sy)
+        total_h = nh + uh + gap
+        top = y0 + ((y1 - y0) - total_h) / 2
+        draw.text((cx - (nb[2] - nb[0]) / 2, top - nb[1]), nm, font=f_name, fill=DARK)
+        draw.text((cx - (ub[2] - ub[0]) / 2, top + nh + gap - ub[1]), un, font=f_uname, fill=GRAY)
+
+    draw_box_text(H2H_TPL_LEFT_BOX, name1, uname1)
+    draw_box_text(H2H_TPL_RIGHT_BOX, name2, uname2)
+
+    final = Image.alpha_composite(base, overlay).convert("RGB")
+    bio = BytesIO()
+    final.save(bio, "JPEG", quality=95)
+    bio.seek(0)
+    return bio
+
+
+def _render_h2h_image(
+    id1: int, name1: str, uname1: str, stats1: dict, avatar1_bytes: Optional[bytes],
+    id2: int, name2: str, uname2: str, stats2: dict, avatar2_bytes: Optional[bytes],
+) -> Optional[BytesIO]:
+    """Blocking PIL work for the /h2h card. Uses the branded h2h_template.png if
+    present (pfp + username overlaid onto the two circles/boxes), otherwise
+    falls back to a fully-drawn card. Always call via asyncio.to_thread."""
+    template_path = next((p for p in H2H_TEMPLATE_CANDIDATES if os.path.exists(p)), None)
+    if template_path:
+        try:
+            return _render_h2h_image_from_template(
+                template_path, name1, uname1, avatar1_bytes, name2, uname2, avatar2_bytes
+            )
+        except Exception as e:
+            logger.error(f"H2H template render failed, using fallback: {e}")
+
+    return _render_h2h_image_fallback(
+        id1, name1, uname1, stats1, avatar1_bytes,
+        id2, name2, uname2, stats2, avatar2_bytes,
+    )
+
+
+def _render_h2h_image_fallback(
+    id1: int, name1: str, uname1: str, stats1: dict, avatar1_bytes: Optional[bytes],
+    id2: int, name2: str, uname2: str, stats2: dict, avatar2_bytes: Optional[bytes],
+) -> Optional[BytesIO]:
+    """Fully programmatic PIL card, used only if h2h_template.png is missing.
+    All stat comparison lives in the caption text, not the image."""
+    try:
+        SCALE = 2  # supersample for crisp text/edges, downscale at the end
+        W = 1200
+        H = 640
+
+        Wc, Hc = W * SCALE, H * SCALE
+        base = Image.new("RGBA", (Wc, Hc), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(base)
+
+        TEAL_DARK   = (10, 74, 74, 255)
+        TEAL        = (14, 110, 110, 255)
+        TEAL_LIGHT  = (224, 244, 244, 255)
+        WHITE       = (255, 255, 255, 255)
+        GOLD        = (255, 196, 60, 255)
+        GRAY        = (110, 120, 120, 255)
+        DARK_TXT    = (20, 40, 40, 255)
+
+        # ── Outer border frame ──
+        border = 10 * SCALE
+        draw.rounded_rectangle(
+            [border // 2, border // 2, Wc - border // 2, Hc - border // 2],
+            radius=28 * SCALE, outline=TEAL, width=border
+        )
+
+        HEADER_H = 210
+        # ── Header band ──
+        for y in range(HEADER_H * SCALE):
+            t = y / max(HEADER_H * SCALE - 1, 1)
+            r = int(TEAL_DARK[0] + (TEAL[0] - TEAL_DARK[0]) * t)
+            g = int(TEAL_DARK[1] + (TEAL[1] - TEAL_DARK[1]) * t)
+            b = int(TEAL_DARK[2] + (TEAL[2] - TEAL_DARK[2]) * t)
+            draw.line([(border, y), (Wc - border, y)], fill=(r, g, b, 255))
+
+        f_logo   = _get_font(True, 24 * SCALE)
+        f_title  = _get_font(True, 56 * SCALE)
+        f_sub    = _get_font(False, 20 * SCALE)
+        f_name   = _get_font(True, 32 * SCALE)
+        f_uname  = _get_font(False, 22 * SCALE)
+        f_vs     = _get_font(True, 46 * SCALE)
+
+        draw.text((36 * SCALE, 26 * SCALE), "CRICOVERSE", font=f_logo, fill=WHITE)
+        title = "HEAD TO HEAD"
+        tb = draw.textbbox((0, 0), title, font=f_title)
+        draw.text(((Wc - (tb[2] - tb[0])) / 2, 55 * SCALE), title, font=f_title, fill=WHITE)
+        sub = "TEAM MODE COMPARISON"
+        sb = draw.textbbox((0, 0), sub, font=f_sub)
+        draw.text(((Wc - (sb[2] - sb[0])) / 2, 135 * SCALE), sub, font=f_sub, fill=TEAL_LIGHT)
+
+        # ── Avatar zone ──
+        avatar_size = 260 * SCALE
+        cy = HEADER_H * SCALE + 55 * SCALE + avatar_size // 2
+        cx1 = Wc // 4
+        cx2 = Wc - Wc // 4
+
+        av1 = _create_avatar_image(avatar1_bytes, avatar_size, (name1 or "P1")[:2].upper())
+        av2 = _create_avatar_image(avatar2_bytes, avatar_size, (name2 or "P2")[:2].upper())
+
+        ring_pad = 8 * SCALE
+        for (cx, av) in [(cx1, av1), (cx2, av2)]:
+            ring_box = [cx - avatar_size // 2 - ring_pad, cy - avatar_size // 2 - ring_pad,
+                        cx + avatar_size // 2 + ring_pad, cy + avatar_size // 2 + ring_pad]
+            draw.ellipse(ring_box, outline=TEAL, width=6 * SCALE, fill=(245, 248, 248, 255))
+            base.alpha_composite(av, (cx - avatar_size // 2, cy - avatar_size // 2))
+
+        # VS badge in the middle
+        vs_r = 46 * SCALE
+        vs_cx, vs_cy = Wc // 2, cy
+        draw.ellipse([vs_cx - vs_r, vs_cy - vs_r, vs_cx + vs_r, vs_cy + vs_r], fill=TEAL_DARK)
+        vb = draw.textbbox((0, 0), "VS", font=f_vs)
+        draw.text((vs_cx - (vb[2] - vb[0]) / 2, vs_cy - (vb[3] - vb[1]) / 2 - vb[1]), "VS", font=f_vs, fill=GOLD)
+
+        # Names + usernames under avatars, inside a rounded box (like the template)
+        name_y = cy + avatar_size // 2 + ring_pad + 30 * SCALE
+        box_w, box_h = 320 * SCALE, 90 * SCALE
+        for cx, nm, un in [(cx1, name1, uname1), (cx2, name2, uname2)]:
+            box = [cx - box_w // 2, name_y, cx + box_w // 2, name_y + box_h]
+            draw.rounded_rectangle(box, radius=14 * SCALE, outline=TEAL, width=4 * SCALE, fill=(255, 255, 255, 255))
+            nm_disp = (nm or "Player")[:16]
+            nb = draw.textbbox((0, 0), nm_disp, font=f_name)
+            draw.text((cx - (nb[2] - nb[0]) / 2, name_y + 14 * SCALE), nm_disp, font=f_name, fill=DARK_TXT)
+            un_disp = (un or "")[:20]
+            ub = draw.textbbox((0, 0), un_disp, font=f_uname)
+            draw.text((cx - (ub[2] - ub[0]) / 2, name_y + 52 * SCALE), un_disp, font=f_uname, fill=GRAY)
+
+        final = base.resize((W, H), Image.Resampling.LANCZOS).convert("RGB")
+        bio = BytesIO()
+        final.save(bio, "JPEG", quality=95)
+        bio.seek(0)
+        return bio
+    except Exception as e:
+        logger.error("H2H image generation error: " + str(e))
+        return None
+
+
+async def generate_h2h_image(
+    id1: int, name1: str, uname1: str, stats1: dict, avatar1_bytes: Optional[bytes],
+    id2: int, name2: str, uname2: str, stats2: dict, avatar2_bytes: Optional[bytes],
+) -> Optional[BytesIO]:
+    """Non-blocking wrapper for _render_h2h_image (runs PIL work in a thread)."""
+    return await asyncio.to_thread(
+        _render_h2h_image,
+        id1, name1, uname1, stats1, avatar1_bytes,
+        id2, name2, uname2, stats2, avatar2_bytes,
+    )
+
+
+async def h2h_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """⚔️ /h2h — Head-to-Head Team Mode comparison card between two players.
+
+    Usage:
+      /h2h @user1 @user2
+      /h2h <user1_id> <user2_id>
+      (reply to a player's message) /h2h @user2
+      (reply to a player's message) /h2h <user2_id>
+    A reply always fills Player 1 first; the mention/ID given fills Player 2.
+    """
+    message = update.message
+    resolved: List[Tuple[int, str, Optional[str]]] = []
+
+    async def _resolve_from_username(raw_username: str):
+        username = raw_username.lstrip("@")
+        if not username:
+            return None
+        try:
+            chat = await context.bot.get_chat(f"@{username}")
+            return (chat.id, (chat.first_name or chat.title or username), (chat.username or username))
+        except Exception:
+            pass
+        for uid, data in user_data.items():
+            if (data.get("username") or "").lower() == username.lower():
+                return (int(uid), data.get("first_name", "Player"), data.get("username", username))
+        return None
+
+    async def _resolve_from_id(uid_str: str):
+        try:
+            uid = int(uid_str)
+        except ValueError:
+            return None
+        stored = user_data.get(uid, {})
+        name = stored.get("first_name")
+        username = stored.get("username")
+        if not name:
+            try:
+                chat = await context.bot.get_chat(uid)
+                name = chat.first_name or chat.title or f"Player_{uid}"
+                username = chat.username or username
+            except Exception:
+                name = f"Player_{uid}"
+        return (uid, name, username)
+
+    # 1) Reply → Player 1
+    if message.reply_to_message and message.reply_to_message.from_user:
+        ru = message.reply_to_message.from_user
+        resolved.append((ru.id, ru.first_name or "Player", ru.username))
+
+    # 2) @mentions / text_mentions from the command text
+    if message.entities:
+        for entity in message.entities:
+            if len(resolved) >= 2:
+                break
+            if entity.type == "text_mention" and entity.user:
+                u = entity.user
+                resolved.append((u.id, u.first_name or "Player", u.username))
+            elif entity.type == "mention":
+                username = message.text[entity.offset:entity.offset + entity.length]
+                r = await _resolve_from_username(username)
+                if r:
+                    resolved.append(r)
+
+    # 3) Numeric user IDs among the args
+    if len(resolved) < 2 and context.args:
+        for arg in context.args:
+            if len(resolved) >= 2:
+                break
+            if arg.startswith("@"):
+                continue  # handled via entities above
+            if arg.isdigit():
+                r = await _resolve_from_id(arg)
+                if r:
+                    resolved.append(r)
+
+    # de-duplicate, preserve order
+    seen: Set[int] = set()
+    unique = []
+    for r in resolved:
+        if r[0] not in seen:
+            unique.append(r)
+            seen.add(r[0])
+    resolved = unique
+
+    if len(resolved) < 2:
+        await message.reply_text(
+            "⚔️ <b>HEAD TO HEAD — Usage</b>\n"
+            "─────────────────\n"
+            "• <code>/h2h @user1 @user2</code>\n"
+            "• <code>/h2h user1_id user2_id</code>\n"
+            "• Reply to a player's message with <code>/h2h @user2</code>\n"
+            "  or <code>/h2h user2_id</code> — the replied-to player\n"
+            "  becomes Player 1 automatically.\n"
+            "─────────────────\n"
+            "<i>Compares Team Mode stats only.</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    (id1, name1, uname1), (id2, name2, uname2) = resolved[0], resolved[1]
+
+    if id1 == id2:
+        await message.reply_text("⚔️ A player can't go Head-to-Head with themselves!")
+        return
+
+    if update.effective_chat.type != "private":
+        remaining = check_image_cooldown(update.effective_chat.id)
+        if remaining is not None:
+            await send_cooldown_warning(update, remaining)
+            return
+
+    wait_msg = None
+    try:
+        wait_msg = await message.reply_text("⚔️ <b>Generating Head-to-Head card...</b>", parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+    stats1 = fetch_team_stats_for_card(id1)
+    stats2 = fetch_team_stats_for_card(id2)
+
+    avatar1, avatar2 = await asyncio.gather(
+        fetch_user_avatar_bytes(context, id1),
+        fetch_user_avatar_bytes(context, id2),
+    )
+
+    uname1_disp = f"@{uname1}" if uname1 else "No Username"
+    uname2_disp = f"@{uname2}" if uname2 else "No Username"
+
+    bio = await generate_h2h_image(
+        id1, name1, uname1_disp, stats1, avatar1,
+        id2, name2, uname2_disp, stats2, avatar2,
+    )
+
+    if wait_msg is not None:
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+
+    if bio is None:
+        await message.reply_text("⚠️ Couldn't generate the Head-to-Head card. Try again!")
+        return
+
+    verdict_text, _, _ = _h2h_verdict_text(name1, stats1, name2, stats2)
+    stats_block = _h2h_caption_stats_block(name1, stats1, name2, stats2)
+    caption = (
+        f"⚔️ <b>HEAD TO HEAD</b>\n"
+        f"─────────────────\n"
+        f"👤 {format_name_with_jersey(id1, name1)}  🆚  {format_name_with_jersey(id2, name2)}\n"
+        f"─────────────────\n"
+        f"{stats_block}\n"
+        f"─────────────────\n"
+        f"{verdict_text}"
+    )
+
+    bio.name = "h2h.jpg"
+    await message.reply_photo(photo=bio, caption=caption, parse_mode=ParseMode.HTML)
+    if update.effective_chat.type != "private":
+        set_image_cooldown(update.effective_chat.id)
+
+
 async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🎽 /jersey <number> — Set your personal jersey number (1-999), shown on profile & squads."""
     user = update.effective_user
@@ -29899,6 +30319,7 @@ async def setup_public_bot_commands(application: Application):
         BotCommand("game", "Start a cricket match"),
         BotCommand("help", "Rules, modes, and quick guide"),
         BotCommand("mystats", "Your profile card and stats"),
+        BotCommand("h2h", "Head-to-Head: compare 2 players"),
         BotCommand("scorecard", "Live scorecard and worm graph"),
         BotCommand("players", "Current squads and player status"),
         BotCommand("momentum", "Momentum dashboard image"),
@@ -30037,6 +30458,7 @@ def main():
 
     # ================== STATS ==================
     application.add_handler(CommandHandler("mystats", mystats_command_v2))
+    application.add_handler(CommandHandler("h2h", h2h_command))
     application.add_handler(CommandHandler("jersey", jersey_command))
     application.add_handler(CallbackQueryHandler(jersey_swap_callback, pattern="^jswap_"))
     application.add_handler(CommandHandler("addach", addach_command))

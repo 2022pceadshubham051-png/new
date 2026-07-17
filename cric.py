@@ -18077,28 +18077,46 @@ def _h2h_verdict_text(name1: str, stats1: dict, name2: str, stats2: dict) -> Tup
     winner = name1 if score1 > score2 else name2
     win_score, lose_score = max(score1, score2), min(score1, score2)
     return (
-        f"🏆 <b>Verdict: {html.escape(winner)} wins the Head-to-Head!</b> "
-        f"({win_score} categories to {lose_score})",
+        f"🏆 <b>{html.escape(winner)} wins the Head-to-Head!</b> "
+        f"({win_score}-{lose_score})",
         score1, score2
     )
 
 
 def _h2h_caption_stats_block(name1: str, stats1: dict, name2: str, stats2: dict) -> str:
-    """Build the full team-mode stat comparison as HTML text for the caption,
-    with a 🔥 emoji marking whichever player leads that category."""
-    n1 = html.escape((name1 or "P1")[:14])
-    n2 = html.escape((name2 or "P2")[:14])
-    lines = [f"📊 <b>Team Mode — {n1} vs {n2}</b>"]
+    """Build a neatly aligned monospace stat table for the caption (inside <pre>),
+    with 🔥 marking whichever player leads that row."""
+    n1 = (name1 or "P1").split()[0][:9]
+    n2 = (name2 or "P2").split()[0][:9]
+
+    LABEL_W, VAL_W = 13, 9
+    lines = [f"{'STAT':<{LABEL_W}}{n1:>{VAL_W}}{n2:>{VAL_W}}"]
+    lines.append("─" * (LABEL_W + VAL_W * 2))
+
     for label, key, fmt in H2H_STAT_ROWS:
         v1, v2 = stats1.get(key, 0), stats2.get(key, 0)
         s1, s2 = fmt(v1), fmt(v2)
         if v1 > v2:
-            lines.append(f"• <b>{label}:</b> {s1} 🔥  vs  {s2}")
+            s1 = "🔥" + s1
         elif v2 > v1:
-            lines.append(f"• <b>{label}:</b> {s1}  vs  🔥 {s2}")
-        else:
-            lines.append(f"• <b>{label}:</b> {s1}  vs  {s2} 🤝")
-    return "\n".join(lines)
+            s2 = "🔥" + s2
+        lines.append(f"{label:<{LABEL_W}}{s1:>{VAL_W}}{s2:>{VAL_W}}")
+
+    table = "\n".join(lines)
+    return f"📊 <b>TEAM MODE STATS</b>\n<pre>{table}</pre>"
+
+
+def _h2h_category_bar(name1: str, score1: int, name2: str, score2: int, total: int) -> str:
+    """Small visual bar showing how many stat-categories each player leads."""
+    n1 = html.escape((name1 or "P1")[:14])
+    n2 = html.escape((name2 or "P2")[:14])
+    bar1 = "🟩" * score1 + "⬜" * (total - score1)
+    bar2 = "🟦" * score2 + "⬜" * (total - score2)
+    return (
+        f"📈 <b>Categories Won</b>\n"
+        f"{n1}: {bar1}  <b>{score1}</b>\n"
+        f"{n2}: {bar2}  <b>{score2}</b>"
+    )
 
 
 H2H_TEMPLATE_CANDIDATES = ["h2h_template.png", "/home/cricoverse/h2h_template.png"]
@@ -18447,15 +18465,18 @@ async def h2h_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Couldn't generate the Head-to-Head card. Try again!")
         return
 
-    verdict_text, _, _ = _h2h_verdict_text(name1, stats1, name2, stats2)
+    verdict_text, sc1, sc2 = _h2h_verdict_text(name1, stats1, name2, stats2)
     stats_block = _h2h_caption_stats_block(name1, stats1, name2, stats2)
+    category_bar = _h2h_category_bar(name1, sc1, name2, sc2, len(H2H_STAT_ROWS))
     caption = (
         f"⚔️ <b>HEAD TO HEAD</b>\n"
-        f"─────────────────\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"👤 {format_name_with_jersey(id1, name1)}  🆚  {format_name_with_jersey(id2, name2)}\n"
-        f"─────────────────\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"{stats_block}\n"
-        f"─────────────────\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"{category_bar}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"{verdict_text}"
     )
 

@@ -15641,208 +15641,274 @@ def generate_leaderboard_image(title: str, rows: list, metric: str, offset: int 
 
 def generate_points_table_image(group_id: int) -> Optional[BytesIO]:
     """
-    💎 BROADCAST-QUALITY POINTS TABLE:
+    💎 ULTIMATE BROADCAST-QUALITY POINTS TABLE:
     • 4K Super-Sampled Rendering (LANCZOS Downscaling)
-    • Glassmorphism Row Highlights with Neon Left-Border
-    • Dynamic NRR Color Coding & Gold/Silver/Bronze Rank Accents
-    • Ultra-clean Typography Alignment
+    • Soft glow banner + glassmorphism rows with true blurred drop-shadows
+    • Trophy badges for top 3, mini NRR bar indicators
+    • Alternating glass tint + neon accent rail per rank
     """
     try:
         pts = tournament_points.get(group_id, {})
         if not pts: return None
-        
+
         sorted_teams = sorted(pts.items(), key=lambda x: (-x[1].get("pts", 0), -x[1].get("nrr", 0.0)))
 
-        # ── Scaling for Ultra Smoothness (2x) ──
         SC = 2
-        ROW_H, HEADER_H, FOOTER_H = 80*SC, 120*SC, 60*SC
+        ROW_H, HEADER_H, FOOTER_H = 86*SC, 150*SC, 60*SC
         W = 1200 * SC
-        H = HEADER_H + (len(sorted_teams) * ROW_H) + FOOTER_H + 40*SC
+        H = HEADER_H + (len(sorted_teams) * ROW_H) + FOOTER_H + 50*SC
 
-        # Base Image with Deep Space Gradient
-        img = Image.new("RGBA", (W, H), (6, 10, 25, 255))
+        # ── Base canvas: deep navy → violet vertical gradient ──
+        img = Image.new("RGBA", (W, H), (6, 8, 20, 255))
         draw = ImageDraw.Draw(img)
-        
-        # Premium Background Gradient
         for y in range(H):
-            ratio = y / H
-            r = int(8 + 12 * ratio)
-            g = int(12 + 15 * ratio)
-            b = int(32 + 25 * ratio)
+            t = y / H
+            r = int(9 + 14 * t)
+            g = int(10 + 10 * t)
+            b = int(26 + 30 * t)
             draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-        # Colors & Fonts
-        C_GOLD, C_WHITE = (255, 210, 50, 255), (240, 245, 255, 255)
-        C_ACCENT, C_GRAY = (0, 190, 255, 255), (150, 170, 200, 255)
-        C_GREEN, C_RED = (0, 255, 130, 255), (255, 60, 90, 255)
-        
-        fn_title = _get_font(True, 55 * SC)
-        fn_hdr   = _get_font(True, 32 * SC)
-        fn_bold  = _get_font(True, 30 * SC)
-        fn_reg   = _get_font(False, 28 * SC)
-        fn_sm    = _get_font(False, 22 * SC)
+        C_GOLD, C_WHITE = (255, 205, 60, 255), (240, 245, 255, 255)
+        C_SILVER, C_BRONZE = (205, 210, 225, 255), (215, 140, 70, 255)
+        C_ACCENT, C_GRAY = (90, 190, 255, 255), (150, 168, 198, 255)
+        C_GREEN, C_RED = (70, 235, 140, 255), (255, 90, 110, 255)
 
-        # ── 1. Header Section ──
-        draw.rectangle([(0, 0), (W, HEADER_H)], fill=(15, 20, 50, 200))
-        draw.line([(0, HEADER_H-4*SC), (W, HEADER_H-4*SC)], fill=C_GOLD, width=4*SC)
-        draw.text((60*SC, 35*SC), "📊  TOURNAMENT STANDINGS", font=fn_title, fill=C_WHITE)
+        fn_title = _get_font(True, 50 * SC)
+        fn_sub   = _get_font(False, 22 * SC)
+        fn_hdr   = _get_font(True, 26 * SC)
+        fn_bold  = _get_font(True, 29 * SC)
+        fn_reg   = _get_font(False, 27 * SC)
+        fn_sm    = _get_font(False, 20 * SC)
 
-        # ── 2. Column Headers ──
-        cols = ["POS", "TEAM", "P", "W", "L", "T", "PTS", "NRR"]
-        # Precisely calculated X-positions for perfect alignment
-        col_x = [60*SC, 160*SC, 580*SC, 670*SC, 760*SC, 850*SC, 960*SC, 1080*SC]
-        
-        header_y = HEADER_H + 10*SC
-        draw.rectangle([(40*SC, header_y), (W-40*SC, header_y + 55*SC)], fill=(25, 40, 85, 255), outline=C_ACCENT, width=1*SC)
+        # ── 1. Glow banner ──
+        glow = Image.new("RGBA", (W, HEADER_H), (0, 0, 0, 0))
+        gdraw = ImageDraw.Draw(glow)
+        gdraw.ellipse([W*0.05, -60*SC, W*0.55, HEADER_H*1.4], fill=(70, 90, 255, 90))
+        gdraw.ellipse([W*0.55, -60*SC, W*1.05, HEADER_H*1.4], fill=(255, 150, 60, 55))
+        glow = glow.filter(ImageFilter.GaussianBlur(40*SC))
+        img.alpha_composite(glow, (0, 0))
+        draw = ImageDraw.Draw(img)
+
+        draw.rectangle([(0, 0), (W, HEADER_H)], fill=(14, 17, 42, 165))
+        draw.text((60*SC, 34*SC), "🏆  TOURNAMENT STANDINGS", font=fn_title, fill=C_WHITE)
+        draw.text((62*SC, 96*SC), f"{len(sorted_teams)} teams  ·  live points table", font=fn_sub, fill=C_GRAY)
+        # gold underline with soft glow
+        line_glow = Image.new("RGBA", (W, 30*SC), (0, 0, 0, 0))
+        ImageDraw.Draw(line_glow).rectangle([40*SC, 10*SC, W-40*SC, 14*SC], fill=(255, 205, 60, 200))
+        line_glow = line_glow.filter(ImageFilter.GaussianBlur(6*SC))
+        img.alpha_composite(line_glow, (0, HEADER_H - 20*SC))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([(40*SC, HEADER_H-6*SC), (W-40*SC, HEADER_H-3*SC)], fill=C_GOLD)
+
+        # ── 2. Column headers ──
+        cols = ["#", "TEAM", "P", "W", "L", "T", "PTS", "NRR"]
+        col_x = [70*SC, 165*SC, 590*SC, 675*SC, 760*SC, 845*SC, 940*SC, 1040*SC]
+        header_y = HEADER_H + 14*SC
+        draw.rounded_rectangle([(40*SC, header_y), (W-40*SC, header_y + 50*SC)], radius=10*SC, fill=(24, 32, 68, 235))
         for cx, ch in zip(col_x, cols):
             draw.text((cx, header_y + 10*SC), ch, font=fn_hdr, fill=C_ACCENT)
 
-        # ── 3. Data Rows ──
-        curr_y = header_y + 65*SC
+        # ── 3. Data rows (glass cards with real blurred shadow) ──
+        curr_y = header_y + 62*SC
+        max_pts = max((s.get("pts", 0) for _, s in sorted_teams), default=1) or 1
         for idx, (name, stats) in enumerate(sorted_teams):
-            # Glassmorphism Row Background
-            row_fill = (22, 30, 65, 180) if idx % 2 == 0 else (18, 25, 55, 150)
-            row_rect = [40*SC, curr_y, W-40*SC, curr_y + ROW_H - 8*SC]
-            draw.rounded_rectangle(row_rect, radius=10*SC, fill=row_fill)
+            row_top = curr_y
+            row_bot = curr_y + ROW_H - 12*SC
+            row_rect = [40*SC, row_top, W-40*SC, row_bot]
 
-            # Rank Accent Colors
-            rank_color = C_GOLD if idx == 0 else ((192, 192, 210, 255) if idx == 1 else ((205, 127, 50, 255) if idx == 2 else C_GRAY))
-            
-            # Left Neon Border for top 3
-            if idx < 3:
-                draw.rectangle([40*SC, curr_y, 46*SC, curr_y + ROW_H - 8*SC], fill=rank_color)
+            # soft drop shadow beneath the card
+            shadow = Image.new("RGBA", (W, ROW_H), (0, 0, 0, 0))
+            ImageDraw.Draw(shadow).rounded_rectangle(
+                [40*SC, 10*SC, W-40*SC, ROW_H-2*SC], radius=14*SC, fill=(0, 0, 0, 110)
+            )
+            shadow = shadow.filter(ImageFilter.GaussianBlur(8*SC))
+            img.alpha_composite(shadow, (0, int(row_top) + 4*SC))
+            draw = ImageDraw.Draw(img)
 
-            # Row Data Alignment
-            row_y_text = curr_y + 20*SC
-            draw.text((col_x[0] + 10*SC, row_y_text), str(idx+1), font=fn_bold, fill=rank_color)
-            draw.text((col_x[1], row_y_text), name[:22].upper(), font=fn_bold, fill=C_WHITE)
-            
-            # Stats (Center-aligned feel)
+            is_top3 = idx < 3
+            rank_color = C_GOLD if idx == 0 else (C_SILVER if idx == 1 else (C_BRONZE if idx == 2 else C_GRAY))
+            row_fill = (28, 24, 15, 190) if idx == 0 else ((26, 30, 65, 185) if idx % 2 == 0 else (20, 24, 52, 165))
+            draw.rounded_rectangle(row_rect, radius=14*SC, fill=row_fill,
+                                    outline=(rank_color if is_top3 else (40, 50, 85, 255)), width=(2*SC if is_top3 else 1*SC))
+
+            # neon accent rail on the left
+            draw.rounded_rectangle([40*SC, row_top, 46*SC, row_bot], radius=3*SC, fill=rank_color)
+
+            row_y_text = row_top + 22*SC
+            # rank badge — trophy circle for top 3, plain number otherwise
+            if is_top3:
+                trophy = {"🥇": 0, "🥈": 1, "🥉": 2}
+                icon = ["🥇", "🥈", "🥉"][idx]
+                draw.text((col_x[0]+4*SC, row_y_text-6*SC), icon, font=_get_font(True, 34*SC), fill=rank_color)
+            else:
+                draw.text((col_x[0]+8*SC, row_y_text), str(idx+1), font=fn_bold, fill=rank_color)
+
+            draw.text((col_x[1], row_y_text), name[:20].upper(), font=fn_bold, fill=C_WHITE)
+
             draw.text((col_x[2], row_y_text), str(stats.get("played", 0)), font=fn_reg, fill=C_WHITE)
             draw.text((col_x[3], row_y_text), str(stats.get("won", 0)), font=fn_reg, fill=C_GREEN)
             draw.text((col_x[4], row_y_text), str(stats.get("lost", 0)), font=fn_reg, fill=C_RED)
             draw.text((col_x[5], row_y_text), str(stats.get("tied", 0)), font=fn_reg, fill=C_GRAY)
-            draw.text((col_x[6], row_y_text), str(stats.get("pts", 0)), font=fn_bold, fill=C_GOLD)
-            
+
+            pts_val = stats.get("pts", 0)
+            draw.text((col_x[6], row_y_text), str(pts_val), font=fn_bold, fill=C_GOLD)
+            # mini points progress bar under the PTS column
+            bar_w = 55*SC
+            bar_y = row_y_text + 34*SC
+            draw.rounded_rectangle([col_x[6], bar_y, col_x[6]+bar_w, bar_y+5*SC], radius=3*SC, fill=(50, 55, 75, 255))
+            fill_w = max(4*SC, int(bar_w * min(pts_val / max_pts, 1.0)))
+            draw.rounded_rectangle([col_x[6], bar_y, col_x[6]+fill_w, bar_y+5*SC], radius=3*SC, fill=C_GOLD)
+
             nrr = stats.get("nrr", 0.0)
             nrr_txt = f"{nrr:+.3f}"
-            draw.text((col_x[7], row_y_text), nrr_txt, font=fn_bold, fill=C_GREEN if nrr >= 0 else C_RED)
+            draw.text((col_x[7], row_y_text), nrr_txt, font=fn_bold, fill=(C_GREEN if nrr >= 0 else C_RED))
 
             curr_y += ROW_H
 
         # ── 4. Footer ──
         footer_y = H - FOOTER_H - 10*SC
-        draw.line([(40*SC, footer_y), (W-40*SC, footer_y)], fill=C_GRAY, width=1*SC)
-        footer_info = "⚡ CRICORA PREMIUM LEAGUE  •  Win: 2 pts | Tie: 1 pt | Loss: 0 pts"
-        draw.text((60*SC, footer_y + 15*SC), footer_info, font=fn_sm, fill=C_GRAY)
+        draw.line([(40*SC, footer_y), (W-40*SC, footer_y)], fill=(60, 68, 100, 255), width=1*SC)
+        draw.text((60*SC, footer_y + 15*SC), "⚡ CRICOVERSE PREMIUM LEAGUE  •  Win: 2 pts | Tie: 1 pt | Loss: 0 pts", font=fn_sm, fill=C_GRAY)
 
-        # ── Final Rescale (The Magic Step) ──
-        # Rendering at 2x and resizing with LANCZOS makes it look "Soothing" and "Smooth"
         final_w, final_h = W // SC, H // SC
         img = img.convert("RGB").resize((final_w, final_h), Image.Resampling.LANCZOS)
-        
+
         bio = BytesIO()
         img.save(bio, "PNG", optimize=True)
         bio.seek(0)
         return bio
-        
+
     except Exception as e:
         print(f"Points Table Error: {e}")
         return None
 
 def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
     """
-    🏆 Generate tournament leaderboard image with top scorers etc.
+    🏆 ULTIMATE TOURNAMENT LEADERBOARD:
+    • Glow banner + 2x2 glass-card sections with real blurred drop-shadows
+    • Medal badges (🥇🥈🥉) for top 3 in each category
+    • Fixed: player names now resolve from user_data instead of showing raw ids
+    • Fixed: row spacing now properly scaled at 2x supersampling
     """
     try:
-        all_runs = {}
-        all_wickets = {}
-        all_sixes = {}
-        all_fours = {}
+        def _pname(pid):
+            return user_data.get(pid, {}).get("first_name") or str(pid)
+
+        all_runs, all_wickets, all_sixes, all_fours = {}, {}, {}, {}
 
         for match_id, stats in tour_match_stats.get(group_id, {}).items():
             for pid, runs in stats.get("player_runs", {}).items():
-                if pid not in all_runs:
-                    all_runs[pid] = {"name": pid, "total": 0}
-                all_runs[pid]["total"] += runs
+                all_runs.setdefault(pid, {"name": _pname(pid), "total": 0})["total"] += runs
             for pid, wkts in stats.get("player_wickets", {}).items():
-                if pid not in all_wickets:
-                    all_wickets[pid] = {"name": pid, "total": 0}
-                all_wickets[pid]["total"] += wkts
+                all_wickets.setdefault(pid, {"name": _pname(pid), "total": 0})["total"] += wkts
             for pid, sixes in stats.get("player_sixes", {}).items():
-                if pid not in all_sixes:
-                    all_sixes[pid] = {"name": pid, "total": 0}
-                all_sixes[pid]["total"] += sixes
+                all_sixes.setdefault(pid, {"name": _pname(pid), "total": 0})["total"] += sixes
             for pid, fours in stats.get("player_fours", {}).items():
-                if pid not in all_fours:
-                    all_fours[pid] = {"name": pid, "total": 0}
-                all_fours[pid]["total"] += fours
+                all_fours.setdefault(pid, {"name": _pname(pid), "total": 0})["total"] += fours
 
-        top_runs = sorted(all_runs.values(), key=lambda x: -x["total"])[:5]
-        top_wkts = sorted(all_wickets.values(), key=lambda x: -x["total"])[:5]
+        top_runs  = sorted(all_runs.values(), key=lambda x: -x["total"])[:5]
+        top_wkts  = sorted(all_wickets.values(), key=lambda x: -x["total"])[:5]
         top_sixes = sorted(all_sixes.values(), key=lambda x: -x["total"])[:5]
         top_fours = sorted(all_fours.values(), key=lambda x: -x["total"])[:5]
 
         SC = 2
-        W, H = 1100 * SC, 820 * SC
-        img = Image.new("RGB", (W, H), (8, 12, 28))
+        W, H = 1100 * SC, 860 * SC
+        img = Image.new("RGBA", (W, H), (7, 9, 22, 255))
         draw = ImageDraw.Draw(img)
 
         for y in range(H):
             t = y / H
-            draw.line([(0, y), (W, y)], fill=(int(8 + t*8), int(12 + t*12), int(28 + t*18)))
+            r = int(9 + 12 * t)
+            g = int(10 + 10 * t)
+            b = int(26 + 26 * t)
+            draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-        fn_title = _get_font(True, 44 * SC)
-        fn_hdr = _get_font(True, 32 * SC)
-        fn_bold = _get_font(True, 26 * SC)
-        fn_reg = _get_font(False, 24 * SC)
-        fn_sm = _get_font(False, 20 * SC)
+        WHITE  = (235, 242, 255, 255)
+        GOLD   = (255, 205, 60, 255)
+        GRAY   = (145, 165, 200, 255)
+        ACCENT = (95, 175, 255, 255)
+        GREEN  = (85, 230, 145, 255)
+        medal_colors = [GOLD, (205, 210, 225, 255), (215, 140, 70, 255), (140, 180, 255, 255), (180, 255, 180, 255)]
 
-        WHITE = (230, 240, 255)
-        GOLD = (255, 200, 50)
-        GRAY = (140, 160, 200)
-        ACCENT = (80, 160, 255)
-        GREEN = (80, 220, 120)
+        fn_title = _get_font(True, 46 * SC)
+        fn_sub   = _get_font(False, 20 * SC)
+        fn_hdr   = _get_font(True, 28 * SC)
+        fn_bold  = _get_font(True, 26 * SC)
+        fn_reg   = _get_font(False, 22 * SC)
+        fn_sm    = _get_font(False, 18 * SC)
 
-        # Header
-        draw.rectangle([(0, 0), (W, 90 * SC)], fill=(16, 22, 60))
-        draw.rectangle([(0, 88 * SC), (W, 92 * SC)], fill=GOLD)
-        draw.text((20 * SC, 22 * SC), "🏆 TOURNAMENT LEADERBOARD", font=fn_title, fill=GOLD)
+        # ── Glow banner ──
+        HEADER_H = 110 * SC
+        glow = Image.new("RGBA", (W, HEADER_H), (0, 0, 0, 0))
+        gdraw = ImageDraw.Draw(glow)
+        gdraw.ellipse([W*0.02, -50*SC, W*0.5, HEADER_H*1.5], fill=(255, 205, 60, 70))
+        gdraw.ellipse([W*0.55, -50*SC, W*1.02, HEADER_H*1.5], fill=(95, 175, 255, 70))
+        glow = glow.filter(ImageFilter.GaussianBlur(36*SC))
+        img.alpha_composite(glow, (0, 0))
+        draw = ImageDraw.Draw(img)
+
+        draw.rectangle([(0, 0), (W, HEADER_H)], fill=(15, 18, 44, 175))
+        draw.text((26*SC, 22*SC), "🏆 TOURNAMENT LEADERBOARD", font=fn_title, fill=GOLD)
+        draw.text((28*SC, HEADER_H - 34*SC), "Top performers across the tournament", font=fn_sub, fill=GRAY)
+        draw.rectangle([(0, HEADER_H-4*SC), (W, HEADER_H)], fill=GOLD)
 
         sections = [
-            ("🏃 TOP RUN SCORERS", top_runs, "runs"),
-            ("⚾ TOP WICKET TAKERS", top_wkts, "wkts"),
-            ("🚀 MOST SIXES", top_sixes, "sixes"),
-            ("4️⃣ MOST FOURS", top_fours, "fours"),
+            ("🏃 TOP RUN SCORERS", top_runs, "runs", (95, 175, 255)),
+            ("⚾ TOP WICKET TAKERS", top_wkts, "wkts", (255, 120, 130)),
+            ("🚀 MOST SIXES", top_sixes, "sixes", (255, 190, 90)),
+            ("4️⃣ MOST FOURS", top_fours, "fours", (150, 220, 150)),
         ]
 
-        medal_colors = [GOLD, (192, 192, 210), (205, 127, 50), (140, 180, 255), (180, 255, 180)]
-        
-        y = 100 * SC
-        half_w = W // 2
-        for sec_idx, (sec_title, sec_rows, unit) in enumerate(sections):
-            sx = (sec_idx % 2) * half_w + 10 * SC
-            sy = y + (sec_idx // 2) * 310 * SC
+        pad = 22 * SC
+        half_w = (W - pad*3) // 2
+        card_h = 320 * SC
+        y0 = HEADER_H + 20*SC
 
-            # Section header
-            draw.rectangle([(sx, sy), (sx + half_w - 20 * SC, sy + 46 * SC)], fill=(22, 30, 72))
-            draw.text((sx + 12 * SC, sy + 8 * SC), sec_title, font=fn_hdr, fill=ACCENT)
+        for sec_idx, (sec_title, sec_rows, unit, tint) in enumerate(sections):
+            col = sec_idx % 2
+            row = sec_idx // 2
+            sx = pad + col * (half_w + pad)
+            sy = y0 + row * (card_h + pad)
 
-            row_y = sy + 52
+            # soft blurred shadow behind card
+            shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            ImageDraw.Draw(shadow).rounded_rectangle(
+                [sx, sy+8*SC, sx+half_w, sy+card_h+8*SC], radius=18*SC, fill=(0, 0, 0, 120)
+            )
+            shadow = shadow.filter(ImageFilter.GaussianBlur(10*SC))
+            img.alpha_composite(shadow, (0, 0))
+            draw = ImageDraw.Draw(img)
+
+            # glass card
+            draw.rounded_rectangle([sx, sy, sx+half_w, sy+card_h], radius=18*SC,
+                                    fill=(20, 24, 52, 220), outline=(tint[0], tint[1], tint[2], 180), width=2*SC)
+
+            # section header strip
+            draw.rounded_rectangle([sx+8*SC, sy+8*SC, sx+half_w-8*SC, sy+56*SC], radius=12*SC,
+                                    fill=(tint[0], tint[1], tint[2], 40))
+            draw.text((sx+22*SC, sy+16*SC), sec_title, font=fn_hdr, fill=(tint[0], tint[1], tint[2], 255))
+
+            row_y = sy + 72*SC
             if not sec_rows:
-                draw.text((sx + 20, row_y + 10), "No data yet", font=fn_reg, fill=GRAY)
+                draw.text((sx+22*SC, row_y+10*SC), "No data yet — play some matches!", font=fn_reg, fill=GRAY)
             else:
                 for ri, d in enumerate(sec_rows[:5]):
                     mc = medal_colors[ri]
-                    draw.text((sx + 12, row_y + 4), f"#{ri+1}", font=fn_bold, fill=mc)
+                    medal = ["🥇", "🥈", "🥉"][ri] if ri < 3 else f"#{ri+1}"
+                    draw.text((sx+18*SC, row_y), medal, font=fn_bold, fill=mc)
                     name = str(d.get("name", "?"))[:16]
-                    draw.text((sx + 60, row_y + 4), name, font=fn_bold, fill=WHITE)
-                    draw.text((sx + 60, row_y + 28), f"{d['total']} {unit}", font=fn_sm, fill=GREEN)
-                    row_y += 50
+                    draw.text((sx+90*SC, row_y), name, font=fn_bold, fill=WHITE)
+                    draw.text((sx+half_w-140*SC, row_y+2*SC), f"{d['total']} {unit}", font=fn_reg, fill=GREEN)
+                    if ri < 4:
+                        draw.line([sx+18*SC, row_y+42*SC, sx+half_w-18*SC, row_y+42*SC], fill=(45, 52, 82, 255), width=1*SC)
+                    row_y += 48*SC
 
         # Footer
-        draw.rectangle([(0, H - 36 * SC), (W, H)], fill=(14, 18, 44))
-        draw.text((20 * SC, H - 28 * SC), "CRICOVERSE TOURNAMENT STATS", font=fn_sm, fill=GRAY)
+        draw.rectangle([(0, H - 42*SC), (W, H)], fill=(13, 16, 38, 255))
+        draw.text((26*SC, H - 32*SC), "⚡ CRICOVERSE TOURNAMENT STATS", font=fn_sm, fill=GRAY)
+
+        final_w, final_h = W // SC, H // SC
+        img = img.convert("RGB").resize((final_w, final_h), Image.Resampling.LANCZOS)
 
         bio = BytesIO()
         img.save(bio, "PNG", optimize=True)

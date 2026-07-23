@@ -3242,54 +3242,62 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_team = match.batting_first if match.batting_first else match.team_x
     second_team = match.team_y if first_team == match.team_x else match.team_x
     
-    def _bat_line(player, team):
-        runs = player.runs
-        balls = player.balls_faced
-        fours = player.boundaries
-        sixes = player.sixes
-        sr = round(runs / balls * 100, 1) if balls > 0 else 0.0
-        cap = " 👑" if player.user_id == team.captain_id else ""
-        status = "❌" if player.is_out else "🟢"
-        name = html.escape(player.first_name[:14])
-        bdry = ""
-        if fours > 0: bdry += f"  4s:<b>{fours}</b>"
-        if sixes > 0: bdry += f"  6s:<b>{sixes}</b>"
-        return f"  {status} <b>{name}{cap}</b>\n    ├ {runs}({balls})  SR: {sr}{bdry}\n"
-    
-    def _bowl_line(player):
-        bb = player.balls_bowled
-        if bb == 0: return ""
-        ov = f"{bb//6}.{bb%6}"
-        eco = round(player.runs_conceded / (bb/6), 2) if bb > 0 else 0
-        name = html.escape(player.first_name[:14])
-        return f"  ⚡ <b>{name}</b>  <code>{player.wickets}/{player.runs_conceded}</code>  {ov}ov  Eco: {eco}\n"
-    
+    def _pad(s, w):
+        """Pad/truncate a string to exactly `w` display chars (left-aligned)."""
+        s = str(s)
+        if len(s) > w:
+            return s[: max(w - 1, 1)] + "…"
+        return s + (" " * (w - len(s)))
+
+    def _rpad(s, w):
+        """Right-align within width w."""
+        s = str(s)
+        if len(s) > w:
+            return s[: max(w - 1, 1)] + "…"
+        return (" " * (w - len(s))) + s
+
+    def _bat_table(bat_team):
+        """Batting card as one aligned monospace table (goes inside a <pre> block)."""
+        header = f"{_pad('Batter', 15)}{_rpad('R', 4)}{_rpad('B', 4)}{_rpad('4s', 4)}{_rpad('6s', 4)}{_rpad('SR', 7)}\n"
+        rows = ""
+        batters = [p for p in bat_team.players if p.balls_faced > 0 or p.is_out]
+        for p in batters:
+            sr = round(p.runs / p.balls_faced * 100, 1) if p.balls_faced > 0 else 0.0
+            cap = "©" if p.user_id == bat_team.captain_id else ""
+            status = "" if p.is_out else "*"
+            name = f"{p.first_name[:12]}{cap}{status}"
+            rows += (
+                f"{_pad(name, 15)}{_rpad(p.runs, 4)}{_rpad(p.balls_faced, 4)}"
+                f"{_rpad(p.boundaries, 4)}{_rpad(p.sixes, 4)}{_rpad(sr, 7)}\n"
+            )
+        if not batters:
+            rows = "  Not started yet\n"
+        return header + ("─" * 38) + "\n" + rows
+
+    def _bowl_table(bowl_team):
+        """Bowling card as one aligned monospace table (goes inside a <pre> block)."""
+        header = f"{_pad('Bowler', 15)}{_rpad('O', 6)}{_rpad('R', 4)}{_rpad('W', 4)}{_rpad('Eco', 7)}\n"
+        rows = ""
+        bowlers = [p for p in bowl_team.players if p.balls_bowled > 0]
+        for p in bowlers:
+            ov = f"{p.balls_bowled//6}.{p.balls_bowled%6}"
+            eco = round(p.runs_conceded / (p.balls_bowled / 6), 2) if p.balls_bowled > 0 else 0
+            name = p.first_name[:14]
+            rows += f"{_pad(name, 15)}{_rpad(ov, 6)}{_rpad(p.runs_conceded, 4)}{_rpad(p.wickets, 4)}{_rpad(eco, 7)}\n"
+        if not bowlers:
+            rows = "  No bowlers yet\n"
+        return header + ("─" * 36) + "\n" + rows
+
     def _innings_block(bat_team, bowl_team, label, inn_num):
         rr = round(bat_team.score / (bat_team.balls / 6), 2) if bat_team.balls > 0 else 0
         extras = bat_team.extras if hasattr(bat_team, 'extras') else 0
         block = (
-            f"╔══════════════════╗\n"
-            f"║  🏏 {inn_num} INNINGS → {bat_team.name}\n"
-            f"╚══════════════════╝\n"
+            f"🏏 <b>{inn_num} INNINGS → {html.escape(bat_team.name)}</b>\n"
             f"📊 <b>{bat_team.score}/{bat_team.wickets}</b>  ({format_overs(bat_team.balls)} ov)  "
-            f"RR: <b>{rr}</b>  Extras: {extras}\n"
-            f"────────────────────\n"
-            f"🏏 <b>BATTING</b>\n"
+            f"RR: <b>{rr}</b>  ·  Extras: {extras}\n"
+            f"<pre>{_bat_table(bat_team)}</pre>"
+            f"<pre>{_bowl_table(bowl_team)}</pre>"
         )
-        batters = [p for p in bat_team.players if p.balls_faced > 0 or p.is_out]
-        for p in batters:
-            block += _bat_line(p, bat_team)
-        if not batters:
-            block += "  <i>Not started yet</i>\n"
-        block += (
-            f"─────────────────\n"
-            f"⚾ <b>BOWLING</b>\n"
-        )
-        bowlers = [p for p in bowl_team.players if p.balls_bowled > 0]
-        for p in bowlers:
-            block += _bowl_line(p)
-        if not bowlers:
-            block += "  <i>No bowlers yet</i>\n"
         return block
     
     now = datetime.now().strftime("%d %b %Y  %H:%M")
@@ -4849,11 +4857,20 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         except Exception:
             img_bio = None
 
+        def _pad(s, w):
+            s = str(s)
+            return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+        def _rpad(s, w):
+            s = str(s)
+            return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
         sorted_teams = sorted(pts.items(), key=lambda x: (-x[1].get("pts", 0), -x[1].get("nrr", 0)))
-        medal_icons = ["🥇", "🥈", "🥉"]
-        text = "📊 <b>TOURNAMENT POINTS TABLE</b>\n─────────────────\n"
-        text += "<code>  Team            P  W  L  T  Pts   NRR</code>\n"
-        text += "<code>─────────────────────────────────────────</code>\n"
+        medal_icons = {0: "🥇", 1: "🥈", 2: "🥉"}
+        text = "📊 <b>TOURNAMENT POINTS TABLE</b>\n"
+
+        header = f"{_pad('#', 3)}{_pad('Team', 14)}{_rpad('P', 3)}{_rpad('W', 3)}{_rpad('L', 3)}{_rpad('T', 3)}{_rpad('Pts', 5)}{_rpad('NRR', 7)}\n"
+        table = header + ("─" * 41) + "\n"
         for i, (team_name, stats) in enumerate(sorted_teams):
             p = stats.get("played", 0)
             w = stats.get("won", 0)
@@ -4861,11 +4878,13 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             t_val = stats.get("tied", 0)
             pts_val = stats.get("pts", 0)
             nrr = stats.get("nrr", 0.0)
-            tn = team_name[:14].ljust(14)
-            rank_icon = medal_icons[i] if i < 3 else f"  {i+1}."
+            rank = medal_icons.get(i, str(i + 1))
             nrr_str = f"{nrr:+.2f}"
-            text += f"<code>{rank_icon} {tn} {p}  {w}  {l_val}  {t_val}   {pts_val}  {nrr_str}</code>\n"
-        text += "<code>─────────────────────────────────────────</code>\n"
+            table += (
+                f"{_pad(rank, 3)}{_pad(team_name[:13], 14)}{_rpad(p, 3)}{_rpad(w, 3)}"
+                f"{_rpad(l_val, 3)}{_rpad(t_val, 3)}{_rpad(pts_val, 5)}{_rpad(nrr_str, 7)}\n"
+            )
+        text += f"<pre>{table}</pre>"
         text += "📌 <i>Win=2pts  Tie=1pt  Loss=0pts</i>"
 
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
@@ -5871,6 +5890,20 @@ async def tourlb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Build category text
+    def _pname(pid):
+        """🔧 FIX: leaderboard used to show raw numeric user_ids as the name
+        (setdefault froze name=str(pid) forever). Resolve the real first_name
+        from user_data instead, falling back to the id only if truly unknown."""
+        return user_data.get(pid, {}).get("first_name") or str(pid)
+
+    def _pad(s, w):
+        s = str(s)
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+    def _rpad(s, w):
+        s = str(s)
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
     def _tourlb_text(group_id: int, metric: str = "runs") -> str:
         all_runs = {}
         all_wickets = {}
@@ -5879,47 +5912,44 @@ async def tourlb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for match_id, stats in tour_match_stats.get(group_id, {}).items():
             for pid, val in stats.get("player_runs", {}).items():
-                all_runs.setdefault(pid, {"name": str(pid), "total": 0})["total"] += val
+                all_runs.setdefault(pid, {"name": _pname(pid), "total": 0})["total"] += val
             for pid, val in stats.get("player_wickets", {}).items():
-                all_wickets.setdefault(pid, {"name": str(pid), "total": 0})["total"] += val
+                all_wickets.setdefault(pid, {"name": _pname(pid), "total": 0})["total"] += val
             for pid, val in stats.get("player_sixes", {}).items():
-                all_sixes.setdefault(pid, {"name": str(pid), "total": 0})["total"] += val
+                all_sixes.setdefault(pid, {"name": _pname(pid), "total": 0})["total"] += val
             for pid, val in stats.get("player_fours", {}).items():
-                all_fours.setdefault(pid, {"name": str(pid), "total": 0})["total"] += val
+                all_fours.setdefault(pid, {"name": _pname(pid), "total": 0})["total"] += val
 
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        medals = ["🥇", "🥈", "🥉", "4", "5", "6", "7", "8", "9", "10"]
 
         if metric == "runs":
-            title = "🏃 TOP RUN SCORERS"
+            title, unit = "🏃 TOP RUN SCORERS", "R"
             data = sorted(all_runs.values(), key=lambda x: -x["total"])
-            lines = [f"{medals[i]} <b>{d['name'][:18]}</b>  →  {d['total']} runs" for i, d in enumerate(data[:10])]
         elif metric == "wickets":
-            title = "⚾ TOP WICKET TAKERS"
+            title, unit = "⚾ TOP WICKET TAKERS", "W"
             data = sorted(all_wickets.values(), key=lambda x: -x["total"])
-            lines = [f"{medals[i]} <b>{d['name'][:18]}</b>  →  {d['total']} wkts" for i, d in enumerate(data[:10])]
         elif metric == "sixes":
-            title = "🚀 MOST SIXES"
+            title, unit = "🚀 MOST SIXES", "6s"
             data = sorted(all_sixes.values(), key=lambda x: -x["total"])
-            lines = [f"{medals[i]} <b>{d['name'][:18]}</b>  →  {d['total']} 🚀" for i, d in enumerate(data[:10])]
         elif metric == "fours":
-            title = "4️⃣ MOST FOURS"
+            title, unit = "4️⃣ MOST FOURS", "4s"
             data = sorted(all_fours.values(), key=lambda x: -x["total"])
-            lines = [f"{medals[i]} <b>{d['name'][:18]}</b>  →  {d['total']} fours" for i, d in enumerate(data[:10])]
         else:
-            title = "🏃 TOP RUN SCORERS"
-            lines = []
+            title, unit = "🏃 TOP RUN SCORERS", "R"
+            data = []
 
         total_matches = len(tour_match_stats.get(group_id, {}))
         text = f"🏆 <b>TOURNAMENT LEADERBOARD</b>\n"
-        text += f"─────────────────\n"
-        text += f"📊 {total_matches} match(es) played\n"
-        text += f"─────────────────\n"
-        text += f"<b>{title}</b>\n\n"
-        if lines:
-            text += "\n".join(lines)
+        text += f"📊 {total_matches} match(es) played\n\n"
+        text += f"<b>{title}</b>\n"
+
+        if data[:10]:
+            table = f"{_pad('#', 3)}{_pad('Player', 16)}{_rpad(unit, 6)}\n" + ("─" * 25) + "\n"
+            for i, d in enumerate(data[:10]):
+                table += f"{_pad(medals[i], 3)}{_pad(d['name'][:15], 16)}{_rpad(d['total'], 6)}\n"
+            text += f"<pre>{table}</pre>"
         else:
             text += "<i>No data yet → complete some matches!</i>"
-        text += "\n─────────────────"
         return text
 
     metric = "runs"
@@ -14113,31 +14143,46 @@ async def send_final_scorecard(context: ContextTypes.DEFAULT_TYPE, group_id: int
     first_innings = match.batting_first
     second_innings = match.get_other_team(first_innings)
     
-    # Helper function for batting + bowling box for one innings
+    def _pad(s, w):
+        s = str(s)
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+    def _rpad(s, w):
+        s = str(s)
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
+    # Helper function for batting + bowling box for one innings, rendered as
+    # aligned monospace tables (inside <pre>) instead of bullet lines.
     def format_innings_card(bat_team, bowl_team, icon):
         rr = round(bat_team.score / max(bat_team.overs, 0.1), 2)
         extras = getattr(bat_team, 'extras', 0)
-        card = f"{icon} 𝗧𝗘𝗔𝗠 {html.escape(bat_team.name)} ➜ {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov)\n"
-        card += f"📈 RR: {rr} • ⚖️ Extras: {extras}\n"
-        card += f"┌─────────────────────\n"
+        card = f"{icon} <b>{html.escape(bat_team.name)}</b> ➜ {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov)\n"
+        card += f"📈 RR: {rr}  •  ⚖️ Extras: {extras}\n"
 
+        bat_header = f"{_pad('Batter', 15)}{_rpad('R', 4)}{_rpad('B', 4)}{_rpad('SR', 7)}\n" + ("─" * 30) + "\n"
         batters = sorted([p for p in bat_team.players if p.balls_faced > 0 or p.is_out],
                         key=lambda x: x.runs, reverse=True)
+        bat_rows = ""
         for p in batters:
             sr = round((p.runs / max(p.balls_faced, 1)) * 100, 1)
             not_out = "*" if not p.is_out and p.balls_faced > 0 else ""
-            card += f"├ 🏏 {html.escape(p.first_name[:16])}{not_out} ➜ {p.runs} ({p.balls_faced}) • SR {sr}\n"
+            name = f"{p.first_name[:13]}{not_out}"
+            bat_rows += f"{_pad(name, 15)}{_rpad(p.runs, 4)}{_rpad(p.balls_faced, 4)}{_rpad(sr, 7)}\n"
+        if not bat_rows:
+            bat_rows = "  Did not bat\n"
+        card += f"<pre>{bat_header}{bat_rows}</pre>"
 
-        card += f"├─────────────────────\n"
-
+        bowl_header = f"{_pad('Bowler', 15)}{_rpad('O', 6)}{_rpad('R', 4)}{_rpad('W', 4)}{_rpad('Eco', 7)}\n" + ("─" * 36) + "\n"
         bowlers = sorted([p for p in bowl_team.players if p.balls_bowled > 0],
                         key=lambda x: (x.wickets, -x.runs_conceded), reverse=True)
+        bowl_rows = ""
         for p in bowlers:
             ov = format_overs(p.balls_bowled)
             econ = round(p.runs_conceded / max(p.balls_bowled / 6, 0.1), 2)
-            card += f"├ 🥎 {html.escape(p.first_name[:16])} ➜ {p.wickets}/{p.runs_conceded} ({ov}) • Eco {econ}\n"
-
-        card += f"└─────────────────────\n"
+            bowl_rows += f"{_pad(p.first_name[:14], 15)}{_rpad(ov, 6)}{_rpad(p.runs_conceded, 4)}{_rpad(p.wickets, 4)}{_rpad(econ, 7)}\n"
+        if not bowl_rows:
+            bowl_rows = "  Did not bowl\n"
+        card += f"<pre>{bowl_header}{bowl_rows}</pre>"
         return card
 
     # Match Result
@@ -24779,7 +24824,19 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if match.current_solo_bowl_idx < len(match.solo_players):
                 bowler = match.solo_players[match.current_solo_bowl_idx]
                 
-                if user.id == bowler.user_id and match.current_ball_data.get("bowler_number") is None:
+                # 🔧 DOUBLE-COUNT FIX: same dedupe as team mode
+                _seen_ids_solo = match.current_ball_data.setdefault("_seen_bowler_msg_ids", set())
+                _msg_id_solo = update.message.message_id
+                _already_locked = (
+                    _msg_id_solo in _seen_ids_solo
+                    or match.current_ball_data.get("bowler_number") is not None
+                    or match.current_ball_data.get("_bowler_lock")
+                )
+                if user.id == bowler.user_id and not _already_locked:
+                    _seen_ids_solo.add(_msg_id_solo)
+                    match.current_ball_data["_bowler_lock"] = True
+
+                if user.id == bowler.user_id and not _already_locked:
                     # 🚫 SOLO WIDE BALL CHECK (separate gc_setting from team mode)
                     if get_gc_setting(gid, "solo_wide_enabled", True):
                         banned_num = getattr(bowler, 'wide_banned_number', None)
@@ -24890,6 +24947,21 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  bowler = match.current_bowling_team.players[match.current_bowling_team.current_bowler_idx]
                  
                  if user.id == bowler.user_id:
+                     # 🔧 DOUBLE-COUNT FIX: dedupe rapid/duplicate DM taps.
+                     # Bowler spamming 2-3 numbers before "LOCKED" renders (or a
+                     # retried webhook delivery) could get counted more than
+                     # once. Track processed message_ids for this ball + set an
+                     # immediate re-entrancy lock so a second message can never
+                     # slip in before the first finishes setting bowler_number.
+                     _seen_ids = match.current_ball_data.setdefault("_seen_bowler_msg_ids", set())
+                     _msg_id = update.message.message_id
+                     if _msg_id in _seen_ids:
+                         return
+                     if match.current_ball_data.get("bowler_number") is not None or match.current_ball_data.get("_bowler_lock"):
+                         return
+                     _seen_ids.add(_msg_id)
+                     match.current_ball_data["_bowler_lock"] = True
+
                      if match.current_ball_data.get("bowler_number") is None:
                         
                         # 🚫 WIDE BALL CHECK LOGIC STARTS

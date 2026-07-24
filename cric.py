@@ -2374,6 +2374,9 @@ class Match:
         # Super over
         self.is_super_over = False
         self.super_over_batting_team: Optional[Team] = None
+        self.super_over_first_score: Optional[int] = None
+        self.super_over_first_wickets: int = 0
+        self.super_over_first_boundaries: int = 0
         
         # Match log
         self.ball_by_ball_log: List[Dict] = []
@@ -16903,6 +16906,12 @@ async def end_super_over_innings(context: ContextTypes.DEFAULT_TYPE, group_id: i
     
     first_innings_score = bat_team.score
     match.target = first_innings_score + 1
+    # 🔧 FIX: reset_teams_for_super_over() below zeroes out BOTH teams' score
+    # (including the team that just finished batting), so determine_super_over_winner()
+    # was always comparing 0 vs the 2nd innings score. Snapshot it here instead.
+    match.super_over_first_score = first_innings_score
+    match.super_over_first_wickets = bat_team.wickets
+    match.super_over_first_boundaries = sum(p.boundaries + p.sixes for p in bat_team.players)
     
     msg = f"⚡〔 <b>SUPER OVER → HALF TIME</b> 〕⚡\n"
     msg += "─────────────────\n"
@@ -16949,12 +16958,18 @@ async def determine_super_over_winner(context: ContextTypes.DEFAULT_TYPE, group_
     """
     first = match.super_over_batting_first
     second = match.get_other_team(first)
-    
-    if second.score > first.score:
+
+    # 🔧 FIX: first.score/first.wickets were zeroed out by reset_teams_for_super_over()
+    # when the 2nd innings was set up. Use the snapshot taken in end_super_over_innings()
+    # instead of the live (and now wrong) team object fields.
+    first_score = match.super_over_first_score if match.super_over_first_score is not None else first.score
+    first_wickets = match.super_over_first_wickets
+
+    if second.score > first_score:
         winner = second
         loser = first
-        margin = f"{second.score - first.score} runs"
-    elif first.score > second.score:
+        margin = f"{second.score - first_score} runs"
+    elif first_score > second.score:
         winner = first
         loser = second
         wickets_left = len(second.players) - second.wickets - len(second.out_players_indices)
@@ -16969,8 +16984,9 @@ async def determine_super_over_winner(context: ContextTypes.DEFAULT_TYPE, group_
         )
         await asyncio.sleep(3)
         
-        # Count boundaries
-        first_boundaries = sum(p.boundaries + p.sixes for p in first.players)
+        # Count boundaries (first innings snapshot, since reset_teams_for_super_over
+        # already zeroed out first.players' boundaries/sixes for the 2nd innings)
+        first_boundaries = match.super_over_first_boundaries
         second_boundaries = sum(p.boundaries + p.sixes for p in second.players)
         
         if second_boundaries > first_boundaries:
@@ -16989,7 +17005,7 @@ async def determine_super_over_winner(context: ContextTypes.DEFAULT_TYPE, group_
     msg += "─────────────────\n"
     msg += f"🥇 <b>WINNER: {winner.name}</b>\n"
     msg += f"📊 Won by: {margin}\n\n"
-    msg += f"🔥 {first.name}: {first.score}/{first.wickets}\n"
+    msg += f"🔥 {first.name}: {first_score}/{first_wickets}\n"
     msg += f"🧊 {second.name}: {second.score}/{second.wickets}\n"
     msg += "─────────────────\n"
     msg += f"🔥 <i>What a thriller! Absolute edge-of-the-seat finish!</i>"
@@ -18619,114 +18635,114 @@ def _render_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Opti
     Always call this via asyncio.to_thread — never directly on the event
     loop — since the 3x supersampled compositing here can take a real
     chunk of CPU time and used to freeze every group's live game while
-    one group's scorecard was being drawn."""
+    one group's scorecard was being drawn.
+
+    🎽 JERSEY-CARD TEMPLATE — single 1536x1024 image: jersey back on the
+    left half, player card on the right half. Coordinates below were
+    pixel-measured off the template at that exact resolution.
+    """
     try:
         import os
         from PIL import Image, ImageDraw, ImageFont, ImageOps
         from io import BytesIO
 
-        TEMPLATE_PATH = "mystats_template.jpg"
+        TEMPLATE_PATH = "mystats_jersey_template.jpg"
         if not os.path.exists(TEMPLATE_PATH):
             # Fallback: try upload location
-            TEMPLATE_PATH = "/home/cricoverse/mystats_template.jpg"
-        
+            TEMPLATE_PATH = "/home/cricoverse/mystats_jersey_template.jpg"
+
         base = Image.open(TEMPLATE_PATH).convert("RGBA")
-        W, H = base.size  # 1024 x 682
+        W, H = base.size  # 1536 x 1024
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         # ── FONTS ──
-        try:
-            f_name  = ImageFont.truetype("Roboto-Bold.ttf", 36)
-            f_val   = ImageFont.truetype("Roboto-Bold.ttf", 30)
-            f_label = ImageFont.truetype("Roboto-Regular.ttf", 22)
-        except Exception:
-            f_name  = ImageFont.load_default(size=36)
-            f_val   = ImageFont.load_default(size=30)
-            f_label = ImageFont.load_default(size=22)
+        def _font(path, size):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                return ImageFont.load_default(size=size)
 
-        WHITE  = (255, 255, 255, 255)
-        YELLOW = (255, 230, 60, 255)
-        GREEN  = (100, 255, 140, 255)
+        f_jersey_name = _font("Roboto-Bold.ttf", 48)
+        f_jersey_num  = _font("Roboto-Bold.ttf", 240)
+        f_card_name   = _font("Roboto-Bold.ttf", 40)
+        f_rank        = _font("Roboto-Bold.ttf", 128)
+        f_stat_val    = _font("Roboto-Bold.ttf", 60)
 
-        # ── 1. PLAYER NAME ──
-        # Pixel-measured position from rendered output (1024x682)
-        safe_name = (name or "Player")[:20]
-        draw.text((25, 55), safe_name, font=f_name, fill=YELLOW)
+        # Dark teal, matching the template's own text/wordmark color
+        TEAL = (7, 48, 54, 255)
 
-        # ── 2. STAT VALUES ──
-        # Right edge at x=462 (just inside panel border at x=468).
-        # Y centres pixel-measured from rendered output:
-        #   MATCHES       cy=229
-        #   RUNS          cy=289
-        #   WICKETS       cy=359
-        #   50/100        cy=435
-        #   STRIKE RATE   cy=488
-        #   HIGHEST SCORE cy=550
-        VAL_RIGHT_X   = 462
-        ROW_FONT_SIZE = 26
+        def _center_text(cx, cy, text, font, fill=TEAL, stroke=2):
+            bb = draw.textbbox((0, 0), text, font=font, stroke_width=stroke)
+            w = bb[2] - bb[0]
+            h = bb[3] - bb[1]
+            draw.text((cx - w / 2 - bb[0], cy - h / 2 - bb[1]), text, font=font, fill=fill,
+                       stroke_width=stroke, stroke_fill=fill)
 
-        try:
-            f_val = ImageFont.truetype("Roboto-Bold.ttf", ROW_FONT_SIZE)
-        except Exception:
-            f_val = ImageFont.load_default(size=ROW_FONT_SIZE)
+        # ── JERSEY (left half) ──
+        jersey_number = user_data.get(user_id, {}).get("jersey_number")
+        jersey_num_str = f"{jersey_number}" if jersey_number is not None else "--"
+        safe_name = (name or "Player").upper()[:16]
 
-        stat_rows = [
-            (str(stats.get("matches", 0)),                               229),
-            (str(stats.get("runs", 0)),                                  289),
-            (str(stats.get("wickets", 0)),                               359),
-            (f"{stats.get('fifties',0)} / {stats.get('hundreds',0)}",    435),
-            (f"{stats.get('strike_rate', 0.0):.1f}%",                    488),
-            (str(stats.get("highest", 0)),                               550),
-        ]
-        for val_str, cy in stat_rows:
-            vb  = draw.textbbox((0, 0), val_str, font=f_val)
-            vw  = vb[2] - vb[0]
-            vh  = vb[3] - vb[1]
-            tx  = VAL_RIGHT_X - vw      # right-align: never overlaps labels
-            ty  = cy - vh // 2          # vertically centred on row
-            draw.text((tx, ty), val_str, font=f_val, fill=WHITE)
+        JERSEY_CX = 380  # horizontal center of the shirt back
+        _center_text(JERSEY_CX, 355, safe_name, f_jersey_name, stroke=2)
+        _center_text(JERSEY_CX, 545, jersey_num_str, f_jersey_num, stroke=4)
 
-        # ── 3. PLAYER PFP ──
-        # Pixel-measured from rendered output (1024x682):
-        #   white ring cx=743, cy=340, inner photo r=188
-        pfp_cx, pfp_cy, pfp_r = 743, 340, 188
-        pfp_size = pfp_r * 2
-        hq_size = pfp_size * 3  # render at 3x for crisp quality
+        # ── CARD (right half, offset +760) ──
+        CARD_X = 760
 
-        pfp_img = Image.new("RGBA", (hq_size, hq_size), (200, 200, 200, 255))
+        # 1. Player photo (rounded square box: x 815-1110, y 205-500)
+        box_x0, box_y0, box_x1, box_y1 = CARD_X + 55, 185, CARD_X + 350, 520
+        box_w, box_h = box_x1 - box_x0, box_y1 - box_y0
+        hq = 3
+        pfp_img = Image.new("RGBA", (box_w * hq, box_h * hq), (210, 210, 210, 255))
         if avatar_bytes:
             try:
                 src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
-                src = ImageOps.fit(src, (hq_size, hq_size), method=Image.Resampling.LANCZOS)
+                src = ImageOps.fit(src, (box_w * hq, box_h * hq), method=Image.Resampling.LANCZOS)
                 pfp_img = src
             except Exception:
                 pass
         else:
-            # Draw initials
-            init_draw = ImageDraw.Draw(pfp_img)
-            init_draw.rectangle([0, 0, hq_size, hq_size], fill=(30, 45, 90, 255))
+            id_draw = ImageDraw.Draw(pfp_img)
+            id_draw.rectangle([0, 0, box_w * hq, box_h * hq], fill=(20, 60, 68, 255))
             initials = "".join(p[:1] for p in (name or "PL").split()[:2]).upper()
-            try:
-                fi = ImageFont.truetype("Roboto-Bold.ttf", hq_size // 3)
-            except Exception:
-                fi = ImageFont.load_default(size=hq_size // 3)
-            ib = init_draw.textbbox((0, 0), initials, font=fi)
-            init_draw.text(
-                ((hq_size - (ib[2]-ib[0])) // 2, (hq_size - (ib[3]-ib[1])) // 2),
+            fi = _font("Roboto-Bold.ttf", (box_h * hq) // 3)
+            ib = id_draw.textbbox((0, 0), initials, font=fi)
+            id_draw.text(
+                ((box_w * hq - (ib[2] - ib[0])) // 2, (box_h * hq - (ib[3] - ib[1])) // 2),
                 initials, font=fi, fill=(255, 255, 255, 255)
             )
+        # rounded-rect mask so the photo matches the template's rounded box
+        radius = 28 * hq
+        mask_hq = Image.new("L", (box_w * hq, box_h * hq), 0)
+        ImageDraw.Draw(mask_hq).rounded_rectangle(
+            [0, 0, box_w * hq - 1, box_h * hq - 1], radius=radius, fill=255
+        )
+        pfp_masked_hq = Image.new("RGBA", (box_w * hq, box_h * hq), (0, 0, 0, 0))
+        pfp_masked_hq.paste(pfp_img, (0, 0), mask_hq)
+        pfp_final = pfp_masked_hq.resize((box_w, box_h), Image.Resampling.LANCZOS)
+        overlay.alpha_composite(pfp_final, (box_x0, box_y0))
 
-        # Apply circular mask at high resolution, then downsample
-        mask_hq = Image.new("L", (hq_size, hq_size), 0)
-        ImageDraw.Draw(mask_hq).ellipse((0, 0, hq_size - 1, hq_size - 1), fill=255)
-        pfp_circle_hq = Image.new("RGBA", (hq_size, hq_size), (0, 0, 0, 0))
-        pfp_circle_hq.paste(pfp_img, (0, 0), mask_hq)
-        pfp_circle = pfp_circle_hq.resize((pfp_size, pfp_size), Image.Resampling.LANCZOS)
+        # 2. Player name (in the blank name bar, nudged left, bold)
+        _center_text(CARD_X + 500, 312, (name or "Player")[:18], f_card_name, stroke=1)
 
-        paste_x = pfp_cx - pfp_r
-        paste_y = pfp_cy - pfp_r
-        overlay.alpha_composite(pfp_circle, (paste_x, paste_y))
+        # 3. CCC Ranking (in the wreath gap under PLAYER PROFILE)
+        try:
+            ccc_row = get_player_ccc_rank(user_id)
+        except Exception:
+            ccc_row = None
+        rank_str = f"#{ccc_row['rank']}" if ccc_row else "Unranked"
+        _center_text(CARD_X + 370, 675, rank_str, f_rank, stroke=3)
+
+        # 5. Matches / Runs / Wickets values, centered in the stats section box
+        stat_cols = [
+            (CARD_X + 195, str(stats.get("matches", 0))),
+            (CARD_X + 385, str(stats.get("runs", 0))),
+            (CARD_X + 585, str(stats.get("wickets", 0))),
+        ]
+        for cx, val in stat_cols:
+            _center_text(cx, 855, val, f_stat_val, stroke=1)
 
         final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()

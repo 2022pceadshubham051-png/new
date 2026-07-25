@@ -189,6 +189,10 @@ tournament_points: Dict[int, Dict[str, Dict]] = defaultdict(dict)
 tour_match_stats: Dict[int, Dict] = defaultdict(dict)
 # pending_tour_match[group_id] = match state for ongoing tournament match
 pending_tour_match: Dict[int, Dict] = {}
+
+# ── MANUAL RESULT ENTRY (/addresult) ──
+# group_id -> session dict tracking an in-progress manual result entry
+manual_result_sessions: Dict[int, Dict] = {}
 # tour_fixture_counter[group_id] = int (next match_id)
 tour_fixture_counter: Dict[int, int] = defaultdict(int)
 # awaiting_team_creation[group_id] = True when bot is waiting for /teamcreate
@@ -5873,6 +5877,377 @@ async def record_tour_match_result(context, group_id: int, match, winner, loser)
             pass
     except Exception as e:
         logger.error(f"❌ Error auto-recording tour match result: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# MANUAL RESULT ENTRY — /addresult
+# Owner + Powered users only. Flow:
+# Team X → Team Y → Overs → Winner → Margin (runs text / wickets buttons)
+# → per-player stats (runs/wkts/4s/6s, Skip = didn't play).
+# ═══════════════════════════════════════════════════════════════
+
+def _is_result_admin(user_id: int) -> bool:
+    """Only the bot owner or 'powered' users may use /addresult."""
+    return user_id == OWNER_ID or user_id in POWERED_USERS
+
+
+def _mres_squad(group_id: int, team1: str, team2: str) -> List[Tuple[int, str, str]]:
+    """Combined (user_id, first_name, team_name) list for both teams, pulled
+    from tournament_teams — this is what lets the bot know the full playing
+    pool. Whoever gets ⏭ Skipped in the stats loop is treated as 'didn't
+    play' (no stats added for them at all)."""
+    squad = []
+    teams = tournament_teams.get(group_id, {})
+    for tn in (team1, team2):
+        for pd in teams.get(tn, {}).get("players", []):
+            squad.append((pd["user_id"], pd.get("first_name", "Player"), tn))
+    return squad
+
+
+def _mres_overs_keyboard(mid) -> InlineKeyboardMarkup:
+    rows = []
+    for start in range(1, 21, 5):
+        rows.append([InlineKeyboardButton(str(o), callback_data=f"mres_overs_{o}") for o in range(start, min(start + 5, 21))])
+    return InlineKeyboardMarkup(rows)
+
+
+def _mres_wkts_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for start in range(0, 20, 5):
+        rows.append([InlineKeyboardButton(str(w), callback_data=f"mres_wktmargin_{w}") for w in range(start, min(start + 5, 20))])
+    return InlineKeyboardMarkup(rows)
+
+
+def _mres_stats_prompt_text(session: Dict) -> str:
+    idx = session["idx"]
+    squad = session["squad"]
+    uid, name, team = squad[idx]
+    return (
+        f"🧮 <b>Player stats</b> ({idx + 1}/{len(squad)})\n"
+        f"─────────────────\n"
+        f"👤 <b>{html.escape(name)}</b> ({html.escape(team)})\n\n"
+        f"Reply with: <code>runs wickets sixes fours</code>\n"
+        f"e.g. <code>41 0 2 3</code> for 41 runs, 0 wkts, 2 sixes, 3 fours.\n\n"
+        f"Didn't play this match? Tap ⏭ Skip — no stats will be added for them."
+    )
+
+
+def _mres_stats_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Skip (didn't play)", callback_data="mres_playerskip")],
+        [InlineKeyboardButton("✅ Finish & Save now", callback_data="mres_playerdone")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")],
+    ])
+
+
+async def _mres_advance_to_stats(query_or_msg, context, group_id: int, edit: bool):
+    session = manual_result_sessions[group_id]
+    if session["idx"] >= len(session["squad"]):
+        await _mres_finalize(query_or_msg, context, group_id)
+        return
+    text = _mres_stats_prompt_text(session)
+    kb = _mres_stats_keyboard()
+    try:
+        if edit:
+            await query_or_msg.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await query_or_msg.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        await context.bot.send_message(group_id, text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+async def _mres_finalize(query_or_msg, context, group_id: int):
+    session = manual_result_sessions.pop(group_id, None)
+    if not session:
+        return
+
+    t1, t2 = session["team1"], session["team2"]
+    winner = session["winner"]
+    margin_text = session.get("margin_text", "")
+    mid = session["mid"]
+
+    pts = tournament_points[group_id]
+    for tn in (t1, t2):
+        pts.setdefault(tn, _default_team_stats())
+
+    if winner is None:
+        pts[t1]["played"] += 1; pts[t2]["played"] += 1
+        pts[t1]["tied"] += 1; pts[t2]["tied"] += 1
+        pts[t1]["pts"] += 1; pts[t2]["pts"] += 1
+        result_str = "Tie"
+    else:
+        loser = t2 if winner == t1 else t1
+        pts[winner]["played"] += 1; pts[loser]["played"] += 1
+        pts[winner]["won"] += 1; pts[loser]["lost"] += 1
+        pts[winner]["pts"] += 2
+        result_str = f"{winner} won" + (f" {margin_text}" if margin_text else "")
+
+    for fix in tournament_fixtures.get(group_id, []):
+        if fix.get("match_id") == mid:
+            fix["result"] = result_str
+            break
+
+    player_runs, player_wkts, player_sixes, player_fours = {}, {}, {}, {}
+    best_player, best_score = None, -1
+    for uid, name, team in session["squad"]:
+        s = session["stats"].get(uid)
+        if not s:
+            continue  # skipped → did not play, no stats at all
+        if s["runs"]:
+            player_runs[name] = player_runs.get(name, 0) + s["runs"]
+        if s["wkts"]:
+            player_wkts[name] = player_wkts.get(name, 0) + s["wkts"]
+        if s["sixes"]:
+            player_sixes[name] = player_sixes.get(name, 0) + s["sixes"]
+        if s["fours"]:
+            player_fours[name] = player_fours.get(name, 0) + s["fours"]
+        impact = s["runs"] + (s["wkts"] * 20)
+        if impact > best_score:
+            best_score, best_player = impact, name
+
+    tour_match_stats[group_id][mid] = {
+        "team1": t1, "team2": t2,
+        "player_runs": player_runs,
+        "player_wickets": player_wkts,
+        "player_sixes": player_sixes,
+        "player_fours": player_fours,
+        "mvp": best_player,
+        "manual_entry": True,
+    }
+
+    pending_tour_match.pop(group_id, None)
+    save_tour_state(group_id)
+
+    text = (
+        f"✅ <b>MANUAL RESULT SAVED!</b>\n"
+        f"─────────────────\n"
+        f"⚔️ <b>{t1}</b> vs <b>{t2}</b>\n"
+        f"🎯 <b>Overs:</b> {session.get('overs')}\n"
+        f"🏆 <b>Result:</b> {result_str}\n"
+        f"👑 <b>MVP:</b> {html.escape(best_player) if best_player else '—'}\n\n"
+        f"Points table, fixture result & player stats have been updated."
+    )
+    try:
+        await query_or_msg.edit_message_text(text, parse_mode=ParseMode.HTML)
+    except Exception:
+        try:
+            await query_or_msg.reply_text(text, parse_mode=ParseMode.HTML)
+        except Exception:
+            await context.bot.send_message(group_id, text, parse_mode=ParseMode.HTML)
+
+
+async def addresult_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/addresult — owner/powered-only manual result + player-stats entry.
+    Flow: Team X -> Team Y -> Overs -> Winner -> Margin -> player stats."""
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat.type == "private":
+        await update.message.reply_text("Use this inside the tournament group.")
+        return
+
+    group_id = chat.id
+    if not _is_result_admin(user.id):
+        await update.message.reply_text("🚫 Only the bot owner or powered users can use this.")
+        return
+
+    if group_id not in TOURNAMENT_APPROVED_GROUPS:
+        await update.message.reply_text("⚠️ This group isn't tournament-approved.")
+        return
+
+    all_teams = list(tournament_teams.get(group_id, {}).keys())
+    if len(all_teams) < 2:
+        await update.message.reply_text("⚠️ Need at least 2 registered tournament teams first.")
+        return
+
+    mid = f"manual_{int(time.time())}"
+    manual_result_sessions[group_id] = {
+        "user_id": user.id, "mid": mid, "team1": None, "team2": None,
+        "overs": None, "winner": None, "margin_text": "",
+        "squad": [], "idx": 0, "stats": {}, "stage": "team_x",
+    }
+
+    kb = [[InlineKeyboardButton(tn, callback_data=f"mres_tx_{tn}")] for tn in all_teams]
+    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")])
+    await update.message.reply_text(
+        "🏆 <b>Manual Result Entry</b>\n─────────────────\n🔵 Select <b>Team X</b>:",
+        reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML,
+    )
+
+
+async def mres_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
+    group_id = query.message.chat.id
+    data = query.data
+
+    if not _is_result_admin(user.id):
+        await query.answer("🚫 Not authorized.", show_alert=True)
+        return
+
+    session = manual_result_sessions.get(group_id)
+    if not session or session["user_id"] != user.id:
+        if data != "mres_cancel":
+            await query.answer("No active session for you here. Run /addresult again.", show_alert=True)
+            return
+
+    if data == "mres_cancel":
+        manual_result_sessions.pop(group_id, None)
+        await query.edit_message_text("❌ Manual result entry cancelled.")
+        await query.answer()
+        return
+
+    # ── Team X ──
+    if data.startswith("mres_tx_"):
+        tx = data[len("mres_tx_"):]
+        session["team1"] = tx
+        all_teams = [t for t in tournament_teams.get(group_id, {}).keys() if t != tx]
+        kb = [[InlineKeyboardButton(tn, callback_data=f"mres_ty_{tn}")] for tn in all_teams]
+        kb.append([InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")])
+        await query.edit_message_text(
+            f"✅ Team X = <b>{html.escape(tx)}</b>\n─────────────────\n🔴 Select <b>Team Y</b>:",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML,
+        )
+        await query.answer()
+        return
+
+    # ── Team Y ──
+    if data.startswith("mres_ty_"):
+        ty = data[len("mres_ty_"):]
+        session["team2"] = ty
+        session["squad"] = _mres_squad(group_id, session["team1"], session["team2"])
+        session["stage"] = "overs"
+        await query.edit_message_text(
+            f"✅ <b>{html.escape(session['team1'])}</b> vs <b>{html.escape(ty)}</b>\n"
+            f"─────────────────\n🔢 Select number of overs:",
+            reply_markup=_mres_overs_keyboard(session["mid"]), parse_mode=ParseMode.HTML,
+        )
+        await query.answer()
+        return
+
+    # ── Overs ──
+    if data.startswith("mres_overs_"):
+        overs = int(data.split("_")[2])
+        session["overs"] = overs
+        session["stage"] = "winner"
+        t1, t2 = session["team1"], session["team2"]
+        kb = [
+            [InlineKeyboardButton(t1, callback_data="mres_win_t1")],
+            [InlineKeyboardButton(t2, callback_data="mres_win_t2")],
+            [InlineKeyboardButton("🤝 Tie", callback_data="mres_win_tie")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")],
+        ]
+        await query.edit_message_text(
+            f"✅ <b>{overs} overs</b>\n─────────────────\n⚔️ <b>{t1}</b> vs <b>{t2}</b>\n\n🏆 Who won?",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML,
+        )
+        await query.answer()
+        return
+
+    # ── Winner ──
+    if data.startswith("mres_win_"):
+        choice = data.split("_")[2]
+        session["winner"] = {"t1": session["team1"], "t2": session["team2"], "tie": None}[choice]
+        session["stage"] = "margin_type"
+        if session["winner"] is None:
+            session["margin_text"] = ""
+            session["stage"] = "player_stats"
+            await query.answer()
+            await _mres_advance_to_stats(query, context, group_id, edit=True)
+            return
+        kb = [
+            [InlineKeyboardButton("🏃 By Runs", callback_data="mres_margintype_runs")],
+            [InlineKeyboardButton("🎯 By Wickets", callback_data="mres_margintype_wkts")],
+            [InlineKeyboardButton("⏭ Skip margin", callback_data="mres_margintype_skip")],
+        ]
+        await query.edit_message_text(
+            f"✅ Result: <b>{session['winner']} won</b>\n\n📏 Winning margin?",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML,
+        )
+        await query.answer()
+        return
+
+    # ── Margin type ──
+    if data.startswith("mres_margintype_"):
+        kind = data.split("_")[2]
+        if kind == "skip":
+            session["margin_text"] = ""
+            session["stage"] = "player_stats"
+            await query.answer()
+            await _mres_advance_to_stats(query, context, group_id, edit=True)
+        elif kind == "wkts":
+            session["stage"] = "margin_wkts"
+            await query.edit_message_text(
+                "🎯 Select wicket margin:", reply_markup=_mres_wkts_keyboard()
+            )
+            await query.answer()
+        else:  # runs — bigger range, ask as text
+            session["stage"] = "margin_runs_text"
+            await query.edit_message_text("✏️ Reply with the winning run margin, e.g. 20")
+            await query.answer()
+        return
+
+    # ── Wicket margin button (0-19) ──
+    if data.startswith("mres_wktmargin_"):
+        w = int(data.split("_")[2])
+        session["margin_text"] = f"by {w} wicket{'s' if w != 1 else ''}"
+        session["stage"] = "player_stats"
+        await query.answer()
+        await _mres_advance_to_stats(query, context, group_id, edit=True)
+        return
+
+    if data == "mres_playerskip":
+        session["idx"] += 1
+        await query.answer()
+        await _mres_advance_to_stats(query, context, group_id, edit=True)
+        return
+
+    if data == "mres_playerdone":
+        await query.answer()
+        await _mres_finalize(query, context, group_id)
+        return
+
+
+async def handle_manual_result_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Call this FIRST inside handle_group_input. Returns True if the message
+    was consumed as part of an /addresult session (runs margin or player stats)."""
+    if update.effective_chat.type == "private" or not update.message or not update.message.text:
+        return False
+
+    group_id = update.effective_chat.id
+    user = update.effective_user
+    session = manual_result_sessions.get(group_id)
+    if not session or session["user_id"] != user.id:
+        return False
+
+    text = update.message.text.strip()
+
+    if session["stage"] == "margin_runs_text":
+        try:
+            n = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ Send a number, e.g. 20")
+            return True
+        session["margin_text"] = f"by {n} run{'s' if n != 1 else ''}"
+        session["stage"] = "player_stats"
+        await _mres_advance_to_stats(update.message, context, group_id, edit=False)
+        return True
+
+    if session["stage"] == "player_stats":
+        parts = text.split()
+        try:
+            vals = [int(p) for p in parts]
+        except ValueError:
+            await update.message.reply_text("⚠️ Format: runs wickets sixes fours — e.g. 41 0 2 3")
+            return True
+        vals += [0] * (4 - len(vals))
+        runs, wkts, sixes, fours = vals[:4]
+        uid = session["squad"][session["idx"]][0]
+        session["stats"][uid] = {"runs": runs, "wkts": wkts, "sixes": sixes, "fours": fours}
+        session["idx"] += 1
+        await _mres_advance_to_stats(update.message, context, group_id, edit=False)
+        return True
+
+    return False
 
 
 async def tourresult_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -25061,7 +25436,12 @@ async def handle_group_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # --- 1. Basic Validations ---
     if update.effective_chat.type == "private": return
     if not update.message or not update.message.text: return
-    
+
+    # 🏆 /addresult manual entry (margin number / player stats) hijacks
+    # plain-text replies from the admin running the session — check first.
+    if await handle_manual_result_text(update, context):
+        return
+
     text = update.message.text.strip()
     if not text.isdigit(): return
     
@@ -31093,6 +31473,8 @@ def main():
     application.add_handler(CommandHandler("teamremove", teamremove_command))
     application.add_handler(CommandHandler("teamdelete", teamdelete_command))
     application.add_handler(CommandHandler("tourresult", tourresult_command))
+    application.add_handler(CommandHandler("addresult", addresult_command))
+    application.add_handler(CallbackQueryHandler(mres_callback, pattern="^mres_"))
     application.add_handler(CommandHandler("tourlb", tourlb_command))
     # ================== MESSAGE HANDLERS ==================
     application.add_handler(

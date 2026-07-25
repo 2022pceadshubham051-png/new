@@ -1106,6 +1106,7 @@ bug_command_usage: Dict[str, str] = {}  # "user_id" -> "YYYY-MM-DD" (last day /b
 bug_report_map: Dict[str, Dict] = {}  # "owner_message_id" -> {"reporter_id":, "reporter_chat_id":, "reporter_msg_id":}
 group_notify_subscribers: Dict[str, Dict[str, str]] = {}  # "group_id" -> {"user_id": subscribed_at_iso}
 GROUP_NOTIFY_EXPIRY_DAYS = 7  # /notify subscription auto-expires after this many days
+owner_regame_backups: Dict[str, Dict] = {}  # "owner_dm_message_id" -> {"backup_path":, "code":, "group_id":, "group_name":}
 bot_start_time = time.time()
 
 # ══════════════════════════════════════════════
@@ -2313,6 +2314,14 @@ class Team:
                     (h - 1 if h > i else h)
                     for h in self.bowler_history if h != i
                 ]
+                # 🔧 GLITCH FIX: out_players_indices was never shifted here, so removing
+                # a player whose index came before an already-out player's index left
+                # that set pointing at the WRONG player — corrupting all-out detection
+                # and the "who's available to bat" list after any add-then-remove.
+                self.out_players_indices = {
+                    (idx - 1 if idx > i else idx)
+                    for idx in self.out_players_indices if idx != i
+                }
                 return True
         return False
     
@@ -8017,7 +8026,7 @@ async def batsman_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id
         
         await asyncio.sleep(120)  # Another 2 minutes (total 4 min)
         
-        if not match.waiting_for_batsman:
+        if not match.waiting_for_batsman or getattr(match, 'is_paused', False):
             return
         
         # Timeout occurred - penalty
@@ -8183,7 +8192,7 @@ async def bowler_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id:
         
         await asyncio.sleep(120)  # Another 2 minutes (total 4 min)
         
-        if not match.waiting_for_bowler:
+        if not match.waiting_for_bowler or getattr(match, 'is_paused', False):
             return
         
         # Get current bowler if any
@@ -8404,24 +8413,29 @@ async def declare_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Can only declare in 1st innings
-    if match.innings != 1:
-        await update.message.reply_text(
-            themed("⚠️ DECLARE UNAVAILABLE", ["Declare is only allowed during the 1st innings."], "⚠️"),
-            parse_mode=ParseMode.HTML
-        )
-        return
+    # 🏳️ Declare is now allowed in BOTH innings — declaring in the 2nd innings
+    # ends the match immediately (end_innings already routes innings==2 to
+    # determine_match_winner, so no further change needed there).
 
     match.declare_pending = True
     cap_tag = get_user_tag(bat_captain)
     crr = round(bat_team.score / max(bat_team.balls / 6, 0.1), 2)
 
-    declare_lines = [
-        f"🏳️ {cap_tag} wants to <b>DECLARE</b> the innings!",
-        f"🏏 <b>{bat_team.name}:</b> {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov) | RR: {crr}",
-        f"🎯 Host — do you accept the declaration?",
-        f"⏳ Decide within 60 seconds or it is auto-denied.",
-    ]
+    if match.innings == 1:
+        declare_lines = [
+            f"🏳️ {cap_tag} wants to <b>DECLARE</b> the innings!",
+            f"🏏 <b>{bat_team.name}:</b> {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov) | RR: {crr}",
+            f"🎯 Host — do you accept the declaration?",
+            f"⏳ Decide within 60 seconds or it is auto-denied.",
+        ]
+    else:
+        declare_lines = [
+            f"🏳️ {cap_tag} wants to <b>DECLARE</b> the 2nd innings!",
+            f"🏏 <b>{bat_team.name}:</b> {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov) | Target: {match.target}",
+            f"⚠️ <i>Declaring now ends the match immediately — the result is decided on the current score.</i>",
+            f"🎯 Host — do you accept the declaration?",
+            f"⏳ Decide within 60 seconds or it is auto-denied.",
+        ]
     msg_text = themed("🏳️ INNINGS DECLARATION", declare_lines, "🏳️")
 
     keyboard = InlineKeyboardMarkup([[
@@ -8483,11 +8497,12 @@ async def declare_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "accept":
         try:
+            if match.innings == 1:
+                accept_lines = ["The batting team has declared their innings!", "Innings ending now... 🏳️"]
+            else:
+                accept_lines = ["The batting team has declared the 2nd innings!", "Result is being calculated on the current score... 🏳️"]
             await query.edit_message_text(
-                themed("✅ DECLARATION ACCEPTED", [
-                    "The batting team has declared their innings!",
-                    "Innings ending now... 🏳️",
-                ], "✅"),
+                themed("✅ DECLARATION ACCEPTED", accept_lines, "✅"),
                 parse_mode=ParseMode.HTML,
             )
         except Exception:
@@ -10823,48 +10838,91 @@ async def handle_noball_and_continue(context: ContextTypes.DEFAULT_TYPE, group_i
     await execute_ball(context, group_id, match)
 
 
+async def check_drinks_break(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
-    🥤 DRINKS BREAK - Triggers at 10th over (60 balls)
+    🥤 DRINKS BREAK - Triggers at the 10th over (60 balls).
+    🔧 BUG FIX: this function was being called (see check_over_complete) but was never
+    actually defined — it existed only as dead, unreachable code accidentally left
+    inside the no-ball handler above, so every match that reached over 10 crashed
+    with a NameError right here. Restored as a real function below.
+
+    Also pause-aware like /timeout: sets match.is_paused for the break's duration and
+    cancels the live selection/ball timers so they can't fire underneath the break,
+    then restores them exactly as /timeout does.
     """
     bat_team = match.current_batting_team
-    
-    # 🕵️ Check if 10 overs completed (60 balls)
-    if bat_team.balls == 60:
-        drinks_gif = "https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif"
-        
-        msg = f"🥤 <b>DRINKS BREAK!</b> 🥤\n"
-        msg += "─────────────────\n"
-        msg += f"📊 <b>Score:</b> {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})\n\n"
-        
-        # 🧮 Calculate stats
-        overs_played = max(bat_team.balls / 6, 0.1)
-        crr = round(bat_team.score / overs_played, 2)
-        msg += f"📈 <b>Current RR:</b> {crr}\n"
-        
-        if match.innings == 2:
-            runs_needed = match.target - bat_team.score
-            balls_left = (match.total_overs * 6) - bat_team.balls
-            rrr = round((runs_needed / balls_left) * 6, 2) if balls_left > 0 else 0
-            msg += f"🎯 <b>Required RR:</b> {rrr}\n"
-            msg += f"🏏 <b>Need:</b> {runs_needed} runs in {balls_left} balls\n"
-        
-        msg += "\n─────────────────\n"
-        msg += "⏳ <i>Resuming in 30 seconds...</i>"
-        
-        try:
-            await context.bot.send_animation(group_id, animation=drinks_gif, caption=msg, parse_mode=ParseMode.HTML)
-        except:
-            await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-        
-        # ⏱️ 30 second pause
-        await asyncio.sleep(30)
-        
+
+    # Don't double-pause on top of an active /timeout
+    if getattr(match, 'is_paused', False):
+        return
+
+    match.is_paused = True
+    match.pause_until = time.time() + 30
+
+    # Cancel active timers so they don't expire during the break
+    if match.ball_timeout_task:
+        match.ball_timeout_task.cancel()
+        match.ball_timeout_task = None
+    if match.bowler_selection_task:
+        match.bowler_selection_task.cancel()
+        match.bowler_selection_task = None
+    if match.batsman_selection_task:
+        match.batsman_selection_task.cancel()
+        match.batsman_selection_task = None
+
+    drinks_gif = "https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif"
+
+    msg = f"🥤 <b>DRINKS BREAK!</b> 🥤\n"
+    msg += "─────────────────\n"
+    msg += f"📊 <b>Score:</b> {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})\n\n"
+
+    overs_played = max(bat_team.balls / 6, 0.1)
+    crr = round(bat_team.score / overs_played, 2)
+    msg += f"📈 <b>Current RR:</b> {crr}\n"
+
+    if match.innings == 2:
+        runs_needed = match.target - bat_team.score
+        balls_left = (match.total_overs * 6) - bat_team.balls
+        rrr = round((runs_needed / balls_left) * 6, 2) if balls_left > 0 else 0
+        msg += f"🎯 <b>Required RR:</b> {rrr}\n"
+        msg += f"🏏 <b>Need:</b> {runs_needed} runs in {balls_left} balls\n"
+
+    msg += "\n─────────────────\n"
+    msg += "⏳ <i>Resuming in 30 seconds...</i>"
+
+    try:
+        await context.bot.send_animation(group_id, animation=drinks_gif, caption=msg, parse_mode=ParseMode.HTML)
+    except Exception:
+        await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
+
+    await asyncio.sleep(30)
+
+    match.is_paused = False
+    match.pause_until = 0.0
+
+    await context.bot.send_message(
+        group_id,
+        text="▶️ <b>DRINKS BREAK OVER!</b> → Play resumes now! 🏏",
+        parse_mode=ParseMode.HTML
+    )
+    await asyncio.sleep(2)
+
+    # Re-request whatever was pending before the break, exactly like /timeout does
+    if match.waiting_for_bowler:
+        await request_bowler_selection(context, group_id, match)
+    elif match.waiting_for_batsman:
+        captain = match.get_captain(match.current_batting_team)
+        cap_tag = get_user_tag(captain) if captain else match.current_batting_team.name
         await context.bot.send_message(
             group_id,
-            text="▶️ <b>DRINKS BREAK OVER!</b> → Play resumes now! 🏏",
+            f"⚔️ {cap_tag} → select your batsman:\n<code>/batting [number]</code>",
             parse_mode=ParseMode.HTML
         )
-        await asyncio.sleep(2)
+        match.batsman_selection_time = time.time()
+        match.batsman_selection_task = asyncio.create_task(
+            batsman_selection_timeout(context, group_id, match)
+        )
+
 
 async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
@@ -23770,21 +23828,10 @@ async def bug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def bug_owner_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🛠️ Handles the owner replying (in DM) to a forwarded bug report — routes the
-    reply back to the original reporter as a reply to their /bug message; falls back
-    to a plain DM to the reporter if that fails."""
-    user = update.effective_user
-    if user.id != OWNER_ID:
-        return
+async def _handle_bug_owner_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, mapping: Dict):
+    """🛠️ Routes the owner's DM reply on a forwarded bug report back to the original
+    reporter as a reply to their /bug message; falls back to a plain DM if that fails."""
     msg = update.message
-    if not msg or not msg.reply_to_message or update.effective_chat.type != "private":
-        return
-
-    mapping = bug_report_map.get(str(msg.reply_to_message.message_id))
-    if not mapping:
-        return
-
     answer_text = f"🛠️ <b>Reply from the developer:</b>\n{html.escape(msg.text or '')}"
     try:
         await context.bot.send_message(
@@ -23804,6 +23851,72 @@ async def bug_owner_reply_handler(update: Update, context: ContextTypes.DEFAULT_
         except Exception as e:
             logger.error(f"❌ Failed to route bug reply to reporter: {e}")
             await msg.reply_text("⚠️ Couldn't deliver this reply to the reporter.")
+
+
+async def _handle_owner_regame_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, backup_meta: Dict):
+    """🛠️ Owner replied "regame" to a match-file backup DM'd earlier — load that exact
+    snapshot and commit its stats to the database as-is (winner determined from the
+    score frozen at snapshot time), without needing the match to be live in a group."""
+    msg = update.message
+    backup_path = backup_meta.get("backup_path")
+    if not backup_path or not os.path.exists(backup_path):
+        await msg.reply_text("❌ That backup file is no longer available (may have already been committed).")
+        return
+
+    try:
+        with open(backup_path, "rb") as f:
+            match = await asyncio.to_thread(pickle.load, f)
+    except Exception as e:
+        logger.error(f"Failed to load owner regame backup: {e}")
+        await msg.reply_text(f"❌ Failed to load that match file: {e}")
+        return
+
+    group_id = backup_meta.get("group_id") or getattr(match, "group_id", None)
+    try:
+        await determine_match_winner(context, group_id, match)
+        await msg.reply_text(
+            f"✅ <b>Committed!</b>\nStats for match <code>{backup_meta.get('code')}</code> "
+            f"have been saved to the database as-is.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Failed to commit owner regame stats: {e}")
+        await msg.reply_text(f"❌ Failed to save stats: {e}")
+        return
+
+    # One-time use — remove the backup file + mapping once committed
+    try:
+        os.remove(backup_path)
+    except Exception:
+        pass
+    owner_regame_backups.pop(str(msg.reply_to_message.message_id), None)
+
+
+async def owner_dm_reply_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🛠️ Single entry point for the owner replying to a bot DM — routes to whichever
+    feature the replied-to message belongs to (bug report answer, or a /regame
+    match-file backup confirmation). Combined into one handler because both need the
+    same (private + reply + owner + text) filter, and only one handler can claim a
+    given update."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    msg = update.message
+    if not msg or not msg.reply_to_message or update.effective_chat.type != "private":
+        return
+
+    replied_id = str(msg.reply_to_message.message_id)
+
+    bug_mapping = bug_report_map.get(replied_id)
+    if bug_mapping:
+        await _handle_bug_owner_reply(update, context, bug_mapping)
+        return
+
+    regame_mapping = owner_regame_backups.get(replied_id)
+    if regame_mapping and (msg.text or "").strip().lower() == "regame":
+        await _handle_owner_regame_confirm(update, context, regame_mapping)
+        return
+
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -23982,16 +24095,16 @@ async def regame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expires_at = datetime.fromisoformat(meta["expires_at"])
     except Exception:
         expires_at = datetime.now() - timedelta(seconds=1)
-    if datetime.now() > expires_at:
+    if datetime.now() > expires_at and user_id != OWNER_ID:
         _discard_resumable(code)
         await update.message.reply_text("❌ This code has expired (valid for 12 hours only).")
         return
 
-    if meta["group_id"] != group_id:
+    if meta["group_id"] != group_id and user_id != OWNER_ID:
         await update.message.reply_text("❌ This code belongs to a different group!")
         return
 
-    if meta["host_id"] != user_id:
+    if meta["host_id"] != user_id and user_id != OWNER_ID:
         await update.message.reply_text("❌ Only the host of that match can use this code!")
         return
 
@@ -24014,6 +24127,36 @@ async def regame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     active_matches[group_id] = match
+
+    # 🛠️ Owner-only: back up the raw snapshot to DM before it's consumed, so the
+    # owner can later reply "regame" on that file to commit its stats to the DB
+    # as-is — even without resuming the match live in a group.
+    if user_id == OWNER_ID:
+        try:
+            os.makedirs(RESUMABLE_DIR, exist_ok=True)
+            backup_path = os.path.join(RESUMABLE_DIR, f"owner_backup_{code}_{int(time.time())}.pkl")
+            await asyncio.to_thread(shutil.copyfile, file_path, backup_path)
+            sent_doc = await context.bot.send_document(
+                chat_id=OWNER_ID,
+                document=backup_path,
+                filename=f"match_{code}.pkl",
+                caption=(
+                    f"🗂️ <b>Match File</b> — code <code>{code}</code>\n"
+                    f"📍 Group: {html.escape(meta.get('group_name') or 'Unknown')}\n\n"
+                    f"<i>Reply <code>regame</code> to this message to save this match's "
+                    f"stats to the database as-is.</i>"
+                ),
+                parse_mode=ParseMode.HTML
+            )
+            owner_regame_backups[str(sent_doc.message_id)] = {
+                "backup_path": backup_path,
+                "code": code,
+                "group_id": meta.get("group_id"),
+                "group_name": meta.get("group_name"),
+            }
+            save_data()
+        except Exception as e:
+            logger.error(f"Failed to send owner regame backup file: {e}")
 
     # Single-use: this exact snapshot is consumed once resumed.
     _discard_resumable(code)
@@ -30750,7 +30893,7 @@ def main():
     application.add_handler(CallbackQueryHandler(jersey_keep_callback, pattern="^jkeep_"))
     application.add_handler(CommandHandler("notify", notify_command))
     application.add_handler(CallbackQueryHandler(groupnotify_stop_callback, pattern="^groupnotify_stop_"))
-    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.REPLY & filters.User(OWNER_ID) & filters.TEXT, bug_owner_reply_handler))
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.REPLY & filters.User(OWNER_ID) & filters.TEXT, owner_dm_reply_router))
     application.add_handler(CommandHandler("addach", addach_command))
     application.add_handler(CommandHandler("removeach", removeach_command))
 

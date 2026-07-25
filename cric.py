@@ -1100,6 +1100,12 @@ registered_groups: Dict[int, Dict] = {}
 gc_settings: Dict[int, Dict] = {}  # Per-GC admin settings
 banned_groups: Set[int] = set()
 banned_users: Dict[int, Dict] = {}   # user_id -> {"reason":..., "banned_by":..., "banned_at":..., "name":...}
+jersey_release_subscribers: Dict[str, Dict[str, str]] = {}  # "number" -> {"user_id": requested_at_iso}
+jersey_owner_checks: Dict[str, Dict] = {}  # "number" -> {"holder_id":, "requested_at":, "requested_by":}
+bug_command_usage: Dict[str, str] = {}  # "user_id" -> "YYYY-MM-DD" (last day /bug was used)
+bug_report_map: Dict[str, Dict] = {}  # "owner_message_id" -> {"reporter_id":, "reporter_chat_id":, "reporter_msg_id":}
+group_notify_subscribers: Dict[str, Dict[str, str]] = {}  # "group_id" -> {"user_id": subscribed_at_iso}
+GROUP_NOTIFY_EXPIRY_DAYS = 7  # /notify subscription auto-expires after this many days
 bot_start_time = time.time()
 
 # ══════════════════════════════════════════════
@@ -1760,10 +1766,80 @@ def find_user_id_by_jersey(number: int) -> Optional[int]:
     return None
 
 
+def find_nearby_free_jersey_numbers(number: int, count: int = 5) -> list:
+    """Given a taken jersey number, returns up to `count` free numbers closest to it
+    (alternating +1, -1, +2, -2, ...), staying within the 1-999 range."""
+    taken = set()
+    for data in user_data.values():
+        n = data.get("jersey_number")
+        if n:
+            taken.add(n)
+    free = []
+    offset = 1
+    while len(free) < count and offset <= 999:
+        for cand in (number + offset, number - offset):
+            if 1 <= cand <= 999 and cand not in taken and cand not in free:
+                free.append(cand)
+                if len(free) >= count:
+                    break
+        offset += 1
+    return free
+
+
 # ── Jersey inactivity retirement settings ──
 JERSEY_WARNING_DAYS = 60   # DM warning after this many days of inactivity
 JERSEY_RETIRE_DAYS = 90    # number auto-released after this many days of inactivity
 JERSEY_SWAP_COOLDOWN_HOURS = 24  # one swap request per requester per day
+JERSEY_OWNER_CHECK_DAYS = 2       # /rmjersey activity-check window before auto-removal
+JERSEY_NOTIFY_EXPIRY_DAYS = 7     # "notify me when free" subscriptions expire after this many days
+
+
+def add_jersey_release_subscriber(number: int, user_id: int) -> None:
+    """Registers user_id to get DM'd once when `number` becomes free. Expires after
+    JERSEY_NOTIFY_EXPIRY_DAYS — after that the user must ask to be notified again."""
+    global jersey_release_subscribers
+    try:
+        jersey_release_subscribers
+    except NameError:
+        jersey_release_subscribers = {}
+    subs = jersey_release_subscribers.setdefault(str(number), {})
+    subs[str(user_id)] = datetime.now().isoformat()
+
+
+def pop_jersey_release_subscribers(number: int) -> list:
+    """Returns the still-valid (non-expired) subscriber user_ids for `number` and clears them."""
+    global jersey_release_subscribers
+    try:
+        jersey_release_subscribers
+    except NameError:
+        jersey_release_subscribers = {}
+    subs = jersey_release_subscribers.pop(str(number), {})
+    now = datetime.now()
+    valid = []
+    for uid_str, ts in subs.items():
+        try:
+            requested_at = datetime.fromisoformat(ts)
+        except Exception:
+            continue
+        if (now - requested_at).days <= JERSEY_NOTIFY_EXPIRY_DAYS:
+            valid.append(int(uid_str))
+    return valid
+
+
+async def notify_jersey_now_free(context: ContextTypes.DEFAULT_TYPE, number: int) -> None:
+    """DMs everyone who asked to be notified that jersey `number` is now free (1-week window)."""
+    subscribers = pop_jersey_release_subscribers(number)
+    for uid in subscribers:
+        try:
+            await context.bot.send_message(
+                uid,
+                f"🔔 <b>Jersey #{number} is now free!</b>\n"
+                f"Grab it with <code>/jersey {number}</code> before someone else does.\n"
+                f"<i>This was a one-time alert — ask again with the notify button if you miss it.</i>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
 
 
 def touch_jersey_activity(user_ids) -> None:
@@ -4510,21 +4586,7 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         
         requester_tag = f'<a href="tg://user?id={user.id}">{html.escape(user.first_name)}</a>'
-        msg = "╭━─────────────────\n"
-        msg += "┃ 👥 <b>𝗧𝗲𝗮𝗺 𝗠𝗼𝗱𝗲</b>\n"
-        msg += "┃ ↳ Captains, toss, innings & scorecards.\n"
-        msg += "┣━─────────────────\n"
-        msg += "┃ 👤 <b>𝗦𝗼𝗹𝗼 𝗠𝗼𝗱𝗲</b>\n"
-        msg += "┃ ↳ Free-for-all battle!\n"
-        msg += "┣━─────────────────\n"
-        msg += "┃ 🤖 <b>𝗔𝗜 𝗠𝗼𝗱𝗲</b>\n"
-        msg += "┃ ↳ Private challenge in your DMs.\n"
-        msg += "┣━─────────────────\n"
-        msg += "┃ 🏆 <b>𝗧𝗼𝘂𝗿𝗻𝗮𝗺𝗲𝗻𝘁 / 𝗔𝘂𝗰𝘁𝗶𝗼𝗻</b>\n"
-        msg += "┃ ↳ League tools for approved groups.\n"
-        msg += "┣━─────────────────\n"
-        msg += f"┃ 👤 Requested by: {requester_tag}\n"
-        msg += "╰━━━━━━━━\n"
+        msg = f"🎮 <b>Choose a mode</b> — requested by {requester_tag}"
         
         # Step 7: Send Message (Try Photo first, then Text)
         
@@ -4581,6 +4643,10 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
         match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
 
         active_matches[chat.id] = match
+        try:
+            await notify_group_game_started(context, chat.id, chat.title)
+        except Exception:
+            pass
 
         if user.id not in player_stats:
             init_player_stats(user.id)
@@ -4693,6 +4759,10 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
         match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
 
         active_matches[chat.id] = match
+        try:
+            await notify_group_game_started(context, chat.id, chat.title)
+        except Exception:
+            pass
 
         if user.id not in player_stats:
             init_player_stats(user.id)
@@ -5290,6 +5360,10 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             match.team_y.captain_id = ty_data["captain"]
 
         active_matches[group_id] = match
+        try:
+            await notify_group_game_started(context, group_id, query.message.chat.title)
+        except Exception:
+            pass
         pending_tour_match[group_id]["active_match"] = True
 
         # Move to team edit phase (same as team mode)
@@ -6034,6 +6108,10 @@ async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user)
     # Create new match
     match = Match(chat.id, chat.title)
     active_matches[chat.id] = match
+    try:
+        await notify_group_game_started(context, chat.id, chat.title)
+    except Exception:
+        pass
     
     # Track lobby creator — only they can force-start the match early
     match.host_id = user.id
@@ -7408,18 +7486,7 @@ async def start_match(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
             await context.bot.unpin_chat_message(chat_id=group_id, message_id=match.main_message_id)
         except: pass
 
-    # Send toss summary
-    decision_method = "chose to" if not auto_decision else "will"
-    toss_summary = "🏟️ <b>MATCH HAS BEGUN!</b>\n"
-    toss_summary += "─────────────────\n"
-    toss_summary += f"🎙️ <b>Host:</b> {html.escape(match.host_name or 'Host')}\n"
-    toss_summary += f"🔑 <b>Code:</b> <code>{match.resume_code}</code>\n"
-    toss_summary += f"🪙 <b>Toss Winner:</b> {match.toss_winner.name}\n"
-    toss_summary += f"🏏 <b>Decision:</b> {match.batting_first.name} {decision_method} bat first\n"
-    toss_summary += f"📏 <b>Format:</b> <code>{match.total_overs} Overs</code> per innings\n"
-    
-    await context.bot.send_message(chat_id=group_id, text=toss_summary, parse_mode=ParseMode.HTML)
-    
+    # 🔕 "MATCH HAS BEGUN" text message removed per request — go straight to the prediction poll.
     # ✅ CREATE PREDICTION POLL
     await create_prediction_poll(context, group_id, match)
     
@@ -10086,13 +10153,8 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         if chase_line:
             msg += chase_line
         
-        # React buttons for boundaries
+        # 🔕 Wow!/Smashed! reaction buttons on 4s/6s removed per request.
         _bnd_react = None
-        if runs in [4, 6]:
-            _bnd_react = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔥 Wow!", callback_data=f"react_wow_{group_id}"),
-                InlineKeyboardButton("🚀 Smashed!", callback_data=f"react_smash_{group_id}"),
-            ]])
         # Send message
         try:
             if gif_url and runs > 0:
@@ -10624,15 +10686,9 @@ async def confirm_wicket_and_continue(context: ContextTypes.DEFAULT_TYPE, group_
     # 🎉 CHECK BOWLING MILESTONE
     await check_and_celebrate_milestones(context, group_id, match, bowler, 'bowling')
     
-    # 📄 Send Mini Scorecard (text-only, no photo)
-    try:
-        mini_card = generate_mini_scorecard(match, wicket_mode=True)
-        await context.bot.send_message(group_id, mini_card, parse_mode=ParseMode.HTML)
-        logger.info("📨 Mini scorecard sent")
-    except Exception as e:
-        logger.error(f"🚫 Failed to send mini scorecard: {e}")
-    
-    await asyncio.sleep(2)
+    # 🔕 MATCH CENTRE mini scorecard after a wicket removed per request.
+
+    await asyncio.sleep(1)
     
     # ⚰️ Mark player as OUT
     bat_team.out_players_indices.add(bat_team.current_batsman_idx)
@@ -12350,10 +12406,14 @@ async def magicball_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match.solo_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
     
     active_matches[group_id] = match
-    
+    try:
+        await notify_group_game_started(context, group_id, update.effective_chat.title)
+    except Exception:
+        pass
+
     if user.id not in player_stats:
         init_player_stats(user.id)
-        
+
     p = Player(user.id, user.username or "", user.first_name)
     match.solo_players.append(p)
     
@@ -13992,11 +14052,14 @@ async def testwin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Force set phase and call winner determination
     match.phase = GamePhase.MATCH_ENDED
     await determine_match_winner(context, chat.id, match)
-    """
-    ✅ COMPLETE FIX: Proper winner determination and message delivery
-    """
-    logger.info(f"🏆 === DETERMINE WINNER START === Group: {group_id}")
-    
+
+
+async def _dead_code_removed_duplicate_winner_logic(group_id, match, context):
+    # 🔧 CLEANUP: this whole block used to be leftover/duplicated winner-determination
+    # code accidentally pasted inside testwin_command, causing stats, history and the
+    # scorecard to be processed a second time whenever /testwin ran. Removed — the
+    # real logic lives in determine_match_winner() above.
+    return
     # Get teams
     first = match.batting_first
     second = match.get_other_team(first)
@@ -16778,6 +16841,10 @@ async def rematch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_match.magic_ball_mode = True
     new_match.phase = GamePhase.TEAM_JOINING
     active_matches[group_id] = new_match
+    try:
+        await notify_group_game_started(context, group_id, chat.title)
+    except Exception:
+        pass
 
     msg = f"🔁 <b>REMATCH STARTING!</b>\n"
     msg += f"─────────────────\n"
@@ -18301,14 +18368,28 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         holder_name = holder_data.get("first_name", "another player")
         holder_tag = f'<a href="tg://user?id={holder_id}">{html.escape(holder_name)}</a>'
 
-        keyboard = InlineKeyboardMarkup([[
+        nearby_free = find_nearby_free_jersey_numbers(number)
+        nearby_line = ""
+        if nearby_free:
+            nearby_line = "🆓 <b>Free nearby:</b> " + ", ".join(f"#{n}" for n in nearby_free) + "\n"
+
+        keyboard_rows = [[
             InlineKeyboardButton("🔁 Request Swap", callback_data=f"jswap_req_{holder_id}_{number}")
-        ]])
+        ]]
+        if nearby_free:
+            keyboard_rows.append([
+                InlineKeyboardButton(f"🎽 Take #{n}", callback_data=f"jersey_take_{n}") for n in nearby_free[:3]
+            ])
+        keyboard_rows.append([
+            InlineKeyboardButton("🔔 Notify me when free", callback_data=f"jersey_notify_{number}")
+        ])
+        keyboard = InlineKeyboardMarkup(keyboard_rows)
         await update.message.reply_text(
             f"🚫 <b>Number Taken!</b>\n"
             f"─────────────────\n"
             f"🎽 #{number} is already worn by {holder_tag}.\n"
-            f"<i>Please choose a different number (1-999), or send them a swap request below.</i>",
+            f"{nearby_line}"
+            f"<i>Pick a free number above, send a swap request, or get notified when #{number} opens up.</i>",
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
@@ -18392,8 +18473,10 @@ async def jersey_inactivity_job(context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
-
-        elif days_inactive >= JERSEY_WARNING_DAYS and not data.get("jersey_warned_at"):
+            try:
+                await notify_jersey_now_free(context, number)
+            except Exception:
+                pass
             # ⚠️ Send a one-time warning DM
             data["jersey_warned_at"] = now.isoformat()
             changed = True
@@ -18556,6 +18639,160 @@ async def jersey_swap_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
     except Exception:
         pass
+
+
+async def jersey_notify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔔 jersey_notify_{number} — subscribe to a one-time DM when that number frees up (1 week window)."""
+    query = update.callback_query
+    user = query.from_user
+    number = int(query.data.split("_")[-1])
+
+    if find_user_id_by_jersey(number) is None:
+        await query.answer(f"#{number} is already free — grab it with /jersey {number}!", show_alert=True)
+        return
+
+    add_jersey_release_subscriber(number, user.id)
+    save_data()
+    await query.answer(f"🔔 You'll get a DM if #{number} frees up (valid for {JERSEY_NOTIFY_EXPIRY_DAYS} days).", show_alert=True)
+
+
+async def jersey_take_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🎽 jersey_take_{number} — one-tap claim of a suggested free number."""
+    query = update.callback_query
+    user = query.from_user
+    number = int(query.data.split("_")[-1])
+
+    if find_user_id_by_jersey(number) is not None:
+        await query.answer("Someone just took that number — try another.", show_alert=True)
+        return
+
+    if user.id not in user_data:
+        user_data[user.id] = {
+            "user_id": user.id,
+            "username": user.username or "",
+            "first_name": user.first_name,
+            "started_at": datetime.now().isoformat(),
+            "total_matches": 0
+        }
+        init_player_stats(user.id)
+
+    user_data[user.id]["jersey_number"] = number
+    user_data[user.id]["jersey_last_active"] = datetime.now().isoformat()
+    user_data[user.id]["jersey_warned_at"] = None
+    save_data()
+
+    await query.answer(f"✅ #{number} is now yours!", show_alert=True)
+    try:
+        await query.edit_message_text(f"✅ <b>Jersey #{number}</b> claimed by {html.escape(user.first_name)}!", parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+
+async def rmjersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🎽 /rmjersey <number> — Owner-only. DMs the current holder an activity check;
+    if they don't confirm within JERSEY_OWNER_CHECK_DAYS, the number is auto-released."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: <code>/rmjersey [number]</code>", parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        number = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ Please give a valid jersey number.")
+        return
+
+    holder_id = find_user_id_by_jersey(number)
+    if holder_id is None:
+        await update.message.reply_text(f"🎽 No one is wearing #{number}.")
+        return
+
+    jersey_owner_checks[str(number)] = {
+        "holder_id": holder_id,
+        "requested_at": datetime.now().isoformat(),
+        "requested_by": user.id,
+    }
+    save_data()
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes, I'm active — keep my jersey", callback_data=f"jkeep_{number}")
+    ]])
+    try:
+        await context.bot.send_message(
+            chat_id=holder_id,
+            text=(
+                f"🎽 <b>Jersey Activity Check</b>\n"
+                f"─────────────────\n"
+                f"We noticed you might not be active anymore, so <b>#{number}</b> is under review.\n"
+                f"If you're still around, tap below within <b>{JERSEY_OWNER_CHECK_DAYS} days</b> to keep it.\n"
+                f"<i>No response in time and the number will be released.</i>"
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard
+        )
+        await update.message.reply_text(f"📨 Activity check sent to the holder of #{number}. They have {JERSEY_OWNER_CHECK_DAYS} days to respond.")
+    except Exception:
+        await update.message.reply_text(f"⚠️ Couldn't DM the holder of #{number} — removing the number immediately instead.")
+        await _release_jersey_number(context, number, notify_holder=False)
+        jersey_owner_checks.pop(str(number), None)
+        save_data()
+
+
+async def jersey_keep_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✅ jkeep_{number} — holder confirms they're active, cancels the pending removal."""
+    query = update.callback_query
+    number = int(query.data.split("_")[-1])
+    check = jersey_owner_checks.get(str(number))
+    if not check or check.get("holder_id") != query.from_user.id:
+        await query.answer("This check is no longer active.", show_alert=True)
+        return
+
+    jersey_owner_checks.pop(str(number), None)
+    user_data.setdefault(query.from_user.id, {})["jersey_last_active"] = datetime.now().isoformat()
+    save_data()
+    await query.answer("✅ Confirmed — your jersey is safe!", show_alert=True)
+    try:
+        await query.edit_message_text(f"✅ <b>Confirmed active.</b> You keep 🎽 #{number}.", parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+
+async def _release_jersey_number(context: ContextTypes.DEFAULT_TYPE, number: int, notify_holder: bool = True) -> None:
+    """Clears jersey_number from whoever holds `number` and pings release subscribers."""
+    holder_id = find_user_id_by_jersey(number)
+    if holder_id is not None:
+        user_data[holder_id]["jersey_number"] = None
+        if notify_holder:
+            try:
+                await context.bot.send_message(
+                    holder_id,
+                    f"🎽 <b>Jersey #{number} removed</b> due to no response to the activity check.\n"
+                    f"<i>Grab a new number anytime with /jersey.</i>",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+    save_data()
+    await notify_jersey_now_free(context, number)
+
+
+async def jersey_owner_check_job(context: ContextTypes.DEFAULT_TYPE):
+    """⏰ Runs periodically. Releases jersey numbers whose /rmjersey activity check
+    went unanswered for JERSEY_OWNER_CHECK_DAYS."""
+    now = datetime.now()
+    for number_str, check in list(jersey_owner_checks.items()):
+        try:
+            requested_at = datetime.fromisoformat(check["requested_at"])
+        except Exception:
+            continue
+        if (now - requested_at).days >= JERSEY_OWNER_CHECK_DAYS:
+            number = int(number_str)
+            await _release_jersey_number(context, number, notify_holder=True)
+            jersey_owner_checks.pop(number_str, None)
+            save_data()
 
 
 async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -20120,6 +20357,134 @@ async def removey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """➖ Remove player from Team Y (Host Only)"""
     await mid_game_remove_logic(update, context, "Y")
 
+async def notify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔔 /notify — Subscribe (in a group) to a DM whenever someone starts a game
+    in this group. Subscription auto-expires after GROUP_NOTIFY_EXPIRY_DAYS."""
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type == "private":
+        await update.message.reply_text("⚠️ Use /notify inside a group to subscribe to its game-start alerts.")
+        return
+
+    subs = group_notify_subscribers.setdefault(str(chat.id), {})
+    if str(user.id) in subs:
+        await update.message.reply_text(
+            f"🔔 You're already subscribed to game-start alerts for <b>{html.escape(chat.title or 'this group')}</b>.\n"
+            f"<i>Use /notify again after it expires (in {GROUP_NOTIFY_EXPIRY_DAYS} days) to renew.</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    subs[str(user.id)] = datetime.now().isoformat()
+    save_data()
+
+    try:
+        await context.bot.send_message(
+            user.id,
+            f"🔔 <b>Subscribed!</b>\nYou'll get a DM whenever a game starts in "
+            f"<b>{html.escape(chat.title or 'this group')}</b> for the next {GROUP_NOTIFY_EXPIRY_DAYS} days.",
+            parse_mode=ParseMode.HTML
+        )
+        await update.message.reply_text(f"✅ {user.first_name}, you'll be notified in DM when a game starts here (valid {GROUP_NOTIFY_EXPIRY_DAYS} days).")
+    except Exception:
+        await update.message.reply_text(
+            "⚠️ Subscribed, but I couldn't DM you — please start the bot in DM first so I can notify you.",
+            parse_mode=ParseMode.HTML
+        )
+
+
+async def notify_group_game_started(context: ContextTypes.DEFAULT_TYPE, group_id: int, group_title: str) -> None:
+    """📣 DMs everyone subscribed via /notify for this group that a game has started —
+    skips/removes subscriptions older than GROUP_NOTIFY_EXPIRY_DAYS."""
+    subs = group_notify_subscribers.get(str(group_id), {})
+    if not subs:
+        return
+
+    now = datetime.now()
+    expired = []
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔕 Stop notifying me", callback_data=f"groupnotify_stop_{group_id}")
+    ]])
+
+    for uid_str, ts in list(subs.items()):
+        try:
+            subscribed_at = datetime.fromisoformat(ts)
+        except Exception:
+            expired.append(uid_str)
+            continue
+        if (now - subscribed_at).days > GROUP_NOTIFY_EXPIRY_DAYS:
+            expired.append(uid_str)
+            continue
+        try:
+            await context.bot.send_message(
+                int(uid_str),
+                f"🏏 <b>A game just started!</b>\n"
+                f"📍 Group: <b>{html.escape(group_title or 'Group')}</b>\n"
+                f"<i>Join in if you're free!</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+        except Exception:
+            pass
+
+    if expired:
+        for uid_str in expired:
+            subs.pop(uid_str, None)
+        save_data()
+
+
+async def groupnotify_stop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔕 groupnotify_stop_{group_id} — unsubscribe from that group's game-start alerts."""
+    query = update.callback_query
+    user = query.from_user
+    group_id = query.data.split("_")[-1]
+
+    subs = group_notify_subscribers.get(group_id, {})
+    subs.pop(str(user.id), None)
+    save_data()
+
+    await query.answer("🔕 You won't be notified for this group anymore.", show_alert=True)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+def _collect_add_remove_targets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> list:
+    """Shared target parser for /add and /remove: supports reply-to-message, @username,
+    and numeric user_id — with dedup. Returns list of (user_id, username, first_name)."""
+    targets = []
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        ru = update.message.reply_to_message.from_user
+        if not ru.is_bot:
+            targets.append((ru.id, ru.username or "", ru.first_name or str(ru.id)))
+
+    for arg in (context.args or []):
+        if arg.startswith("@"):
+            uname = arg[1:].lower()
+            found = False
+            for uid, data in user_data.items():
+                if data.get("username", "").lower() == uname:
+                    targets.append((uid, data.get("username", ""), data.get("first_name", uname)))
+                    found = True
+                    break
+            if not found:
+                pass
+        elif arg.lstrip("-").isdigit():
+            uid_int = int(arg)
+            data = user_data.get(uid_int, {})
+            targets.append((uid_int, data.get("username", ""), data.get("first_name", str(uid_int))))
+
+    seen = set()
+    unique_targets = []
+    for t in targets:
+        if t[0] not in seen:
+            seen.add(t[0])
+            unique_targets.append(t)
+    return unique_targets
+
+
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """➕ Smart add: editing phase -> uses editing_team; live match -> reply or /add @user1 @user2 then team picker"""
     chat = update.effective_chat
@@ -20128,6 +20493,48 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 No active match!", parse_mode=ParseMode.HTML)
         return
     match = active_matches[chat.id]
+
+    # ── SOLO MODE: host can add players directly (reply / @username / user_id) ──
+    if getattr(match, "game_mode", "TEAM") in ("SOLO", "MAGICBALL") and match.phase == GamePhase.SOLO_MATCH:
+        if user.id != match.host_id:
+            await update.message.reply_text("🚧 <b>HOST ONLY!</b> Only the host can add players mid-game.", parse_mode=ParseMode.HTML)
+            return
+
+        targets = _collect_add_remove_targets(update, context)
+        if not targets:
+            await update.message.reply_text(
+                "ℹ️ <b>ADD PLAYER (Solo Mode)</b>\n"
+                "─────────────────\n"
+                "<b>Reply to a message:</b>  reply + <code>/add</code>\n"
+                "<b>By username:</b>  <code>/add @username</code>\n"
+                "<b>By user ID:</b>   <code>/add 12345</code>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        added, skipped = [], []
+        for (uid, uname, fname) in targets:
+            if any(p.user_id == uid for p in match.solo_players):
+                skipped.append(fname)
+                continue
+            if uid not in user_data:
+                user_data[uid] = {
+                    "user_id": uid, "username": uname, "first_name": fname,
+                    "started_at": datetime.now().isoformat(), "total_matches": 0
+                }
+                init_player_stats(uid)
+            new_player = Player(uid, uname, fname)
+            match.solo_players.append(new_player)
+            added.append(fname)
+        save_data()
+
+        added_str = ", ".join(f"<b>{html.escape(n)}</b>" for n in added) if added else "None"
+        skip_str = (f"\n⚠️ Already in match (skipped): {', '.join(skipped)}" if skipped else "")
+        await update.message.reply_text(
+            f"✅ <b>ADDED TO SOLO MATCH</b>\n─────────────────\n🎯 Added: {added_str}{skip_str}\n📊 Players now: <b>{len(match.solo_players)}</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
     # ── EDITING PHASE ──
     if match.phase == GamePhase.TEAM_EDIT:
@@ -20313,6 +20720,55 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     match = active_matches[chat.id]
+
+    # ── SOLO MODE: host can remove players directly (reply / @username / user_id) ──
+    if getattr(match, "game_mode", "TEAM") in ("SOLO", "MAGICBALL") and match.phase == GamePhase.SOLO_MATCH:
+        if user.id != match.host_id:
+            await update.message.reply_text("🚧 <b>HOST ONLY!</b> Only the host can remove players mid-game.", parse_mode=ParseMode.HTML)
+            return
+
+        targets = _collect_add_remove_targets(update, context)
+        if not targets:
+            await update.message.reply_text(
+                "ℹ️ <b>REMOVE PLAYER (Solo Mode)</b>\n"
+                "─────────────────\n"
+                "<b>Reply to a message:</b>  reply + <code>/remove</code>\n"
+                "<b>By username:</b>  <code>/remove @username</code>\n"
+                "<b>By user ID:</b>   <code>/remove 12345</code>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        removed, blocked, not_found = [], [], []
+        for (uid, uname, fname) in targets:
+            idx = next((i for i, p in enumerate(match.solo_players) if p.user_id == uid), None)
+            if idx is None:
+                not_found.append(fname)
+                continue
+            if idx in (match.current_solo_bat_idx, match.current_solo_bowl_idx):
+                blocked.append(match.solo_players[idx].first_name)
+                continue
+            player_name = match.solo_players[idx].first_name
+            match.solo_players.pop(idx)
+            # Shift active indices down if the removed player was before them
+            if match.current_solo_bat_idx is not None and idx < match.current_solo_bat_idx:
+                match.current_solo_bat_idx -= 1
+            if match.current_solo_bowl_idx is not None and idx < match.current_solo_bowl_idx:
+                match.current_solo_bowl_idx -= 1
+            removed.append(player_name)
+
+        lines = []
+        if removed:
+            lines.append(f"🎯 Removed: {', '.join(removed)}")
+        if blocked:
+            lines.append(f"🚧 Currently batting/bowling (skipped): {', '.join(blocked)}")
+        if not_found:
+            lines.append(f"⚠️ Not found in match: {', '.join(not_found)}")
+        await update.message.reply_text(
+            themed("➖ REMOVED FROM SOLO MATCH", lines or ["Nothing to remove."], "➖"),
+            parse_mode=ParseMode.HTML
+        )
+        return
 
     # ── EDITING PHASE ──
     if match.phase == GamePhase.TEAM_EDIT:
@@ -23220,10 +23676,23 @@ async def bug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     🛠️ Report a Bug to Bot Owner
     Usage: /bug <description>
     or Reply to a message with /bug
+
+    Limited to 1 report per player per day. When the owner replies to the
+    forwarded report in their DM, that reply is routed back to the reporter
+    as a reply to their original /bug message (falls back to a plain DM).
     """
     user = update.effective_user
     chat = update.effective_chat
-    
+
+    # ── 1 use per player per day ──
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    if user.id != OWNER_ID and bug_command_usage.get(str(user.id)) == today_str:
+        await update.message.reply_text(
+            "⚠️ <b>Daily limit reached.</b>\nYou can only report 1 bug per day. Try again tomorrow.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     # Check if there's a description
     bug_text = " ".join(context.args) if context.args else None
     
@@ -23262,15 +23731,26 @@ async def bug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if reply_context:
         report += reply_context
     
-    report += "\n\n─────────────────"
+    report += "\n\n<i>Reply to this message to answer the reporter directly.</i>"
+    report += "\n─────────────────"
     
     # Send to owner
     try:
-        await context.bot.send_message(
+        sent_msg = await context.bot.send_message(
             chat_id=OWNER_ID,
             text=report,
             parse_mode=ParseMode.HTML
         )
+
+        # Remember this message so a reply from the owner can be routed back
+        bug_report_map[str(sent_msg.message_id)] = {
+            "reporter_id": user.id,
+            "reporter_chat_id": chat.id,
+            "reporter_msg_id": update.message.message_id,
+        }
+
+        if user.id != OWNER_ID:
+            bug_command_usage[str(user.id)] = today_str
         
         # Confirm to user
         await update.message.reply_text(
@@ -23288,6 +23768,42 @@ async def bug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Failed to send report. Please try again later.",
             parse_mode=ParseMode.HTML
         )
+
+
+async def bug_owner_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🛠️ Handles the owner replying (in DM) to a forwarded bug report — routes the
+    reply back to the original reporter as a reply to their /bug message; falls back
+    to a plain DM to the reporter if that fails."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+    msg = update.message
+    if not msg or not msg.reply_to_message or update.effective_chat.type != "private":
+        return
+
+    mapping = bug_report_map.get(str(msg.reply_to_message.message_id))
+    if not mapping:
+        return
+
+    answer_text = f"🛠️ <b>Reply from the developer:</b>\n{html.escape(msg.text or '')}"
+    try:
+        await context.bot.send_message(
+            chat_id=mapping["reporter_chat_id"],
+            text=answer_text,
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=mapping["reporter_msg_id"]
+        )
+    except Exception:
+        # Fallback: DM the reporter directly if replying in the original chat fails
+        try:
+            await context.bot.send_message(
+                chat_id=mapping["reporter_id"],
+                text=answer_text,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to route bug reply to reporter: {e}")
+            await msg.reply_text("⚠️ Couldn't deliver this reply to the reporter.")
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -24923,6 +25439,9 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if get_gc_setting(gid, "solo_wide_enabled", True):
                         banned_num = getattr(bowler, 'wide_banned_number', None)
                         if banned_num is not None and num == banned_num:
+                            # 🔧 GLITCH FIX: same lock-stuck bug as team mode — release it here.
+                            match.current_ball_data["_bowler_lock"] = False
+                            match.current_ball_data.get("_seen_bowler_msg_ids", set()).discard(_msg_id_solo)
                             await update.message.reply_text(
                                 f"🚫 <b>Number Blocked!</b>\n"
                                 f"⚠️ You just got a wide bowling <b>{num}</b> — you can't bowl the same number again right now.\n"
@@ -24930,6 +25449,11 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 parse_mode=ParseMode.HTML
                             )
                             return
+
+                        # 🎩 Hat-trick relief: skip wide/spam check on the 3rd ball after
+                        # 2 back-to-back wickets, so a hat-trick delivery can't be voided.
+                        if getattr(bowler, 'consecutive_wickets', 0) >= 2:
+                            bowler.spam_history = []
 
                         if not hasattr(bowler, 'spam_history'):
                             bowler.spam_history = []
@@ -25052,6 +25576,12 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             # 🔁 Can't immediately re-bowl the number that just caused a wide
                             banned_num = getattr(bowler, 'wide_banned_number', None)
                             if banned_num is not None and num == banned_num:
+                                # 🔧 GLITCH FIX: clear the re-entrancy lock and forget this
+                                # message id before returning — otherwise _bowler_lock stays
+                                # stuck True forever and the bot silently ignores every
+                                # number the bowler sends after this point.
+                                match.current_ball_data["_bowler_lock"] = False
+                                match.current_ball_data.get("_seen_bowler_msg_ids", set()).discard(_msg_id)
                                 await update.message.reply_text(
                                     f"🚫 <b>Number Blocked!</b>\n"
                                     f"⚠️ You just got a wide bowling <b>{num}</b> — you can't bowl the same number again right now.\n"
@@ -25059,6 +25589,12 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     parse_mode=ParseMode.HTML
                                 )
                                 return
+
+                            # 🎩 Hat-trick relief: skip the wide/spam check entirely on the
+                            # 3rd ball if the bowler has taken 2 wickets back-to-back, so a
+                            # possible hat-trick delivery can never be voided as a wide.
+                            if getattr(bowler, 'consecutive_wickets', 0) >= 2:
+                                bowler.spam_history = []
 
                             # Initialize history list if not exists
                             if not hasattr(bowler, 'spam_history'):
@@ -30152,6 +30688,11 @@ def main():
             jersey_inactivity_job, interval=86400, first=180
         )
 
+        # 🎽 /rmjersey activity-check releaser - runs every hour, releases after 2 unanswered days
+        application.job_queue.run_repeating(
+            jersey_owner_check_job, interval=3600, first=240
+        )
+
     # ================== BASIC COMMANDS ==================
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -30203,6 +30744,13 @@ def main():
     application.add_handler(CommandHandler("h2h", h2h_command))
     application.add_handler(CommandHandler("jersey", jersey_command))
     application.add_handler(CallbackQueryHandler(jersey_swap_callback, pattern="^jswap_"))
+    application.add_handler(CommandHandler("rmjersey", rmjersey_command))
+    application.add_handler(CallbackQueryHandler(jersey_notify_callback, pattern="^jersey_notify_"))
+    application.add_handler(CallbackQueryHandler(jersey_take_callback, pattern="^jersey_take_"))
+    application.add_handler(CallbackQueryHandler(jersey_keep_callback, pattern="^jkeep_"))
+    application.add_handler(CommandHandler("notify", notify_command))
+    application.add_handler(CallbackQueryHandler(groupnotify_stop_callback, pattern="^groupnotify_stop_"))
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.REPLY & filters.User(OWNER_ID) & filters.TEXT, bug_owner_reply_handler))
     application.add_handler(CommandHandler("addach", addach_command))
     application.add_handler(CommandHandler("removeach", removeach_command))
 

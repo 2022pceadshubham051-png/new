@@ -1126,12 +1126,29 @@ FANTASY_PTS_PER_WICKET = 30      # +30 points per wicket taken
 
 # Title shop — prices are intentionally steep so a title is a genuine flex
 FANTASY_TITLES = [
-    {"key": "rookie",     "name": "🥉 Fantasy Rookie",     "price": 50_000},
-    {"key": "strategist", "name": "🥈 Fantasy Strategist", "price": 100_000},
-    {"key": "maestro",    "name": "🥇 Fantasy Maestro",    "price": 250_000},
-    {"key": "legend",     "name": "💎 Fantasy Legend",     "price": 500_000},
-    {"key": "goat",       "name": "👑 Fantasy GOAT",       "price": 1_000_000},
+    {"key": "rookie",     "name": "🥉 Fantasy Rookie",     "price": 25_000},
+    {"key": "strategist", "name": "🥈 Fantasy Strategist", "price": 50_000},
+    {"key": "maestro",    "name": "🥇 Fantasy Maestro",    "price": 125_000},
+    {"key": "legend",     "name": "💎 Fantasy Legend",     "price": 250_000},
+    {"key": "goat",       "name": "👑 Fantasy GOAT",       "price": 500_000},
 ]
+
+# 🏷️ Limited-time Fantasy Shop discount (owner-controlled via /fantasydiscount)
+FANTASY_DISCOUNT = {"percent": 0, "expires_at": 0}
+
+
+def get_active_discount_percent() -> int:
+    """Returns the currently active discount % (0 if none/expired)."""
+    if FANTASY_DISCOUNT["percent"] > 0 and time.time() < FANTASY_DISCOUNT["expires_at"]:
+        return FANTASY_DISCOUNT["percent"]
+    return 0
+
+
+def get_discounted_price(base_price: int) -> int:
+    pct = get_active_discount_percent()
+    if pct <= 0:
+        return base_price
+    return max(1, int(round(base_price * (100 - pct) / 100)))
 
 # --- DUAL STORAGE MANAGER (SQL + JSON) ---
 def init_db():
@@ -1750,7 +1767,7 @@ def get_gc_setting(group_id: int, key: str, default=None):
 def format_name_with_jersey(user_id: int, name: str) -> str:
     """Returns 'Name 🎽#7' if the user has set a jersey number, else just 'Name'."""
     number = user_data.get(user_id, {}).get("jersey_number")
-    if number:
+    if number is not None:
         return f"{name} 🎽#{number}"
     return name
 
@@ -1758,7 +1775,7 @@ def format_name_with_jersey(user_id: int, name: str) -> str:
 def jersey_number_prefix(user_id: int) -> str:
     """Returns '(#18) ' if the user has a jersey number set, else ''. Used for compact join lists."""
     number = user_data.get(user_id, {}).get("jersey_number")
-    if number:
+    if number is not None:
         return f"(#{number}) "
     return ""
 
@@ -1777,13 +1794,13 @@ def find_nearby_free_jersey_numbers(number: int, count: int = 5) -> list:
     taken = set()
     for data in user_data.values():
         n = data.get("jersey_number")
-        if n:
+        if n is not None:
             taken.add(n)
     free = []
     offset = 1
     while len(free) < count and offset <= 999:
         for cand in (number + offset, number - offset):
-            if 1 <= cand <= 999 and cand not in taken and cand not in free:
+            if 0 <= cand <= 999 and cand not in taken and cand not in free:
                 free.append(cand)
                 if len(free) >= count:
                     break
@@ -3058,11 +3075,30 @@ def save_match_stats(match, winner_team, loser_team):
         traceback.print_exc()
 
 
-async def update_joining_board(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match):
+async def update_joining_board(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match, _force: bool = False):
     """
-    Updates the Joining Board safely (Handling Photo Caption vs Text)
+    Updates the Joining Board safely (Handling Photo Caption vs Text).
+    Throttled to 1 update / 30s so joins/leaves don't spam-edit the board.
     """
     if not match.main_message_id: return
+
+    if not _force:
+        now = time.time()
+        last_ts = getattr(match, "_team_board_last_ts", 0)
+        elapsed = now - last_ts
+        if elapsed < 30:
+            pending = getattr(match, "_team_board_pending_task", None)
+            if pending is None or pending.done():
+                delay = 30 - elapsed
+
+                async def _delayed_refresh():
+                    await asyncio.sleep(delay)
+                    if match.phase == GamePhase.TEAM_JOINING:
+                        await update_joining_board(context, chat_id, match, _force=True)
+
+                match._team_board_pending_task = asyncio.create_task(_delayed_refresh())
+            return
+        match._team_board_last_ts = now
 
     # Generate fresh text
     text = get_team_join_message(match)
@@ -3140,16 +3176,8 @@ async def refresh_game_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
             )
         
         match.main_message_id = msg.message_id
-        
-        # Step 3: Pin new message
-        try:
-            await context.bot.pin_chat_message(
-                chat_id=chat_id,
-                message_id=msg.message_id,
-                disable_notification=True
-            )
-        except Exception:
-            pass
+        # 🔧 Pin removed on purpose — repeated pin/unpin on every board refresh
+        # was spamming "pinned a message" system notices in the group.
     except Exception as e:
         logger.error(f"refresh_game_message send failed: {e}")
 
@@ -4464,6 +4492,49 @@ def get_help_tutorial_text():
     )
 
 
+def get_help_fantasy_text():
+    return (
+        "╭━━ 🏆 FANTASY DREAM XI ━━━━━━💰\n"
+        "┃ Pick a fantasy squad before toss and\n"
+        "┃ earn points off real match performance!\n"
+        "┃\n"
+        "┃ 🎮 COMMANDS\n"
+        "┃ ├ /mysquad     ➔ View your current picks\n"
+        "┃ ├ /fantasylb   ➔ Global fantasy leaderboard\n"
+        "┃ └ /fantasyshop ➔ Spend points on titles\n"
+        "┃\n"
+        "┃ 📊 POINTS\n"
+        "┃ ├ +1 pt  / run scored\n"
+        "┃ ├ +10 pt / six hit\n"
+        "┃ └ +30 pt / wicket taken\n"
+        "┃\n"
+        "┃ 🛍 SHOP\n"
+        "┃ └ Titles show live discounts when active\n"
+        "╰━━━━━━━━"
+    )
+
+
+def get_help_admin_text():
+    return (
+        "╭━━ 🛠 ADMIN & OWNER TOOLS ━━━━━━🔧\n"
+        "┃ Moderation and group-management\n"
+        "┃ commands (admin/owner only).\n"
+        "┃\n"
+        "┃ 🚧 GROUP ADMIN\n"
+        "┃ ├ /gcsettings   ➔ Toggle wide/DRS/lobby time\n"
+        "┃ ├ /endmatch     ➔ Force-end current match\n"
+        "┃ ├ /extend [s]   ➔ Extend the join window\n"
+        "┃ └ /resetmatch   ➔ Owner-only hard reset\n"
+        "┃\n"
+        "┃ 🛡 OWNER TOOLS\n"
+        "┃ ├ /ban (reply/@user/id) [reason]\n"
+        "┃ ├ /unban (reply/@user/id)\n"
+        "┃ ├ /backup       ➔ Manual DB backup to your DM\n"
+        "┃ └ /fantasydiscount [%] [hours] ➔ Shop sale\n"
+        "╰━━━━━━━━"
+    )
+
+
 # --- MAIN HELP COMMAND ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Interactive Help Menu"""
@@ -4472,6 +4543,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👥 Team Mode", callback_data="help_team"),
          InlineKeyboardButton("⚔️ Solo Mode", callback_data="help_solo")],
         [InlineKeyboardButton("🏆 Tournament", callback_data="help_tournament"),
+         InlineKeyboardButton("💰 Fantasy", callback_data="help_fantasy")],
+        [InlineKeyboardButton("🛠 Admin", callback_data="help_admin"),
          InlineKeyboardButton("📚 How to Play", callback_data="help_tutorial")],
         [InlineKeyboardButton("❌ Close", callback_data="help_close")]
     ]
@@ -4510,6 +4583,8 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("👥 Team Mode", callback_data="help_team"),
              InlineKeyboardButton("⚔️ Solo Mode", callback_data="help_solo")],
             [InlineKeyboardButton("🏆 Tournament", callback_data="help_tournament"),
+             InlineKeyboardButton("💰 Fantasy", callback_data="help_fantasy")],
+            [InlineKeyboardButton("🛠 Admin", callback_data="help_admin"),
              InlineKeyboardButton("📚 How to Play", callback_data="help_tutorial")],
             [InlineKeyboardButton("❌ Close", callback_data="help_close")]
         ]
@@ -4524,6 +4599,14 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "help_tournament":
         text = get_help_tournament_text()
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
+
+    elif data == "help_fantasy":
+        text = get_help_fantasy_text()
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
+
+    elif data == "help_admin":
+        text = get_help_admin_text()
         keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
         
     elif data == "help_tutorial":
@@ -4640,7 +4723,7 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     user = query.from_user
 
     if chat.id in active_matches:
-        await query.message.reply_text("⚠️ Match already active!")
+        await query.answer("⚠️ Match already active!", show_alert=True)
         return
 
     if query.data == "mode_team":
@@ -5385,14 +5468,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
 
     elif query.data == "tour_registration_mode":
         if group_id not in TOURNAMENT_APPROVED_GROUPS:
-            owner_tag = f'<a href=\"tg://user?id={OWNER_ID}\">@Owner</a>'
-            text = (
-                f"👋 <b>Hey there!</b>\n"
-                f"─────────────────\n\n"
-                f"This group doesn't have premium authorization yet.\n\n"
-                f"Please consult with {owner_tag} and ask them to give me the authorization to use this feature.\n\n"
-                f"─────────────────"
-            )
+            text = await _build_not_approved_notice(context, group_id)
             await query.message.reply_text(text, parse_mode=ParseMode.HTML)
             return
         SHUBH = f'<a href=\"tg://user?id={OWNER_ID}\">Owner</a>'
@@ -5409,14 +5485,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
 
     elif query.data == "tour_auction_mode":
         if group_id not in TOURNAMENT_APPROVED_GROUPS:
-            owner_tag = f'<a href=\"tg://user?id={OWNER_ID}\">@Owner</a>'
-            text = (
-                f"👋 <b>Hey there!</b>\n"
-                f"─────────────────\n\n"
-                f"This group doesn't have premium authorization yet.\n\n"
-                f"Please consult with {SHUBH} and ask them to give me the authorization to use this feature.\n\n"
-                f"─────────────────"
-            )
+            text = await _build_not_approved_notice(context, group_id)
             await query.message.reply_text(text, parse_mode=ParseMode.HTML)
             return
         keyboard = [
@@ -6438,8 +6507,27 @@ async def tourlb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
-async def update_solo_board(context, chat_id, match):
-    """Updates the Solo Joining List with Host Tag"""
+async def update_solo_board(context, chat_id, match, _force=False):
+    """Updates the Solo Joining List with Host Tag (throttled to 1 update / 30s so
+    joins/leaves don't spam-delete-and-resend the board message)."""
+    now = time.time()
+    if not _force:
+        last_ts = getattr(match, "_solo_board_last_ts", 0)
+        elapsed = now - last_ts
+        if elapsed < 30:
+            pending = getattr(match, "_solo_board_pending_task", None)
+            if pending is None or pending.done():
+                delay = 30 - elapsed
+
+                async def _delayed_refresh():
+                    await asyncio.sleep(delay)
+                    if match.phase == GamePhase.SOLO_JOINING:
+                        await update_solo_board(context, chat_id, match, _force=True)
+
+                match._solo_board_pending_task = asyncio.create_task(_delayed_refresh())
+            return
+    match._solo_board_last_ts = now
+
     count = len(match.solo_players)
     
     # Time Calc
@@ -6537,46 +6625,75 @@ def get_team_join_message(match: Match) -> str:
     if getattr(match, "magic_ball_mode", False) or getattr(match, "game_mode", "") == "MAGICBALL":
         mode_label = "  🔮 <i>Magic Ball Mode!</i>"
     
-    msg = "🏟️ <b>CRICOVERSE ARENA</b>\n"
-    msg += "─────────────────\n"
-    msg += f"⏱️ <b>Time Remaining:</b> <code>{minutes:02d}:{seconds:02d}</code>\n"
-    msg += f"👥 <b>Players Joined:</b> <code>{total_p}</code>{mode_label}\n"
-    msg += "─────────────────\n\n"
-    
+    msg = "🏟️ <b>𝗖𝗥𝗜𝗖𝗢𝗩𝗘𝗥𝗦𝗘 𝗧𝗘𝗔𝗠 𝗔𝗥𝗘𝗡𝗔</b>\n"
+    msg += "┌──────────────────\n"
+    msg += f"├ ⏱️ <b>Time Remaining:</b> <code>{minutes:02d}:{seconds:02d}</code>\n"
+    msg += f"├ 👥 <b>Players Joined:</b> <code>{total_p}</code>{mode_label}\n"
+    msg += "└──────────────────\n\n"
+
     # Team X List
     msg += "❄️ <b>TEAM ALPHA (X)</b>"
     if match.team_x.captain_id:
         cap = match.team_x.get_player(match.team_x.captain_id)
         if cap:
             msg += f"  👑 <i>{cap.first_name}</i>"
-    msg += "\n──────────────────────\n"
+    msg += "\n┌──────────────────\n"
     if match.team_x.players:
         for i, p in enumerate(match.team_x.players, 1):
             crown = "👑" if p.user_id == match.team_x.captain_id else "🔹"
             jnum = jersey_number_prefix(p.user_id)
-            msg += f" {crown} <b>{i}.</b> {jnum}{p.first_name}\n"
+            ptag = f'<a href=\"tg://user?id={p.user_id}\">{jnum}{html.escape(p.first_name)}</a>'
+            msg += f"├ {crown} <b>{i}.</b> {ptag}\n"
     else:
-        msg += "  ⏳ <i>Waiting for players...</i>\n"
-    
+        msg += "├ ⏳ <i>Waiting for players...</i>\n"
+    msg += "└──────────────────\n"
+
     # Team Y List
     msg += "\n🔥 <b>TEAM BETA (Y)</b>"
     if match.team_y.captain_id:
         cap = match.team_y.get_player(match.team_y.captain_id)
         if cap:
             msg += f"  👑 <i>{cap.first_name}</i>"
-    msg += "\n──────────────────────\n"
+    msg += "\n┌──────────────────\n"
     if match.team_y.players:
         for i, p in enumerate(match.team_y.players, 1):
             crown = "👑" if p.user_id == match.team_y.captain_id else "🔸"
             jnum = jersey_number_prefix(p.user_id)
-            msg += f" {crown} <b>{i}.</b> {jnum}{p.first_name}\n"
+            ptag = f'<a href=\"tg://user?id={p.user_id}\">{jnum}{html.escape(p.first_name)}</a>'
+            msg += f"├ {crown} <b>{i}.</b> {ptag}\n"
     else:
-        msg += "  ⏳ <i>Waiting for players...</i>\n"
-    
-    msg += "\n─────────────────\n"
-    msg += "📢 <i>Tap the buttons below to lock in your squad!</i>"
-    
+        msg += "├ ⏳ <i>Waiting for players...</i>\n"
+    msg += "└──────────────────\n"
+
+    msg += "\n📢 <i>Tap the buttons below to lock in your squad!</i>"
+
     return msg
+
+
+async def _build_not_approved_notice(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str:
+    """Owner + group-admins tagged notice for premium-only features (Registration/Auction)."""
+    owner_tag = f'<a href=\"tg://user?id={OWNER_ID}\">Owner</a>'
+    admin_tags = []
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id)
+        for a in admins:
+            if a.user.is_bot or a.user.id == OWNER_ID:
+                continue
+            admin_tags.append(f'<a href=\"tg://user?id={a.user.id}\">{html.escape(a.user.first_name)}</a>')
+    except Exception:
+        pass
+
+    who = owner_tag
+    if admin_tags:
+        who += " or " + ", ".join(admin_tags)
+
+    return (
+        f"👋 <b>Hey there!</b>\n"
+        f"─────────────────\n\n"
+        f"This group doesn't have premium authorization yet.\n\n"
+        f"Please ask {who} to give me the authorization to use this feature.\n\n"
+        f"─────────────────"
+    )
 
 
 async def _is_host_or_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match, user_id: int) -> bool:
@@ -6813,9 +6930,10 @@ async def team_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             alert_msg = f"👋 {user_tag} left the team."
             updated = True
 
-    # 1. Send Alert in Group (Naya message)
+    # 1. Show a popup alert instead of a spammy group message
     if alert_msg:
-        await context.bot.send_message(chat.id, alert_msg, parse_mode=ParseMode.HTML)
+        plain_alert = alert_msg.replace("<b>", "").replace("</b>", "")
+        await query.answer(plain_alert, show_alert=False)
 
     # 2. Update the Board (Agar change hua hai)
     if updated:
@@ -8168,10 +8286,6 @@ async def batting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("✅ Batsman selection timer cancelled")
     
         player_tag = get_user_tag(player)
-        await update.message.reply_text(
-            f"🚶‍♂️ <b>NEW BATSMAN:</b> {player_tag} walks in!", 
-            parse_mode=ParseMode.HTML
-        )
         logger.info(f"✅ New batsman set: {player.first_name} (Index: {player_idx})")
     
         await asyncio.sleep(2)
@@ -8189,8 +8303,6 @@ async def batting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ✅ If bowler exists, resume
         if bowl_team.current_bowler_idx is not None:
             logger.info("▶️ Bowler exists, resuming ball execution")
-            await context.bot.send_message(chat.id, "▶️ <b>Game Resumed!</b>", parse_mode=ParseMode.HTML)
-            await asyncio.sleep(1)
             await execute_ball(context, chat.id, match)
             
         # ✅ Edge case: No bowler (shouldn't happen in normal flow)
@@ -10360,12 +10472,11 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             ]
             wicket_msg = themed("❌ WICKET", wkt_lines, "🔴")
             
-            _wkt_react = InlineKeyboardMarkup([[styled_button("🔥 Amazing", callback_data=f"react_amazingw_{group_id}", style="primary"), styled_button("😂 Funny", callback_data=f"react_funnyw_{group_id}", style="success")]])
             gif_url = get_random_gif(MatchEvent.WICKET)
             try:
-                await context.bot.send_animation(group_id, animation=gif_url, caption=wicket_msg, parse_mode=ParseMode.HTML, reply_markup=_wkt_react)
+                await context.bot.send_animation(group_id, animation=gif_url, caption=wicket_msg, parse_mode=ParseMode.HTML)
             except:
-                await context.bot.send_message(group_id, wicket_msg, parse_mode=ParseMode.HTML, reply_markup=_wkt_react)
+                await context.bot.send_message(group_id, wicket_msg, parse_mode=ParseMode.HTML)
             
             await asyncio.sleep(2)
             
@@ -12576,9 +12687,8 @@ async def solo_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Update the Board Image
         await update_solo_board(context, chat.id, match)
         
-        # Send Tagged Message
-        msg = f"✅ <b>{user_tag}</b> has entered the Battleground! 🔥"
-        await context.bot.send_message(chat.id, msg, parse_mode=ParseMode.HTML)
+        # Alert instead of a group message
+        await query.answer(f"✅ {user.first_name} joined the Battleground! 🔥", show_alert=False)
 
     # --- ACTION: LEAVE ---
     elif query.data == "solo_leave":
@@ -12589,9 +12699,8 @@ async def solo_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 # Update the Board Image
                 await update_solo_board(context, chat.id, match)
                 
-                # Send Tagged Message
-                msg = f"👋 <b>{user_tag}</b> chickened out and left."
-                await context.bot.send_message(chat.id, msg, parse_mode=ParseMode.HTML)
+                # Alert instead of a group message
+                await query.answer(f"👋 {user.first_name} left the Battleground.", show_alert=False)
                 return
         
         await query.answer("You are not in the list.", show_alert=True)
@@ -18225,7 +18334,7 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
             ccc_line = f"├👑 𝗖𝗖𝗖     ➜ Unranked\n"
 
         jersey_num = user_data.get(user_id, {}).get("jersey_number")
-        jersey_line = f"#{jersey_num}" if jersey_num else "—"
+        jersey_line = f"#{jersey_num}" if jersey_num is not None else "—"
 
         # Recent form dots only (most recent last, same order as before)
         _form_results = mem_team.get("last_5_results", player_stats.get(user_id, {}).get("last_5_results", []))
@@ -18767,10 +18876,10 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         current = user_data.get(user_id, {}).get("jersey_number")
-        if current:
+        if current is not None:
             await update.message.reply_text(
                 f"🎽 <b>Your Jersey Number:</b> #{current}\n"
-                f"<i>Use /jersey <number> (1-999) to change it.</i>",
+                f"<i>Use /jersey <number> (0-999) to change it.</i>",
                 parse_mode=ParseMode.HTML
             )
         else:
@@ -18778,15 +18887,15 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🎽 <b>Set Your Jersey Number!</b>\n"
                 "─────────────────\n"
                 "Usage: <code>/jersey [number]</code>\n"
-                "<i>Pick any number between 1-999.</i>",
+                "<i>Pick any number between 0-999.</i>",
                 parse_mode=ParseMode.HTML
             )
         return
 
     raw = context.args[0].strip()
-    if not raw.isdigit() or not (1 <= int(raw) <= 999):
+    if not raw.isdigit() or not (0 <= int(raw) <= 999):
         await update.message.reply_text(
-            "⚠️ Please pick a valid jersey number between <b>1</b> and <b>999</b>.\n"
+            "⚠️ Please pick a valid jersey number between <b>0</b> and <b>999</b>.\n"
             "Usage: <code>/jersey 7</code>",
             parse_mode=ParseMode.HTML
         )
@@ -18862,7 +18971,7 @@ async def jersey_inactivity_job(context: ContextTypes.DEFAULT_TYPE):
 
     for uid, data in list(user_data.items()):
         number = data.get("jersey_number")
-        if not number:
+        if number is None:
             continue
 
         last_active_raw = data.get("jersey_last_active")
@@ -18995,7 +19104,7 @@ async def jersey_swap_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer("Swap request sent! Waiting for their confirmation.", show_alert=True)
 
         requester_tag = f'<a href="tg://user?id={requester_id}">{html.escape(requester.first_name)}</a>'
-        my_number_text = f"#{my_number}" if my_number else "no jersey number yet"
+        my_number_text = f"#{my_number}" if my_number is not None else "no jersey number yet"
         dm_keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Accept Swap", callback_data=f"jswap_yes_{requester_id}_{number}"),
             InlineKeyboardButton("❌ Decline", callback_data=f"jswap_no_{requester_id}_{number}")
@@ -19673,7 +19782,7 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             target_id = user_id
             jersey_num = user_data.get(user_id, {}).get("jersey_number")
-            jersey_line = f"#{jersey_num}" if jersey_num else "—"
+            jersey_line = f"#{jersey_num}" if jersey_num is not None else "—"
 
             BAR = "───────────────────"
 
@@ -21158,6 +21267,31 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if getattr(match, "game_mode", "TEAM") in ("SOLO", "MAGICBALL") and match.phase == GamePhase.SOLO_MATCH:
         if user.id != match.host_id:
             await update.message.reply_text("🚧 <b>HOST ONLY!</b> Only the host can remove players mid-game.", parse_mode=ParseMode.HTML)
+            return
+
+        # By serial/jersey number shown in the solo lobby list: /remove 3
+        if context.args and context.args[0].lstrip("#").isdigit():
+            serial = int(context.args[0].lstrip("#"))
+            idx = serial - 1
+            if idx < 0 or idx >= len(match.solo_players):
+                await update.message.reply_text(f"⚠️ No player at serial #{serial}.")
+                return
+            if idx in (match.current_solo_bat_idx, match.current_solo_bowl_idx):
+                await update.message.reply_text(
+                    f"🚧 <b>{match.solo_players[idx].first_name}</b> is currently batting/bowling — can't remove now.",
+                    parse_mode=ParseMode.HTML
+                )
+                return
+            player_name = match.solo_players[idx].first_name
+            match.solo_players.pop(idx)
+            if match.current_solo_bat_idx is not None and idx < match.current_solo_bat_idx:
+                match.current_solo_bat_idx -= 1
+            if match.current_solo_bowl_idx is not None and idx < match.current_solo_bowl_idx:
+                match.current_solo_bowl_idx -= 1
+            await update.message.reply_text(
+                themed("➖ REMOVED FROM SOLO MATCH", [f"🎯 Removed: {player_name} (#{serial})"], "➖"),
+                parse_mode=ParseMode.HTML
+            )
             return
 
         targets = _collect_add_remove_targets(update, context)
@@ -23658,21 +23792,32 @@ async def send_milestone_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int, p
 
 # 2. Automated Backup Job (Background Task)
 async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
-    """Automatic Background Backup"""
+    """Automatic Background Backup — with flood-safe retry so a temporary
+    Telegram rate-limit doesn't silently drop the backup."""
     save_data() # Ensure latest data is saved to DB
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         file_name = f"cricoverse_auto_{timestamp}.db"
-        
+
         if os.path.exists(DB_FILE):
-            with open(DB_FILE, 'rb') as f:
-                await context.bot.send_document(
-                    chat_id=OWNER_ID,
-                    document=f,
-                    filename=file_name,
-                    caption=f"🤖 <b>Auto SQL Backup</b>\n📅 {timestamp}",
-                    parse_mode=ParseMode.HTML
-                )
+            for attempt in range(3):
+                try:
+                    with open(DB_FILE, 'rb') as f:
+                        await context.bot.send_document(
+                            chat_id=OWNER_ID,
+                            document=f,
+                            filename=file_name,
+                            caption=f"🤖 <b>Auto SQL Backup</b>\n📅 {timestamp}",
+                            parse_mode=ParseMode.HTML
+                        )
+                    break
+                except RetryAfter as flood_err:
+                    wait_s = getattr(flood_err, "retry_after", 5)
+                    logger.warning(f"Backup flood-limited, retrying in {wait_s}s (attempt {attempt + 1}/3)")
+                    await asyncio.sleep(wait_s + 1)
+                except Exception as send_err:
+                    logger.error(f"Backup send attempt {attempt + 1} failed: {send_err}")
+                    await asyncio.sleep(2 ** attempt)
     except Exception as e:
         logger.error(f"Auto backup failed: {e}")
 
@@ -25985,6 +26130,11 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if len(bowler.spam_history) >= 3 and bowler.spam_history[-1] == bowler.spam_history[-2] == bowler.spam_history[-3]:
                             bowler.spam_history = []
                             bowler.wide_banned_number = num
+
+                            # 🔧 GLITCH FIX: same lock-stuck bug as the banned-number branch —
+                            # release the re-entrancy lock so the bowler's NEXT number is accepted.
+                            match.current_ball_data["_bowler_lock"] = False
+                            match.current_ball_data.get("_seen_bowler_msg_ids", set()).discard(_msg_id_solo)
 
                             wide_gif = get_random_gif(MatchEvent.WIDE)
                             await update.message.reply_text(
@@ -28989,6 +29139,67 @@ async def fantasylb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
+async def fantasydiscount_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """👑 Owner-only: /fantasydiscount <percent> <hours> — run a limited-time Fantasy Shop sale.
+    /fantasydiscount off — cancel an active sale early."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text("🚫 Owner only command!")
+        return
+
+    if not context.args:
+        active = get_active_discount_percent()
+        if active > 0:
+            remaining = int(FANTASY_DISCOUNT["expires_at"] - time.time())
+            hrs, mins = divmod(max(remaining, 0) // 60, 60)
+            await update.message.reply_text(
+                f"🔥 Active sale: <b>{active}% OFF</b>, ends in {hrs}h {mins}m.\n"
+                f"Usage: <code>/fantasydiscount [percent] [hours]</code> or <code>/fantasydiscount off</code>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_text(
+                "ℹ️ No active sale.\n"
+                "Usage: <code>/fantasydiscount [percent] [hours]</code>\n"
+                "Example: <code>/fantasydiscount 20 24</code> → 20% off for 24 hours",
+                parse_mode=ParseMode.HTML
+            )
+        return
+
+    if context.args[0].lower() == "off":
+        FANTASY_DISCOUNT["percent"] = 0
+        FANTASY_DISCOUNT["expires_at"] = 0
+        await update.message.reply_text("🛑 Fantasy Shop sale cancelled.")
+        return
+
+    try:
+        percent = int(context.args[0])
+        hours = float(context.args[1]) if len(context.args) > 1 else 24
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Usage: <code>/fantasydiscount [percent] [hours]</code>", parse_mode=ParseMode.HTML)
+        return
+
+    if not (1 <= percent <= 90):
+        await update.message.reply_text("❌ Percent must be between 1 and 90.")
+        return
+    if hours <= 0:
+        await update.message.reply_text("❌ Hours must be greater than 0.")
+        return
+
+    FANTASY_DISCOUNT["percent"] = percent
+    FANTASY_DISCOUNT["expires_at"] = time.time() + hours * 3600
+
+    await update.message.reply_text(
+        f"🔥 <b>Fantasy Shop Sale Activated!</b>\n"
+        f"─────────────────\n"
+        f"🏷️ <b>{percent}% OFF</b> all titles\n"
+        f"⏱️ Ends in <b>{hours:g} hours</b>\n"
+        f"─────────────────\n"
+        f"Use /fantasyshop to grab the deal!",
+        parse_mode=ParseMode.HTML
+    )
+
+
 async def fantasyshop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the fantasy title shop — buy titles using accumulated fantasy points."""
     user = update.effective_user
@@ -29000,13 +29211,23 @@ async def fantasyshop_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     equipped = profile.get("title")
 
     lines = [f"💰 <b>Your Balance:</b> {bal:,} pts\n"]
+    discount_pct = get_active_discount_percent()
+    if discount_pct > 0:
+        remaining = int(FANTASY_DISCOUNT["expires_at"] - time.time())
+        hrs, mins = divmod(max(remaining, 0) // 60, 60)
+        lines.append(f"🔥 <b>{discount_pct}% OFF</b> everything — ends in {hrs}h {mins}m!\n")
     keyboard = []
     for t in FANTASY_TITLES:
         tag = " ✅ Owned" if t["key"] in owned else ""
         equip_tag = " 🟢 Equipped" if equipped == t["key"] else ""
-        lines.append(f"{t['name']} — <b>{t['price']:,}</b> pts{tag}{equip_tag}")
+        disc_price = get_discounted_price(t["price"])
+        if discount_pct > 0:
+            price_line = f"{t['name']} — <s>{t['price']:,}</s> <b>{disc_price:,}</b> pts{tag}{equip_tag}"
+        else:
+            price_line = f"{t['name']} — <b>{t['price']:,}</b> pts{tag}{equip_tag}"
+        lines.append(price_line)
         if t["key"] not in owned:
-            keyboard.append([InlineKeyboardButton(f"🛒 Buy {t['name']} ({t['price']:,})", callback_data=f"fbuytitle_{t['key']}")])
+            keyboard.append([InlineKeyboardButton(f"🛒 Buy {t['name']} ({disc_price:,})", callback_data=f"fbuytitle_{t['key']}")])
         elif equipped != t["key"]:
             keyboard.append([InlineKeyboardButton(f"🎽 Equip {t['name']}", callback_data=f"fequiptitle_{t['key']}")])
 
@@ -29031,12 +29252,13 @@ async def fantasy_buytitle_callback(update: Update, context: ContextTypes.DEFAUL
     if key in profile.get("titles_owned", []):
         await query.answer("✅ You already own this title!", show_alert=True)
         return
-    if profile.get("points", 0) < title["price"]:
-        short = title["price"] - profile.get("points", 0)
+    final_price = get_discounted_price(title["price"])
+    if profile.get("points", 0) < final_price:
+        short = final_price - profile.get("points", 0)
         await query.answer(f"🚫 Not enough points! You need {short:,} more.", show_alert=True)
         return
 
-    profile["points"] -= title["price"]
+    profile["points"] -= final_price
     profile.setdefault("titles_owned", []).append(key)
     profile["title"] = key  # auto-equip the newest purchase
     save_data()
@@ -29044,7 +29266,7 @@ async def fantasy_buytitle_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer(f"🎉 Purchased {title['name']}!", show_alert=True)
     try:
         await query.edit_message_text(
-            f"🎉 <b>{html.escape(user.first_name)}</b> just bought <b>{title['name']}</b> for {title['price']:,} fantasy points!\n\nUse /fantasyshop to see what's next.",
+            f"🎉 <b>{html.escape(user.first_name)}</b> just bought <b>{title['name']}</b> for {final_price:,} fantasy points!\n\nUse /fantasyshop to see what's next.",
             parse_mode=ParseMode.HTML
         )
     except Exception:
@@ -30936,23 +31158,7 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏆 Tournament Mode", callback_data="mode_tournament")]
         ]
 
-        msg = (
-            f"╭━─────────────────\n"
-            f"┃ 👥 <b>𝗧𝗲𝗮𝗺 𝗠𝗼𝗱𝗲</b>\n"
-            f"┃ ↳ Captains, toss, innings & scorecards.\n"
-            f"┣━─────────────────\n"
-            f"┃ 👤 <b>𝗦𝗼𝗹𝗼 𝗠𝗼𝗱𝗲</b>\n"
-            f"┃ ↳ Free-for-all battle!\n"
-            f"┣━─────────────────\n"
-            f"┃ 🤖 <b>𝗔𝗜 𝗠𝗼𝗱𝗲</b>\n"
-            f"┃ ↳ Private challenge in your DMs.\n"
-            f"┣━─────────────────\n"
-            f"┃ 🏆 <b>𝗧𝗼𝘂𝗿𝗻𝗮𝗺𝗲𝗻𝘁 / 𝗔𝘂𝗰𝘁𝗶𝗼𝗻</b>\n"
-            f"┃ ↳ League tools for approved groups.\n"
-            f"┣━─────────────────\n"
-            f"┃ 👤 Requested by: {html.escape(user.first_name or 'Player')}\n"
-            f"╰━━━━━━━━\n"
-        )
+        msg = f"🎮 <b>Choose a mode</b> — requested by {html.escape(user.first_name or 'Player')}"
 
         try:
             await context.bot.send_photo(
@@ -31163,9 +31369,18 @@ def main():
     load_data()
     ensure_fonts()
 
+    # 🌊 Flood-control protection: auto-retry-with-backoff on Telegram rate limits.
+    # Falls back to no rate limiter if the optional extra isn't installed
+    # (pip install "python-telegram-bot[rate-limiter]").
+    _rate_limiter = None
+    try:
+        from telegram.ext import AIORateLimiter
+        _rate_limiter = AIORateLimiter(max_retries=3)
+    except ImportError:
+        logger.warning("AIORateLimiter unavailable — install python-telegram-bot[rate-limiter] for automatic flood-control retries.")
 
     # Create application
-    application = (
+    _builder = (
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(setup_public_bot_commands)
@@ -31173,8 +31388,10 @@ def main():
         .write_timeout(60)
         .connect_timeout(60)
         .concurrent_updates(256)
-        .build()
     )
+    if _rate_limiter:
+        _builder = _builder.rate_limiter(_rate_limiter)
+    application = _builder.build()
 
     # --- JOBS (Scheduled Tasks) ---
     if application.job_queue:
@@ -31256,6 +31473,7 @@ def main():
     application.add_handler(CommandHandler("mysquad", mysquad_command))
     application.add_handler(CommandHandler("fantasylb", fantasylb_command))
     application.add_handler(CommandHandler("fantasyshop", fantasyshop_command))
+    application.add_handler(CommandHandler("fantasydiscount", fantasydiscount_command))
 
     application.add_handler(CommandHandler("commentary", commentary_command))
     application.add_handler(CommandHandler("players", players_command))

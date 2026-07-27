@@ -3075,41 +3075,36 @@ def save_match_stats(match, winner_team, loser_team):
         traceback.print_exc()
 
 
-async def update_joining_board(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match, _force: bool = False):
-    """
-    Updates the Joining Board safely (Handling Photo Caption vs Text).
-    Throttled to 1 update / 30s so joins/leaves don't spam-edit the board.
-    """
-    if not match.main_message_id: return
-
-    if not _force:
-        now = time.time()
-        last_ts = getattr(match, "_team_board_last_ts", 0)
-        elapsed = now - last_ts
-        if elapsed < 30:
-            pending = getattr(match, "_team_board_pending_task", None)
-            if pending is None or pending.done():
-                delay = 30 - elapsed
-
-                async def _delayed_refresh():
-                    await asyncio.sleep(delay)
-                    if match.phase == GamePhase.TEAM_JOINING:
-                        await update_joining_board(context, chat_id, match, _force=True)
-
-                match._team_board_pending_task = asyncio.create_task(_delayed_refresh())
-            return
-        match._team_board_last_ts = now
-
-    # Generate fresh text
+def _team_board_render(match: Match):
+    """Builds the (text, keyboard) pair for the team joining board."""
     text = get_team_join_message(match)
-    
-    # Buttons
     keyboard = [
         [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x", style="success"),
          InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y", style="success")],
         [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team", style="danger")],
         [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now", style="success")]
     ]
+    return text, keyboard
+
+
+async def bump_team_board(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match):
+    """Deletes and resends the team joining board so it resurfaces at the
+    bottom of the chat instead of staying buried above newer messages."""
+    text, keyboard = _team_board_render(match)
+    await refresh_game_message(context, chat_id, match, text, InlineKeyboardMarkup(keyboard), media_key="joining")
+
+
+async def update_joining_board(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match, _force: bool = False):
+    """
+    Updates the Joining Board in place, IMMEDIATELY (no throttle) so the
+    join/leave list is always accurate the moment someone taps a button.
+    Bumping the message back to the bottom of the chat is handled
+    separately (see bump_team_board / team_join_countdown), every 30s.
+    """
+    if not match.main_message_id: return
+
+    # Generate fresh text
+    text, keyboard = _team_board_render(match)
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
@@ -4758,10 +4753,9 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     elif query.data == "mode_tournament":
         # Check approval
         if chat.id not in TOURNAMENT_APPROVED_GROUPS:
-            await query.answer(
-                "🚫 Tournament not approved! Contact bot owner.",
-                show_alert=True
-            )
+            await query.answer("🚫 Tournament not approved for this group!", show_alert=True)
+            text, notice_markup = await _build_not_approved_notice(context, chat.id)
+            await query.message.reply_text(text, reply_markup=notice_markup, parse_mode=ParseMode.HTML)
             return
         
         # Only group admins can use tournament mode
@@ -5011,7 +5005,9 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
                            "tour_auction_mode"]
     needs_approval = any(query.data == cb or query.data.startswith(cb) for cb in exclusive_callbacks)
     if needs_approval and group_id not in TOURNAMENT_APPROVED_GROUPS:
-        await query.answer("🚫 Tournament not approved for this group! Contact owner.", show_alert=True)
+        await query.answer("🚫 Tournament not approved for this group!", show_alert=True)
+        text, notice_markup = await _build_not_approved_notice(context, group_id)
+        await query.message.reply_text(text, reply_markup=notice_markup, parse_mode=ParseMode.HTML)
         return
 
     if query.data == "tour_points_table":
@@ -5468,8 +5464,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
 
     elif query.data == "tour_registration_mode":
         if group_id not in TOURNAMENT_APPROVED_GROUPS:
-            text = await _build_not_approved_notice(context, group_id)
-            await query.message.reply_text(text, parse_mode=ParseMode.HTML)
+            text, notice_markup = await _build_not_approved_notice(context, group_id)
+            await query.message.reply_text(text, reply_markup=notice_markup, parse_mode=ParseMode.HTML)
             return
         SHUBH = f'<a href=\"tg://user?id={OWNER_ID}\">Owner</a>'
         text = (
@@ -5485,8 +5481,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
 
     elif query.data == "tour_auction_mode":
         if group_id not in TOURNAMENT_APPROVED_GROUPS:
-            text = await _build_not_approved_notice(context, group_id)
-            await query.message.reply_text(text, parse_mode=ParseMode.HTML)
+            text, notice_markup = await _build_not_approved_notice(context, group_id)
+            await query.message.reply_text(text, reply_markup=notice_markup, parse_mode=ParseMode.HTML)
             return
         keyboard = [
             [InlineKeyboardButton("🎯 Start Auction", callback_data="start_auction", style="success")],
@@ -6507,27 +6503,8 @@ async def tourlb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
-async def update_solo_board(context, chat_id, match, _force=False):
-    """Updates the Solo Joining List with Host Tag (throttled to 1 update / 30s so
-    joins/leaves don't spam-delete-and-resend the board message)."""
-    now = time.time()
-    if not _force:
-        last_ts = getattr(match, "_solo_board_last_ts", 0)
-        elapsed = now - last_ts
-        if elapsed < 30:
-            pending = getattr(match, "_solo_board_pending_task", None)
-            if pending is None or pending.done():
-                delay = 30 - elapsed
-
-                async def _delayed_refresh():
-                    await asyncio.sleep(delay)
-                    if match.phase == GamePhase.SOLO_JOINING:
-                        await update_solo_board(context, chat_id, match, _force=True)
-
-                match._solo_board_pending_task = asyncio.create_task(_delayed_refresh())
-            return
-    match._solo_board_last_ts = now
-
+def _solo_board_render(match):
+    """Builds the (text, keyboard) pair for the solo joining board."""
     count = len(match.solo_players)
     
     # Time Calc
@@ -6572,8 +6549,55 @@ async def update_solo_board(context, chat_id, match, _force=False):
     # Show START button if enough players
     if count >= 2:
         keyboard.append([styled_button("🚀 START MATCH", callback_data="solo_start_game", style="primary")])
-        
+
+    return msg, keyboard
+
+
+async def bump_solo_board(context, chat_id, match):
+    """Deletes and resends the solo joining board so it resurfaces at the
+    bottom of the chat instead of staying buried above newer messages."""
+    msg, keyboard = _solo_board_render(match)
     await refresh_game_message(context, chat_id, match, msg, InlineKeyboardMarkup(keyboard), media_key="joining")
+
+
+async def update_solo_board(context, chat_id, match, _force=False):
+    """
+    Updates the Solo Joining List in place, IMMEDIATELY (no throttle) so
+    joins/leaves show up in the group the moment someone taps a button.
+    Bumping the message back to the bottom of the chat is handled
+    separately (see bump_solo_board / solo_join_countdown), every 30s.
+    """
+    if not match.main_message_id:
+        # No message yet — send the first one.
+        msg, keyboard = _solo_board_render(match)
+        await refresh_game_message(context, chat_id, match, msg, InlineKeyboardMarkup(keyboard), media_key="joining")
+        return
+
+    msg, keyboard = _solo_board_render(match)
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await context.bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=match.main_message_id,
+            caption=msg,
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        error_str = str(e).lower()
+        if "message is not modified" in error_str:
+            return
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=match.main_message_id,
+                text=msg,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
 
 async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user):
     """Initialize team mode with Fancy Image"""
@@ -6670,8 +6694,9 @@ def get_team_join_message(match: Match) -> str:
     return msg
 
 
-async def _build_not_approved_notice(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str:
-    """Owner + group-admins tagged notice for premium-only features (Registration/Auction)."""
+async def _build_not_approved_notice(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Owner + group-admins tagged notice for premium-only features (Registration/Auction/Tournament).
+    Returns (text, reply_markup) — reply_markup has a direct 'Contact Owner' button."""
     owner_tag = f'<a href=\"tg://user?id={OWNER_ID}\">Owner</a>'
     admin_tags = []
     try:
@@ -6687,13 +6712,15 @@ async def _build_not_approved_notice(context: ContextTypes.DEFAULT_TYPE, chat_id
     if admin_tags:
         who += " or " + ", ".join(admin_tags)
 
-    return (
+    text = (
         f"👋 <b>Hey there!</b>\n"
         f"─────────────────\n\n"
         f"This group doesn't have premium authorization yet.\n\n"
         f"Please ask {who} to give me the authorization to use this feature.\n\n"
         f"─────────────────"
     )
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📩 Contact Owner", url=f"tg://user?id={OWNER_ID}")]])
+    return text, keyboard
 
 
 async def _is_host_or_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, match: Match, user_id: int) -> bool:
@@ -6797,6 +6824,7 @@ async def team_join_countdown(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     """Countdown timer that updates the board and auto-ends the lobby when time is up."""
     try:
         warning_sent = False
+        last_bump = time.time()
         while True:
             # Stop the timer if we've left the joining phase (e.g. force-started)
             if match.phase != GamePhase.TEAM_JOINING:
@@ -6822,7 +6850,13 @@ async def team_join_countdown(context: ContextTypes.DEFAULT_TYPE, group_id: int,
 
             # Re-check phase before touching the board
             if match.phase == GamePhase.TEAM_JOINING:
-                await update_joining_board(context, group_id, match)
+                # Every 30s: delete + resend so the board resurfaces at the
+                # bottom of the chat (won't get buried under new messages).
+                if time.time() - last_bump >= 30:
+                    await bump_team_board(context, group_id, match)
+                    last_bump = time.time()
+                else:
+                    await update_joining_board(context, group_id, match)
 
     except asyncio.CancelledError:
         pass
@@ -12717,6 +12751,7 @@ async def solo_join_countdown(context, chat_id, match):
     """Background Timer for Solo Joining Phase - Auto Updates Board"""
     try:
         warning_sent = False
+        last_bump = time.time()
         while True:
             # Check if phase changed
             if match.phase != GamePhase.SOLO_JOINING:
@@ -12758,7 +12793,13 @@ async def solo_join_countdown(context, chat_id, match):
             
             # Update Board
             if match.phase == GamePhase.SOLO_JOINING:
-                await update_solo_board(context, chat_id, match)
+                # Every 30s: delete + resend so the board resurfaces at the
+                # bottom of the chat (won't get buried under new messages).
+                if time.time() - last_bump >= 30:
+                    await bump_solo_board(context, chat_id, match)
+                    last_bump = time.time()
+                else:
+                    await update_solo_board(context, chat_id, match)
             
     except asyncio.CancelledError:
         pass
@@ -12990,21 +13031,20 @@ async def aistart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Initialize player stats
     if user.id not in player_stats:
         init_player_stats(user.id)
-    
-    # Select difficulty
+
+    # Step 1: Ask what the user wants to do — full match, or just bat / just bowl
     keyboard = [
-        [InlineKeyboardButton("😊 Easy", callback_data="ai_diff_easy", style="primary")],
-        [InlineKeyboardButton("😐 Medium", callback_data="ai_diff_medium", style="primary")],
-        [InlineKeyboardButton("😈 Hard", callback_data="ai_diff_hard", style="primary")],
-        [InlineKeyboardButton("👹 God Level", callback_data="ai_diff_god", style="primary")]
+        [InlineKeyboardButton("🏏 Batting Only", callback_data="ai_type_bat", style="primary")],
+        [InlineKeyboardButton("⚾ Bowling Only", callback_data="ai_type_bowl", style="primary")],
+        [InlineKeyboardButton("🎮 Full AI Match", callback_data="ai_type_full", style="success")]
     ]
-    
+
     caption = (
-        "🤖 <b>AI MODE - Select Difficulty</b>\n"
+        "🤖 <b>AI MODE</b>\n"
         "─────────────────\n\n"
-        "Choose your opponent difficulty:"
+        "What do you want to do?"
     )
-    
+
     try:
         await update.message.reply_photo(
             photo=MEDIA_ASSETS.get("aimode_select"),
@@ -13020,21 +13060,74 @@ async def aistart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def ai_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle opposition-mode selection (batting only / bowling only / full match)."""
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    match_type = query.data.split("_")[-1]  # bat, bowl, full
+
+    if user.id in ai_matches:
+        await query.answer("⚠️ You're already in an AI match! Use /aiquit to end it.", show_alert=True)
+        return
+
+    # Select difficulty (carry match_type forward in the callback_data)
+    keyboard = [
+        [InlineKeyboardButton("😊 Easy", callback_data=f"ai_diff_easy_{match_type}", style="primary")],
+        [InlineKeyboardButton("😐 Medium", callback_data=f"ai_diff_medium_{match_type}", style="primary")],
+        [InlineKeyboardButton("😈 Hard", callback_data=f"ai_diff_hard_{match_type}", style="primary")],
+        [InlineKeyboardButton("👹 God Level", callback_data=f"ai_diff_god_{match_type}", style="primary")]
+    ]
+
+    type_label = {"bat": "🏏 Batting Only", "bowl": "⚾ Bowling Only", "full": "🎮 Full AI Match"}.get(match_type, "AI Match")
+    caption = (
+        f"🤖 <b>AI MODE - Select Difficulty</b>\n"
+        f"Mode: {type_label}\n"
+        "─────────────────\n\n"
+        "Choose your opponent difficulty:"
+    )
+
+    try:
+        await query.message.edit_caption(
+            caption=caption,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.HTML
+        )
+    except:
+        try:
+            await query.message.edit_text(
+                text=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.HTML
+            )
+        except:
+            await context.bot.send_message(
+                user.id,
+                text=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.HTML
+            )
+
+
 async def ai_difficulty_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle AI difficulty selection"""
     query = update.callback_query
     await query.answer()
     
     user = query.from_user
-    difficulty = query.data.split("_")[-1]  # easy, medium, hard
+    # callback_data: ai_diff_<difficulty>_<match_type>
+    parts = query.data.split("_")
+    difficulty = parts[2]
+    match_type = parts[3] if len(parts) > 3 else "full"
     
     # Select overs
     keyboard = [
-        [InlineKeyboardButton("1 Over", callback_data=f"ai_over_1_{difficulty}", style="primary"),
-         InlineKeyboardButton("2 Overs", callback_data=f"ai_over_2_{difficulty}", style="primary")],
-        [InlineKeyboardButton("3 Overs", callback_data=f"ai_over_3_{difficulty}", style="primary"),
-         InlineKeyboardButton("4 Overs", callback_data=f"ai_over_4_{difficulty}", style="primary")],
-        [InlineKeyboardButton("5 Overs", callback_data=f"ai_over_5_{difficulty}", style="primary")]
+        [InlineKeyboardButton("1 Over", callback_data=f"ai_over_1_{difficulty}_{match_type}", style="primary"),
+         InlineKeyboardButton("2 Overs", callback_data=f"ai_over_2_{difficulty}_{match_type}", style="primary")],
+        [InlineKeyboardButton("3 Overs", callback_data=f"ai_over_3_{difficulty}_{match_type}", style="primary"),
+         InlineKeyboardButton("4 Overs", callback_data=f"ai_over_4_{difficulty}_{match_type}", style="primary")],
+        [InlineKeyboardButton("5 Overs", callback_data=f"ai_over_5_{difficulty}_{match_type}", style="primary")]
     ]
     
     diff_emoji = {"easy": "😊", "medium": "😐", "hard": "😈", "god": "👹"}
@@ -13073,14 +13166,16 @@ async def ai_over_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     user = query.from_user
-    data_parts = query.data.split("_")  # ai_over_<overs>_<difficulty>
+    data_parts = query.data.split("_")  # ai_over_<overs>_<difficulty>_<match_type>
     overs = int(data_parts[2])
     difficulty = data_parts[3]
+    match_type = data_parts[4] if len(data_parts) > 4 else "full"
     
     # Create AI match
     ai_matches[user.id] = {
         "difficulty": difficulty,
         "overs": overs,
+        "match_type": match_type,  # "full", "bat" (batting only), "bowl" (bowling only)
         "user_score": 0,
         "user_wickets": 0,
         "user_balls": 0,
@@ -13097,6 +13192,54 @@ async def ai_over_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_spam_history": [],  # Track user's last numbers for spam detection
         "ai_spam_history": []  # Track AI's last numbers for spam detection
     }
+
+    if match_type == "bat":
+        # Batting Only: user always bats a single innings against the AI's bowling.
+        match = ai_matches[user.id]
+        match["ai_batting_first"] = False
+        match["user_batting_now"] = True
+        match["phase"] = "waiting_user"
+
+        try:
+            await query.message.delete()
+        except:
+            pass
+
+        await context.bot.send_photo(
+            user.id,
+            photo=MEDIA_ASSETS.get("toss"),
+            caption="🏏 <b>BATTING ONLY MODE!</b>\n"
+                    "─────────────────\n"
+                    f"⚾ Overs: {overs} | 🤖 Difficulty: {difficulty.upper()}\n\n"
+                    "You're batting! Send a number (0-6) to start!",
+            parse_mode=ParseMode.HTML
+        )
+        await asyncio.sleep(1)
+        await ai_play_ball(context, user.id)
+        return
+
+    if match_type == "bowl":
+        # Bowling Only: AI always bats a single innings, user always bowls.
+        match = ai_matches[user.id]
+        match["ai_batting_first"] = True
+        match["user_batting_now"] = False
+        match["phase"] = "waiting_user"
+
+        try:
+            await query.message.delete()
+        except:
+            pass
+
+        await context.bot.send_photo(
+            user.id,
+            photo=MEDIA_ASSETS.get("toss"),
+            caption="⚾ <b>BOWLING ONLY MODE!</b>\n"
+                    "─────────────────\n"
+                    f"⚾ Overs: {overs} | 🤖 Difficulty: {difficulty.upper()}\n\n"
+                    "🤖 AI is batting. Send a number (0-6) to bowl!",
+            parse_mode=ParseMode.HTML
+        )
+        return
     
     # Ask user to call toss
     keyboard = [
@@ -13676,9 +13819,26 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
         result_msg += f"📊 AI Final: {match['ai_score']}/1 ({match['ai_balls']//6}.{match['ai_balls']%6})\n"
         
         if is_first_innings:
-            # First innings wicket - AI innings ends, now user bats
+            # First innings wicket - AI innings ends
             result_msg += f"\n─────────────────\n"
             result_msg += f"<b>AI INNINGS ENDED!</b>\n"
+
+            if match.get("match_type", "full") != "full":
+                # Bowling Only mode — no second innings to play
+                try:
+                    await context.bot.send_animation(
+                        user_id,
+                        animation=random.choice(GIFS[MatchEvent.WICKET]),
+                        caption=result_msg,
+                        parse_mode=ParseMode.HTML
+                    )
+                except:
+                    await context.bot.send_message(user_id, result_msg, parse_mode=ParseMode.HTML)
+
+                await asyncio.sleep(1)
+                await ai_end_match_solo(context, user_id)
+                return
+
             result_msg += f"🎯 <b>Target for you: {match['ai_score'] + 1}</b>\n\n"
             result_msg += "🏏 Now you're batting!\n"
             result_msg += "Send a number (0-6) to start batting!"
@@ -13723,9 +13883,26 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
         if is_first_innings:
             # First innings - check if overs complete
             if match["ai_balls"] >= match["overs"] * 6:
-                # First innings complete, user bats now
+                # First innings complete
                 result_msg += f"\n─────────────────\n"
                 result_msg += f"<b>AI INNINGS COMPLETE!</b>\n"
+
+                if match.get("match_type", "full") != "full":
+                    # Bowling Only mode — no second innings to play
+                    try:
+                        await context.bot.send_animation(
+                            user_id,
+                            animation=random.choice(GIFS.get(MatchEvent.INNINGS_BREAK, GIFS[MatchEvent.DOT_BALL])),
+                            caption=result_msg,
+                            parse_mode=ParseMode.HTML
+                        )
+                    except:
+                        await context.bot.send_message(user_id, result_msg, parse_mode=ParseMode.HTML)
+
+                    await asyncio.sleep(1)
+                    await ai_end_match_solo(context, user_id)
+                    return
+
                 result_msg += f"🎯 <b>Target: {match['ai_score'] + 1}</b>\n\n"
                 result_msg += "🏏 Now you're batting!\n"
                 result_msg += "Send a number (0-6) to start!"
@@ -13795,30 +13972,87 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
             await context.bot.send_message(user_id, "⚾ Send your next delivery (0-6)!", parse_mode=ParseMode.HTML)
 
 
+async def ai_end_match_solo(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """End a Batting-Only or Bowling-Only AI match: there's no second innings to
+    switch to, so just summarize the single innings that was played."""
+    if user_id not in ai_matches:
+        return
+
+    match = ai_matches[user_id]
+    match_type = match.get("match_type", "full")
+
+    msg = "🏁 <b>INNINGS COMPLETE!</b>\n"
+    msg += "─────────────────\n\n"
+
+    if match_type == "bat":
+        overs_played = f"{match['user_balls']//6}.{match['user_balls']%6}"
+        msg += f"🏏 <b>YOUR SCORE:</b> {match['user_score']}/{match['user_wickets']} ({overs_played})\n"
+        if match["user_stats"]["balls"] > 0:
+            sr = round((match["user_stats"]["runs"] / match["user_stats"]["balls"]) * 100, 1)
+            msg += f"⚡ Strike Rate: {sr}\n"
+            if match["user_stats"]["fours"] > 0 or match["user_stats"]["sixes"] > 0:
+                msg += f"🎯 Boundaries: {match['user_stats']['fours']}×4, {match['user_stats']['sixes']}×6\n"
+    else:  # bowl
+        overs_bowled = f"{match['ai_balls']//6}.{match['ai_balls']%6}"
+        msg += f"⚾ <b>AI SCORE (vs your bowling):</b> {match['ai_score']}/{match['ai_wickets']} ({overs_bowled})\n"
+        if match["ai_balls"] > 0:
+            econ = round((match["ai_score"] / match["ai_balls"]) * 6, 2)
+            msg += f"📉 Economy: {econ}\n"
+
+    msg += "\n─────────────────\n"
+    msg += "Use /aistart to play again!"
+
+    try:
+        await context.bot.send_photo(
+            user_id,
+            photo=MEDIA_ASSETS.get("scorecard"),
+            caption=msg,
+            parse_mode=ParseMode.HTML
+        )
+    except:
+        await context.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
+
+    del ai_matches[user_id]
+
+
 async def ai_end_match(context: ContextTypes.DEFAULT_TYPE, user_id: int, result: str):
     """End AI match and show results"""
     if user_id not in ai_matches:
         return
     
     match = ai_matches[user_id]
+
+    # Which side batted 2nd (chased a target)? That's the side a wicket/overs
+    # margin applies to; the other side's win is measured in runs.
+    ai_batted_first = match.get("ai_batting_first", False)
+    chasing_side = "user" if ai_batted_first else "ai"
     
     msg = "🏆 <b>MATCH ENDED!</b>\n"
     msg += "─────────────────\n\n"
     
     if result == "user_won":
         msg += "🎉 <b>YOU WON!</b> 🎉\n\n"
-        margin = match["user_score"] - match["ai_score"]
-        if match["innings"] == 1:
-            msg += f"Victory by {match['user_score'] - match['ai_score']} runs!\n"
+        if chasing_side == "user":
+            wkts_left = max(0, 1 - match["user_wickets"])
+            if wkts_left > 0:
+                msg += f"Victory by {wkts_left} wicket!\n"
+            else:
+                msg += "Victory on the very last ball!\n"
         else:
-            msg += f"Victory by {10 - match['ai_wickets']} wickets!\n"
+            margin = match["user_score"] - match["ai_score"]
+            msg += f"Victory by {margin} runs!\n"
         victory_gif = random.choice(GIFS[MatchEvent.VICTORY]) if MatchEvent.VICTORY in GIFS else None
     else:
         msg += "💔 <b>AI WON!</b>\n\n"
-        if match["innings"] == 1:
-            msg += f"AI won by {10 - match['ai_wickets']} wickets!\n"
+        if chasing_side == "ai":
+            wkts_left = max(0, 1 - match["ai_wickets"])
+            if wkts_left > 0:
+                msg += f"AI won by {wkts_left} wicket!\n"
+            else:
+                msg += "AI won on the very last ball!\n"
         else:
-            msg += f"AI won by {match['ai_score'] - match['user_score']} runs!\n"
+            margin = match["ai_score"] - match["user_score"]
+            msg += f"AI won by {margin} runs!\n"
         victory_gif = None
     
     msg += f"\n📊 <b>YOUR SCORE:</b> {match['user_score']}/{match['user_wickets']} ({match['user_balls']//6}.{match['user_balls']%6})\n"
@@ -23492,6 +23726,141 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(_do_broadcast())
 
+
+async def broadcastbtn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Broadcast WITH custom inline buttons that the owner types out.
+    Usage: Reply to any message with:
+        /broadcastbtn Label - https://link | Label2 - https://link2
+    - Separate buttons on the SAME row with a single "|"
+    - Start a NEW row with "||"
+    Example:
+        /broadcastbtn Join Channel - https://t.me/xyz || Contact Owner - https://t.me/owner
+    """
+    user = update.effective_user
+    if user.id != OWNER_ID and user.id not in POWERED_USERS:
+        return
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text(
+            "⚠️ <b>Usage:</b> Reply to any message with:\n"
+            "<code>/broadcastbtn Label - https://link | Label2 - https://link2</code>\n\n"
+            "• Separate buttons with <code>|</code> → same row\n"
+            "• Use <code>||</code> → start a new row\n\n"
+            "Example:\n"
+            "<code>/broadcastbtn Join Channel - https://t.me/xyz || Contact Owner - https://t.me/owner</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    args_text = update.message.text.split(None, 1)
+    args_text = args_text[1] if len(args_text) > 1 else ""
+
+    if not args_text.strip():
+        await update.message.reply_text(
+            "⚠️ Please type the buttons after the command. Send <code>/broadcastbtn</code> with no reply to see the format.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Parse "Label - url | Label2 - url2 || Label3 - url3" into keyboard rows
+    keyboard = []
+    for row_text in args_text.split("||"):
+        row = []
+        for btn_text in row_text.split("|"):
+            btn_text = btn_text.strip()
+            if not btn_text or " - " not in btn_text:
+                continue
+            label, url = btn_text.rsplit(" - ", 1)
+            label, url = label.strip(), url.strip()
+            if label and url:
+                row.append(InlineKeyboardButton(label, url=url))
+        if row:
+            keyboard.append(row)
+
+    if not keyboard:
+        await update.message.reply_text(
+            "⚠️ Couldn't parse any buttons. Format: <code>Label - https://link</code>, separated by <code>|</code> / <code>||</code>.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    target_message = update.message.reply_to_message
+
+    status_msg = await update.message.reply_text(
+        "📢 <b>BROADCAST (WITH BUTTONS) STARTED</b>\n"
+        "⏳ <i>Running in background → you'll get a report when done.</i>",
+        parse_mode=ParseMode.HTML
+    )
+
+    async def _do_broadcast_btn():
+        success_groups = fail_groups = success_users = fail_users = 0
+
+        # copy_message (not forward) is required — only copies support attaching
+        # a NEW reply_markup, so the buttons actually show up on the sent copy.
+        for chat_id in list(registered_groups.keys()):
+            if chat_id in banned_groups:
+                fail_groups += 1
+                continue
+            try:
+                await context.bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=target_message.chat_id,
+                    message_id=target_message.message_id,
+                    reply_markup=reply_markup
+                )
+                success_groups += 1
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                fail_groups += 1
+                logger.debug(f"Broadcast(btn) group {chat_id} failed: {e}")
+
+        for uid in list(user_data.keys()):
+            try:
+                await context.bot.copy_message(
+                    chat_id=uid,
+                    from_chat_id=target_message.chat_id,
+                    message_id=target_message.message_id,
+                    reply_markup=reply_markup
+                )
+                success_users += 1
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                fail_users += 1
+                logger.debug(f"Broadcast(btn) user {uid} failed: {e}")
+
+        total_groups = len(registered_groups)
+        total_users = len(user_data)
+        banned_count = len(banned_groups)
+        report = (
+            "✅ <b>BROADCAST (WITH BUTTONS) COMPLETE!</b>\n"
+            "─────────────────\n\n"
+            "👥 <b>GROUPS</b>\n"
+            f"   ✅ Sent: <code>{success_groups}</code>\n"
+            f"   ❌ Failed: <code>{fail_groups}</code>\n"
+            f"   🚫 Banned: <code>{banned_count}</code>\n"
+            f"   📊 Total: <code>{total_groups}</code>\n\n"
+            "👤 <b>USERS (DMs)</b>\n"
+            f"   ✅ Sent: <code>{success_users}</code>\n"
+            f"   ❌ Failed: <code>{fail_users}</code>\n"
+            f"   📊 Total: <code>{total_users}</code>\n\n"
+            "─────────────────"
+        )
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.message.chat_id,
+                message_id=status_msg.message_id,
+                text=report,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            await context.bot.send_message(update.message.chat_id, report, parse_mode=ParseMode.HTML)
+
+    asyncio.create_task(_do_broadcast_btn())
+
+
+
 def _fetch_botstats_data():
     """All the blocking sqlite reads for /botstats — always call via
     asyncio.to_thread, never directly on the event loop (owner-only command,
@@ -25899,6 +26268,23 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 result_msg = f"❌ <b>OUT!</b>\n\n"
                 result_msg += f"You: {num} | AI: {ai_num}\n\n"
                 result_msg += f"📊 Final Score: {match['user_score']}/1\n"
+
+                if match.get("match_type", "full") != "full":
+                    # Batting Only mode — no second innings to play
+                    result_msg += f"\n─────────────────\n"
+                    result_msg += f"<b>YOUR INNINGS ENDED!</b>\n"
+                    try:
+                        wicket_gif = random.choice(GIFS[MatchEvent.WICKET])
+                        await update.message.reply_animation(
+                            animation=wicket_gif,
+                            caption=result_msg,
+                            parse_mode=ParseMode.HTML
+                        )
+                    except:
+                        await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
+                    await asyncio.sleep(1)
+                    await ai_end_match_solo(context, user.id)
+                    return
                 
                 # Innings over (only 1 wicket)
                 match["target"] = match["user_score"] + 1
@@ -25945,6 +26331,36 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 # Check if overs complete
                 if match["user_balls"] >= match["overs"] * 6:
+                    if match.get("match_type", "full") != "full":
+                        # Batting Only mode — no second innings to play
+                        result_msg += f"\n─────────────────\n"
+                        result_msg += f"<b>YOUR INNINGS ENDED!</b>\n"
+                        try:
+                            if num == 0:
+                                gif = random.choice(GIFS[MatchEvent.DOT_BALL])
+                            elif num == 1:
+                                gif = random.choice(GIFS[MatchEvent.RUNS_1])
+                            elif num == 2:
+                                gif = random.choice(GIFS[MatchEvent.RUNS_2])
+                            elif num == 3:
+                                gif = random.choice(GIFS[MatchEvent.RUNS_3])
+                            elif num == 4:
+                                gif = random.choice(GIFS[MatchEvent.RUNS_4])
+                            elif num == 5:
+                                gif = random.choice(GIFS[MatchEvent.RUNS_5])
+                            else:
+                                gif = random.choice(GIFS[MatchEvent.RUNS_6])
+                            await update.message.reply_animation(
+                                animation=gif,
+                                caption=result_msg,
+                                parse_mode=ParseMode.HTML
+                            )
+                        except:
+                            await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
+                        await asyncio.sleep(1)
+                        await ai_end_match_solo(context, user.id)
+                        return
+
                     match["target"] = match["user_score"] + 1
                     match["innings"] = 2
                     match["phase"] = "waiting_ai"
@@ -25956,74 +26372,6 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if match.get("ai_penalty_runs", 0) > 0:
                         result_msg += f"⚠️ AI starts with {match['ai_penalty_runs']} penalty run(s)\n"
                     result_msg += f"\n🎮 AI is batting now..."
-                    
-                    try:
-                        # Send appropriate GIF
-                        if num == 0:
-                            gif = random.choice(GIFS[MatchEvent.DOT_BALL])
-                        elif num == 1:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_1])
-                        elif num == 2:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_2])
-                        elif num == 3:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_3])
-                        elif num == 4:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_4])
-                        elif num == 5:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_5])
-                        else:  # 6
-                            gif = random.choice(GIFS[MatchEvent.RUNS_6])
-                        
-                        await update.message.reply_animation(
-                            animation=gif,
-                            caption=result_msg,
-                            parse_mode=ParseMode.HTML
-                        )
-                    except:
-                        await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
-                    
-                    await asyncio.sleep(2)
-                    await ai_bat_innings(context, user.id)
-                    return
-                else:
-                    try:
-                        # Send appropriate GIF
-                        if num == 0:
-                            gif = random.choice(GIFS[MatchEvent.DOT_BALL])
-                        elif num == 1:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_1])
-                        elif num == 2:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_2])
-                        elif num == 3:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_3])
-                        elif num == 4:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_4])
-                        elif num == 5:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_5])
-                        else:  # 6
-                            gif = random.choice(GIFS[MatchEvent.RUNS_6])
-                        
-                        await update.message.reply_animation(
-                            animation=gif,
-                            caption=result_msg,
-                            parse_mode=ParseMode.HTML
-                        )
-                    except:
-                        await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
-                    await asyncio.sleep(1)
-                    await ai_play_ball(context, user.id)
-                    return
-                
-                # Check if overs complete
-                if match["user_balls"] >= match["overs"] * 6:
-                    match["target"] = match["user_score"] + 1
-                    match["innings"] = 2
-                    match["phase"] = "waiting_ai"
-                    
-                    result_msg += f"\n─────────────────\n"
-                    result_msg += f"<b>YOUR INNINGS ENDED!</b>\n"
-                    result_msg += f"🎯 Target for AI: {match['target']}\n\n"
-                    result_msg += f"AI is batting now..."
                     
                     try:
                         # Send appropriate GIF
@@ -31574,6 +31922,7 @@ def main():
     
     # ================== OWNER / HOST CONTROLS ==================
     application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("broadcastbtn", broadcastbtn_command))
     application.add_handler(CommandHandler("power", power_command))
     application.add_handler(CommandHandler("rmpower", rmpower_command))
     application.add_handler(CommandHandler("listpower", listpower_command))
@@ -31671,6 +32020,7 @@ def main():
     application.add_handler(CallbackQueryHandler(auc_reject_sold_callback, pattern="^auc_reject_sold_"))    # ✅ NEW
 
     # AI Mode callbacks
+    application.add_handler(CallbackQueryHandler(ai_type_callback, pattern="^ai_type_"))
     application.add_handler(CallbackQueryHandler(ai_difficulty_callback, pattern="^ai_diff_"))
     application.add_handler(CallbackQueryHandler(ai_over_callback, pattern="^ai_over_"))
     application.add_handler(CallbackQueryHandler(ai_toss_callback, pattern="^ai_toss_"))

@@ -232,6 +232,16 @@ def set_scorecard_cooldown(group_id: int):
     """Mark scorecard command just used in this group."""
     scorecard_cooldown_tracker[group_id] = time.time()
 
+# ── NEW-STYLE (X/Y, per-player drop-down) Scorecard ──
+# Tracks how many times /scorecard has been manually used in a given match
+# (group_id -> count). Capped at MAX_NEW_SCORECARD_USES per match.
+NEW_SCORECARD_USE_COUNT: Dict[int, int] = defaultdict(int)
+MAX_NEW_SCORECARD_USES = 8
+# Keeps the last completed match per group alive for a bit after it ends,
+# so the per-player drop-down buttons on the final scorecard still work
+# even after active_matches[group_id] has been cleaned up.
+FINISHED_MATCH_CACHE: Dict[int, "Match"] = {}
+
 def check_momentum_cooldown(group_id: int) -> Optional[float]:
     last = momentum_cooldown_tracker.get(group_id, 0.0)
     elapsed = time.time() - last
@@ -3353,7 +3363,21 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         set_scorecard_cooldown(group_id)
-    
+
+    # ── New-style (TEAM-X/TEAM-Y, per-player drop-down) scorecard — capped
+    # at MAX_NEW_SCORECARD_USES manual uses per match ──
+    used = NEW_SCORECARD_USE_COUNT.get(group_id, 0)
+    if used >= MAX_NEW_SCORECARD_USES:
+        await update.message.reply_text(
+            f"⚠️ Scorecard limit reached — used {used}/{MAX_NEW_SCORECARD_USES} times this match."
+        )
+    else:
+        NEW_SCORECARD_USE_COUNT[group_id] = used + 1
+        try:
+            await send_new_scorecard(update.message, group_id, match)
+        except Exception as nsc_e:
+            logger.error(f"New-style scorecard error: {nsc_e}")
+
     first_team = match.batting_first if match.batting_first else match.team_x
     second_team = match.team_y if first_team == match.team_x else match.team_x
     
@@ -14992,6 +15016,233 @@ async def _dead_code_removed_duplicate_winner_logic(group_id, match, context):
     logger.info("🏁 Match ended successfully")
     logger.info(f"🏆 === DETERMINE WINNER END ===\n")
 
+# ═══════════════════════════════════════════════════════════════
+# NEW-STYLE SCORECARD (X/Y teams, per-player drop-down batting/bowling)
+# ═══════════════════════════════════════════════════════════════
+
+def _nsc_get_match(group_id: int) -> Optional["Match"]:
+    """Find the match to show for the new-style scorecard: prefer the live
+    match, fall back to the last completed match for that group."""
+    m = active_matches.get(group_id)
+    if m:
+        return m
+    return FINISHED_MATCH_CACHE.get(group_id)
+
+
+def _nsc_team_label(team: "Team", fallback_letter: str) -> str:
+    """Use the real tournament/custom team name if one was set, else fall
+    back to 'TEAM - X' / 'TEAM - Y' (never the old 'Team A/B' wording)."""
+    nm = (getattr(team, "name", "") or "").strip()
+    if not nm or nm.lower() in ("team a", "team b", f"team {fallback_letter.lower()}"):
+        return f"TEAM - {fallback_letter}"
+    return nm.upper()
+
+
+def _nsc_pad(s, w):
+    s = str(s)
+    return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+
+def _nsc_rpad(s, w):
+    s = str(s)
+    return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
+
+def _nsc_batting_table(bat_team: "Team") -> str:
+    """S.No Name Run Balls S.R 6's 4's — in the order players actually
+    went in to bat (team.players list order = crease order)."""
+    header = (
+        f"{_nsc_pad('S.No', 5)}{_nsc_pad('Name', 14)}"
+        f"{_nsc_rpad('Run', 5)}{_nsc_rpad('Balls', 6)}{_nsc_rpad('S.R', 7)}"
+        f"{_nsc_rpad('6s', 4)}{_nsc_rpad('4s', 4)}\n"
+    )
+    rows = ""
+    sno = 0
+    for p in bat_team.players:
+        if p.balls_faced <= 0 and not p.is_out:
+            continue
+        sno += 1
+        not_out = "*" if not p.is_out else ""
+        name = f"{p.first_name[:11]}{not_out}"
+        rows += (
+            f"{_nsc_pad(sno, 5)}{_nsc_pad(name, 14)}"
+            f"{_nsc_rpad(p.runs, 5)}{_nsc_rpad(p.balls_faced, 6)}{_nsc_rpad(p.get_strike_rate(), 7)}"
+            f"{_nsc_rpad(p.sixes, 4)}{_nsc_rpad(p.boundaries, 4)}\n"
+        )
+    if not rows:
+        rows = "  Did not bat\n"
+    return header + ("─" * 45) + "\n" + rows
+
+
+def _nsc_bowling_table(bowl_team: "Team") -> str:
+    """S.No Name Ovr Wicket Eco Extra — bowlers from the OPPOSITE team,
+    in the order they bowled (team.players list order)."""
+    header = (
+        f"{_nsc_pad('S.No', 5)}{_nsc_pad('Name', 14)}"
+        f"{_nsc_rpad('Ovr', 6)}{_nsc_rpad('Wkt', 5)}{_nsc_rpad('Eco', 7)}{_nsc_rpad('Extra', 7)}\n"
+    )
+    rows = ""
+    sno = 0
+    for p in bowl_team.players:
+        if p.balls_bowled <= 0:
+            continue
+        sno += 1
+        extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
+        rows += (
+            f"{_nsc_pad(sno, 5)}{_nsc_pad(p.first_name[:11], 14)}"
+            f"{_nsc_rpad(format_overs(p.balls_bowled), 6)}{_nsc_rpad(p.wickets, 5)}"
+            f"{_nsc_rpad(p.get_economy(), 7)}{_nsc_rpad(extras, 7)}\n"
+        )
+    if not rows:
+        rows = "  Did not bowl\n"
+    return header + ("─" * 45) + "\n" + rows
+
+
+def build_new_scorecard(match: "Match", group_id: int):
+    """Professional live-cricket-style scorecard:
+    Team X - runs/wkts (overs)  → Batting table → Bowling table (opponent)
+    Team Y - runs/wkts (overs)  → Batting table → Bowling table (opponent)
+    """
+    first = match.batting_first if getattr(match, "batting_first", None) else match.team_x
+    second = match.get_other_team(first) if hasattr(match, "get_other_team") else match.team_y
+
+    def _innings(bat_team, bowl_team, letter):
+        block = f"<b>{_nsc_team_label(bat_team, letter)} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</b>\n"
+        block += "Batting\n"
+        block += f"<pre>{_nsc_batting_table(bat_team)}</pre>"
+        block += "Bowling\n"
+        block += f"<pre>{_nsc_bowling_table(bowl_team)}</pre>"
+        return block
+
+    text = _innings(first, second, "X")
+    text += "\n"
+    text += _innings(second, first, "Y")
+
+    used = NEW_SCORECARD_USE_COUNT.get(group_id, 0)
+    text += f"\n📟 command count - {used} out of {MAX_NEW_SCORECARD_USES}"
+
+    return text, None
+
+
+def _nsc_find_player(match: "Match", user_id: int):
+    for team in (match.team_x, match.team_y):
+        p = team.get_player(user_id)
+        if p:
+            return p
+    return None
+
+
+def _nsc_html_batting_table(bat_team: "Team") -> str:
+    """<table> version of the batting card, in crease order."""
+    rows = ""
+    sno = 0
+    for p in bat_team.players:
+        if p.balls_faced <= 0 and not p.is_out:
+            continue
+        sno += 1
+        not_out = "*" if not p.is_out else ""
+        name = html.escape(f"{p.first_name}{not_out}")
+        rows += (
+            f"<tr><td align='center'>{sno}</td><td>{name}</td>"
+            f"<td align='right'>{p.runs}</td><td align='right'>{p.balls_faced}</td>"
+            f"<td align='right'>{p.get_strike_rate()}</td>"
+            f"<td align='right'>{p.sixes}</td><td align='right'>{p.boundaries}</td></tr>"
+        )
+    if not rows:
+        rows = "<tr><td colspan='7' align='center'>Did not bat</td></tr>"
+    return (
+        "<table bordered striped>"
+        "<tr><th>S.No</th><th>Name</th><th>Run</th><th>Balls</th><th>S.R</th><th>6s</th><th>4s</th></tr>"
+        f"{rows}</table>"
+    )
+
+
+def _nsc_html_bowling_table(bowl_team: "Team") -> str:
+    """<table> version of the bowling card — bowlers from the OPPOSITE team."""
+    rows = ""
+    sno = 0
+    for p in bowl_team.players:
+        if p.balls_bowled <= 0:
+            continue
+        sno += 1
+        extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
+        name = html.escape(p.first_name)
+        rows += (
+            f"<tr><td align='center'>{sno}</td><td>{name}</td>"
+            f"<td align='right'>{format_overs(p.balls_bowled)}</td>"
+            f"<td align='right'>{p.wickets}</td>"
+            f"<td align='right'>{p.get_economy()}</td>"
+            f"<td align='right'>{extras}</td></tr>"
+        )
+    if not rows:
+        rows = "<tr><td colspan='6' align='center'>Did not bowl</td></tr>"
+    return (
+        "<table bordered striped>"
+        "<tr><th>S.No</th><th>Name</th><th>Ovr</th><th>Wkt</th><th>Eco</th><th>Extra</th></tr>"
+        f"{rows}</table>"
+    )
+
+
+def build_new_scorecard_html(match: "Match", group_id: int) -> str:
+    """Same professional scorecard, built with real <table> tags for
+    sendRichMessage's html field (Bot API 10.1+ native tables)."""
+    first = match.batting_first if getattr(match, "batting_first", None) else match.team_x
+    second = match.get_other_team(first) if hasattr(match, "get_other_team") else match.team_y
+
+    def _innings(bat_team, bowl_team, letter):
+        label = html.escape(_nsc_team_label(bat_team, letter))
+        block = f"<h3>{label} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</h3>"
+        block += "<p>Batting</p>"
+        block += _nsc_html_batting_table(bat_team)
+        block += "<p>Bowling</p>"
+        block += _nsc_html_bowling_table(bowl_team)
+        return block
+
+    used = NEW_SCORECARD_USE_COUNT.get(group_id, 0)
+    out = _innings(first, second, "X") + "<hr/>" + _innings(second, first, "Y")
+    out += f"<footer>📟 command count - {used} out of {MAX_NEW_SCORECARD_USES}</footer>"
+    return out
+
+
+async def _tg_send_rich_message(chat_id: int, html_content: str) -> bool:
+    """Raw call to Bot API 10.1's sendRichMessage (python-telegram-bot
+    doesn't support this yet). Returns True on success, False on any
+    failure so the caller can fall back to the <pre> version."""
+    def _do_request():
+        try:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendRichMessage",
+                json={"chat_id": chat_id, "rich_message": {"html": html_content}},
+                timeout=15,
+            )
+            data = resp.json()
+            if not data.get("ok"):
+                logger.warning(f"sendRichMessage failed: {data.get('description')}")
+                return False
+            return True
+        except Exception as e:
+            logger.warning(f"sendRichMessage request error: {e}")
+            return False
+    return await asyncio.to_thread(_do_request)
+
+
+async def send_new_scorecard(target_message, group_id: int, match: "Match"):
+    """Send the professional new-style scorecard as a fresh message (used
+    by /scorecard and at game end). Tries a real native <table> via the
+    new sendRichMessage API first; falls back to the <pre> monospace
+    version if the rich message isn't supported/accepted."""
+    html_content = build_new_scorecard_html(match, group_id)
+    ok = await _tg_send_rich_message(group_id, html_content)
+    if ok:
+        return
+    text, _ = build_new_scorecard(match, group_id)
+    if len(text) > 4096:
+        await target_message.reply_text(text[:4090] + "…", parse_mode=ParseMode.HTML)
+        await target_message.reply_text("…" + text[4090:], parse_mode=ParseMode.HTML)
+    else:
+        await target_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 async def send_final_scorecard(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
     📊 PREMIUM MATCH SCORECARD - Professional Design
@@ -15051,6 +15302,22 @@ async def send_final_scorecard(context: ContextTypes.DEFAULT_TYPE, group_id: int
     else:
         winner = first_innings
         margin = f"{first_innings.score - second_innings.score} runs"
+
+    # Keep this match reachable for the new-style scorecard's drop-down
+    # buttons even after active_matches[group_id] is cleaned up.
+    FINISHED_MATCH_CACHE[group_id] = match
+    try:
+        html_nsc = build_new_scorecard_html(match, group_id)
+        ok = await _tg_send_rich_message(group_id, html_nsc)
+        if not ok:
+            text_nsc, _ = build_new_scorecard(match, group_id)
+            if len(text_nsc) > 4096:
+                await context.bot.send_message(group_id, text_nsc[:4090] + "…", parse_mode=ParseMode.HTML)
+                await context.bot.send_message(group_id, "…" + text_nsc[4090:], parse_mode=ParseMode.HTML)
+            else:
+                await context.bot.send_message(group_id, text_nsc, parse_mode=ParseMode.HTML)
+    except Exception as nsc_end_e:
+        logger.error(f"New-style scorecard (end of game) error: {nsc_end_e}")
 
     all_players = first_innings.players + second_innings.players
 

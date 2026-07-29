@@ -2758,8 +2758,8 @@ def generate_mini_scorecard(match: Match, wicket_mode: bool = False) -> str:
         return msg
 
     striker_tag = striker_tag or "—"
-    partnership = striker_runs + ns_runs
-    partnership_balls = striker_balls + ns_balls
+    partnership = getattr(match, "current_partnership_runs", 0)
+    partnership_balls = getattr(match, "current_partnership_balls", 0)
     msg = f"🏏 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n"
     msg += f"┌─────────────────── \n"
     msg += f"├ 👤 {striker_tag} ➔ {striker_runs} ({striker_balls}) \n"
@@ -4084,7 +4084,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🏆 <b>Tournament:</b> {tour_name}\n"
                     f"👤 <b>Name:</b> {full_name}\n"
                     f"🔖 <b>Username:</b> @{username}\n"
-                    f"💰 <b>Base Price:</b> {base_price} coins\n"
+                    f"💰 <b>Base Price:</b> {base_price} 🔷\n"
                     f"─────────────────\n"
                     f"🍀 <i>All the best, champion! May the best player win!</i>"
                 ),
@@ -4101,7 +4101,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"─────────────────\n"
                         f"👤 <b>{full_name}</b>\n"
                         f"🔖 @{username}\n"
-                        f"💰 <b>Base Price:</b> {base_price} coins\n"
+                        f"💰 <b>Base Price:</b> {base_price} 🔷\n"
                         f"─────────────────\n"
                         f"🏆 Welcome to <b>{tour_name}</b>! 🍀"
                     ),
@@ -12083,6 +12083,8 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
     auction.current_highest_bid = player["base_price"]
     auction.current_highest_bidder = None
     auction.last_bid_teams = []  # Reset bid history for new player
+    auction.last_bidder_tag = None
+    auction.last_team_name = None
     auction.bids_frozen = False
     auction.pending_sold_confirmation = False
     
@@ -12148,7 +12150,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
     msg = (
         f"╭━━ 🔨 AUCTION: PLAYER UP ━━━━\n"
         f"┃ 👤 Player: {player_tag}\n"
-        f"┃ 🪙 Base Price: {player['base_price']} Coins\n"
+        f"┃ 🪙 Base Price: {player['base_price']} 🔷\n"
         f"┣━─────────────────\n"
         f"┃ 📊 TEAM CAREER STATS\n"
         f"┃ ─────────────────\n"
@@ -12166,7 +12168,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         f"┣━─────────────────\n"
         f"┃ 💰 CURRENT BID DETAILS\n"
         f"┃ ─────────────────\n"
-        f"┃ ├ 💵 Current Bid: {player['base_price']} Coins\n"
+        f"┃ ├ 💵 Current Bid: {player['base_price']} 🔷\n"
         f"┃ ├ 👑 Bid Leader: None\n"
         f"┃ └ ⏳ Timer: 30 Seconds\n"
         f"╰━━━━━━━━\n"
@@ -12198,7 +12200,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         )
     
     # Start timer
-    auction.bid_end_time = time.time() + 45
+    auction.bid_end_time = time.time() + 25
     auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
 # /soloplayers
@@ -20584,7 +20586,7 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     if not auction.bid_timer_task and auction.phase == AuctionPhase.AUCTION_LIVE:
-        auction.bid_end_time = time.time() + 45
+        auction.bid_end_time = time.time() + 25
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
         
         await update.message.reply_text(
@@ -20627,7 +20629,7 @@ async def cancelbid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Reset bid timer
     if auction.bid_timer_task:
         auction.bid_timer_task.cancel()
-    auction.bid_end_time = time.time() + 45
+    auction.bid_end_time = time.time() + 25
     auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
     await update.message.reply_text(
         f"🔄 <b>LAST BID CANCELLED!</b>\n"
@@ -21984,8 +21986,8 @@ async def team_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = f"╭━━ 🏆 {html.escape(tname.upper())} ━━━━━━\n"
         msg += f"┃ 👑 Bidder: {bidder_tag}\n"
-        msg += f"┃ 💰 Purse Remaining: <b>{purse_left} Coins</b>\n"
-        msg += f"┃ 💸 Total Spent: {purse_used} Coins\n"
+        msg += f"┃ 💰 Purse Remaining: <b>{purse_left} 🔷</b>\n"
+        msg += f"┃ 💸 Total Spent: {purse_used} 🔷\n"
         msg += f"┃ 👥 Squad Size: {squad_count}\n"
         msg += f"┣━─────────────────\n"
 
@@ -22218,7 +22220,7 @@ async def pauseauction_command(update: Update, context: ContextTypes.DEFAULT_TYP
             p_id = sp.get('player_id', '')
             p_name = sp.get('player_name', 'Unknown')
             p_tag = f'<a href=\"tg://user?id={p_id}\">{p_name}</a>'
-            sold_summary += f"┃ ├  👤 {p_tag} ➔ {sp.get('team','?')} ({sp.get('price',0)} Coins)\n"
+            sold_summary += f"┃ ├  👤 {p_tag} ➔ {sp.get('team','?')} ({sp.get('price',0)} 🔷)\n"
         if sold_count > 5:
             sold_summary += f"┃ └  <i>... and {sold_count - 5} more</i>\n"
         sold_summary += "┃ \n"
@@ -22271,7 +22273,7 @@ async def resumeauction_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     if not auction.bid_timer_task and auction.phase == AuctionPhase.AUCTION_LIVE:
-        auction.bid_end_time = time.time() + 45
+        auction.bid_end_time = time.time() + 25
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
         await update.message.reply_text(
             "▶️ <b>AUCTION RESUMED!</b>\n"
@@ -22509,59 +22511,24 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         auction.last_bid_teams.append(team_name)
         if len(auction.last_bid_teams) > 10:
             auction.last_bid_teams = auction.last_bid_teams[-10:]
-        
+
+        # Store latest bidder info so bid_timer shows it merged into ONE message
+        auction.last_bidder_tag = get_user_tag(update.effective_user)
+        auction.last_team_name = team_name
+
         # Reset Timer: Cancel old, set new end time, start new task
+        # (bid_timer sends a single merged countdown+bid message — no separate confirmation message)
         if auction.bid_timer_task:
             auction.bid_timer_task.cancel()
             auction.bid_timer_task = None
         
-        auction.bid_end_time = time.time() + 45
+        auction.bid_end_time = time.time() + 25
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
-        
-        # 🎬 Confirmation with GIF
-        p_name = auction.current_player_name
-        p_tag = f'<a href=\"tg://user?id={auction.current_player_id}\">{p_name}</a>'
-        bidder_tag = get_user_tag(update.effective_user)
-        
-        bid_gif = GIFS.get("new_bid")  # Add this GIF to your GIFS dict
-        
-        msg = (
-            f"╭━━ 🔨 CRICOVERSE LIVE BID ━━━━━━\n"
-            f"┃ 💰 NEW BID PLACED!\n"
-            f"┃ ─────────────────\n"
-            f"┃ 👤 Player: {p_tag}\n"
-            f"┃ 🪙 Bid Amount: {amount} Coins\n"
-            f"┣━─────────────────\n"
-            f"┃ 👑 Bid Leader: {bidder_tag}\n"
-            f"┃ 👥 Team: {team_name}\n"
-            f"╰━━━━━━━━\n"
-        )
-        
-        # Quick bid buttons relative to current bid amount
-        next_3 = amount + 3
-        next_5 = amount + 5
-        next_10 = amount + 10
-        quick_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}", style="primary"),
-            InlineKeyboardButton(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}", style="primary"),
-            InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}", style="primary"),
-        ]])
 
         try:
-            await update.message.reply_animation(
-                animation=bid_gif,
-                caption=msg,
-                parse_mode=ParseMode.HTML,
-                reply_markup=quick_kb
-            )
-        except:
-            # Fallback to photo if GIF fails
-            await update.message.reply_photo(
-                photo=MEDIA_ASSETS.get("new_bid"),
-                caption=msg,
-                parse_mode=ParseMode.HTML,
-                reply_markup=quick_kb
-            )
+            await update.message.delete()
+        except Exception:
+            pass
 
 
 async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -22639,60 +22606,16 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(auction.last_bid_teams) > 10:
             auction.last_bid_teams = auction.last_bid_teams[-10:]
 
+        # Store latest bidder info so bid_timer shows it merged into ONE message
+        auction.last_bidder_tag = get_user_tag(user)
+        auction.last_team_name = team_name
+
         if auction.bid_timer_task:
             auction.bid_timer_task.cancel()
-        auction.bid_end_time = time.time() + 45
+        auction.bid_end_time = time.time() + 25
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
-        p_name = auction.current_player_name
-        p_tag = f'<a href=\"tg://user?id={auction.current_player_id}\">{p_name}</a>'
-        bidder_tag = get_user_tag(user)
-
-        next_3 = amount + 3
-        next_5 = amount + 5
-        next_10 = amount + 10
-        quick_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}", style="primary"),
-            InlineKeyboardButton(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}", style="primary"),
-            InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}", style="primary"),
-        ]])
-
-        # Premium Normal Bid layout applied to Quick Bid too
-        msg = (
-            f"╭━━ 🔨 CRICOVERSE LIVE BID ━━━━━━\n"
-            f"┃ 💰 NEW BID PLACED!\n"
-            f"┃ ─────────────────\n"
-            f"┃ 👤 Player: {p_tag}\n"
-            f"┃ 🪙 Bid Amount: {amount} Coins\n"
-            f"┣━─────────────────\n"
-            f"┃ 👑 Bid Leader: {bidder_tag}\n"
-            f"┃ 👥 Team: {team_name}\n"
-            f"╰━━━━━━━━\n"
-        )
-
-        bid_gif = GIFS.get("new_bid")
-
-        try:
-            await context.bot.send_animation(
-                chat_id,
-                animation=bid_gif,
-                caption=msg,
-                parse_mode=ParseMode.HTML,
-                reply_markup=quick_kb
-            )
-        except Exception:
-            try:
-                await context.bot.send_photo(
-                    chat_id,
-                    photo=MEDIA_ASSETS.get("new_bid"),
-                    caption=msg,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=quick_kb
-                )
-            except Exception as e:
-                logger.error(f"quickbid send media error: {e}")
-
-        await query.answer(f"✅ Bid placed: {amount} coins!", show_alert=False)
+        await query.answer(f"✅ Bid placed: {amount} 🔷!", show_alert=False)
 
 
 async def _update_auction_history_message(context, chat_id: int, auction):
@@ -22736,10 +22659,11 @@ async def _update_auction_history_message(context, chat_id: int, auction):
 
 
 async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: Auction):
-    """⏳ Bid Timer with live countdown + history log"""
+    """⏳ Bid Timer with live countdown + merged bid info (single message) + history log"""
     try:
-        # ── Live countdown: edit a message every 5 seconds ──
-        countdown_secs = 45
+        # ── Live countdown: edit a single merged message every 5 seconds ──
+        countdown_secs = 25
+        reminder_sent = False
 
         def countdown_text(s):
             color = "🔴" if s <= 10 else ("🟡" if s <= 20 else "🟢")
@@ -22748,18 +22672,50 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 "⏱ <b>BIDDING TIMER</b>",
                 "━" * 23,
                 f"👤 <b>{auction.current_player_name}</b>",
-                f"💰 Current Bid: <b>{auction.current_highest_bid} coins</b>",
+                f"💰 Current Bid: <b>{auction.current_highest_bid} 🔷</b>",
                 f"🏆 Leader: <b>{leader}</b>",
                 "━" * 23,
                 f"{color} <b>{s}s remaining</b>",
                 "⌨️ <code>/bid [amount]</code> to outbid!",
             ]
+            # Merge in the latest bid block (replaces the old separate "NEW BID PLACED" message)
+            last_bidder_tag = getattr(auction, "last_bidder_tag", None)
+            last_team_name = getattr(auction, "last_team_name", None)
+            if last_bidder_tag and last_team_name:
+                p_tag = f'<a href="tg://user?id={auction.current_player_id}">{auction.current_player_name}</a>'
+                parts += [
+                    "╭━━ 🔨 CRICOVERSE LIVE BID ━━━━━━",
+                    "┃ 💰 NEW BID PLACED!",
+                    "┃ ─────────────────",
+                    f"┃ 👤 Player: {p_tag}",
+                    f"┃ 🪙 Bid Amount: {auction.current_highest_bid} 🔷",
+                    "┣━─────────────────",
+                    f"┃ 👑 Bid Leader: {last_bidder_tag}",
+                    f"┃ 👥 Team: {last_team_name}",
+                    "╰━━━━━━━━",
+                ]
             return "\n".join(parts)
 
-        # Send initial countdown message
+        def quick_kb_markup():
+            amount = auction.current_highest_bid
+            next_3 = amount + 3
+            next_5 = amount + 5
+            next_10 = amount + 10
+            return InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}", style="primary"),
+                    InlineKeyboardButton(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}", style="primary"),
+                ],
+                [
+                    InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}", style="primary"),
+                ]
+            ])
+
+        # Send initial merged countdown+bid message
         try:
             cd_msg = await context.bot.send_message(
-                chat_id, countdown_text(countdown_secs), parse_mode=ParseMode.HTML
+                chat_id, countdown_text(countdown_secs), parse_mode=ParseMode.HTML,
+                reply_markup=quick_kb_markup()
             )
             auction.countdown_message_id = cd_msg.message_id
         except Exception:
@@ -22783,6 +22739,18 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                     )
                 except Exception:
                     pass  # message may have been deleted or edited externally
+
+            # 🔔 One-time reminder at exactly 10 seconds remaining
+            if not reminder_sent and remaining == 10:
+                reminder_sent = True
+                try:
+                    await context.bot.send_message(
+                        chat_id,
+                        f"⏰ <b>10 seconds left</b> to bid on <b>{auction.current_player_name}</b>! Hurry up! 🔷",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
 
         # ── Resolve Bid ──
         enter_confirm = False
@@ -22818,7 +22786,7 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 confirm_msg = (
                     f"🔨 <b>SOLD?</b> — Awaiting Auctioneer Confirmation\n\n"
                     f"👤 {player_tag}\n"
-                    f"💰 Bid: <b>{_price} coins</b> by <b>{_bidder}</b>\n"
+                    f"💰 Bid: <b>{_price} 🔷</b> by <b>{_bidder}</b>\n"
                     f"─────────────────\n"
                     f"⏱ Auctioneer has <b>10 seconds</b> to confirm.\n"
                     f"Auto-confirmed if no response.\n\n"
@@ -22852,7 +22820,7 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 msg = (
                     f"╭━━ 🔨 CRICOVERSE AUCTION ━━━━━━\n"
                     f"┃ 🔴 UNSOLD: {player_tag}\n"
-                    f"┃ 🪙 Base Price: {auction.current_base_price} Coins\n"
+                    f"┃ 🪙 Base Price: {auction.current_base_price} 🔷\n"
                     f"┃ ❌ No bids were placed.\n"
                     f"┣━─────────────────\n"
                     f"┃ 📊 Total Unsold: {len(auction.unsold_players)}\n"
@@ -22874,7 +22842,7 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 auction.current_highest_bidder = None
                 auction.bid_timer_task = None
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(7)
                 await bring_next_player(context, chat_id, auction)
 
         if enter_confirm:
@@ -22903,7 +22871,7 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                     final_msg = (
                         f"🔨 <b>SOLD!</b> ({'Auctioneer Confirmed' if action == 'confirm' else 'Auto-Confirmed'}) → {_bidder}\n\n"
                         f"👤 {player_tag}\n"
-                        f"💰 Final Price: <b>{_price} coins</b>\n"
+                        f"💰 Final Price: <b>{_price} 🔷</b>\n"
                         f"💼 Purse Remaining: <b>{_team.purse_remaining}</b>  ·  Squad: <b>{len(_team.players)}</b>\n\n"
                         f"🎯 Next player coming up..."
                     )
@@ -22918,11 +22886,11 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                         f"╭━━ 🔨 AUCTION: SOLD! ━🥎\n"
                         f"┃ 👤 Player: {player_tag}\n"
                         f"┃ 👥 Bought By: {_bidder}\n"
-                        f"┃ 🪙 Final Price: {_price} Coins\n"
+                        f"┃ 🪙 Final Price: {_price} 🔷\n"
                         f"┣━─────────────────\n"
                         f"┃ 📊 BUYER WALLET STATUS\n"
                         f"┣━─────────────────\n"
-                        f"┃ ├ 💰 Purse Remaining: {_team.purse_remaining} Coins\n"
+                        f"┃ ├ 💰 Purse Remaining: {_team.purse_remaining} 🔷\n"
                         f"┃ └ 📦 Current Squad Size: {len(_team.players)}\n"
                         f"┣━─────────────────\n"
                         f"┃ ⏳ Next player coming up...\n"
@@ -22959,7 +22927,7 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 auction.current_highest_bidder = None
                 auction.bid_timer_task = None
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(7)
                 await bring_next_player(context, chat_id, auction)
 
     except asyncio.CancelledError:
@@ -28051,7 +28019,7 @@ async def startregistration_command(update: Update, context: ContextTypes.DEFAUL
     await update.message.reply_text(
         f"╭━━ 🔗 REGISTRATION LINK ━━━━━━🏆\n"
         f"┃ 🏆 Tournament: {tournament_name}\n"
-        f"┃ 💰 Base Price: {base_price} coins\n"
+        f"┃ 💰 Base Price: {base_price} 🔷\n"
         f"┃ ⏰ Expires: {end_str}\n"
         f"┃\n"
         f"┃ 🔗 Registration Link:\n"
@@ -28295,10 +28263,10 @@ async def reg_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     conn.close()
     
     keyboard = [
-        [InlineKeyboardButton("💰 10 Coins", callback_data=f"reg_price_{group_id}_10", style="primary")],
-        [InlineKeyboardButton("💰 20 Coins", callback_data=f"reg_price_{group_id}_20", style="primary")],
-        [InlineKeyboardButton("💰 30 Coins", callback_data=f"reg_price_{group_id}_30", style="primary")],
-        [InlineKeyboardButton("💰 50 Coins", callback_data=f"reg_price_{group_id}_50", style="primary")]
+        [InlineKeyboardButton("💰 10 🔷", callback_data=f"reg_price_{group_id}_10", style="primary")],
+        [InlineKeyboardButton("💰 20 🔷", callback_data=f"reg_price_{group_id}_20", style="primary")],
+        [InlineKeyboardButton("💰 30 🔷", callback_data=f"reg_price_{group_id}_30", style="primary")],
+        [InlineKeyboardButton("💰 50 🔷", callback_data=f"reg_price_{group_id}_50", style="primary")]
     ]
     # Message is a photo — must edit caption, not text
     try:
@@ -28344,7 +28312,7 @@ async def reg_price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"─────────────────\n"
             f"🏆 <b>Tournament:</b> {group_name}\n"
             f"👤 <b>Player:</b> {full_name}\n"
-            f"💰 <b>Base Price:</b> {base_price} coins\n"
+            f"💰 <b>Base Price:</b> {base_price} 🔷\n"
             f"─────────────────\n"
             f"🍀 <i>May the best player win! Good luck!</i>"
         )
@@ -28360,7 +28328,7 @@ async def reg_price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"╭━━ 🎊 NEW PLAYER REGISTERED! ━━━🏏\n"
                 f"┃ 👤 {full_name}\n"
                 f"┃ 🔖 @{username if username != 'No username' else 'N/A'}\n"
-                f"┃ 💰 Base Price: {base_price} coins\n"
+                f"┃ 💰 Base Price: {base_price} 🔷\n"
                 f"┃\n"
                 f"┃ 🏆 Welcome to {group_name} Tournament!\n"
                 f"┃ 🍀 Good luck, champion!\n"
@@ -28380,7 +28348,7 @@ async def reg_price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 registration_msg = (
                     f"╭━━ 🎊 NEW PLAYER REGISTERED! ━━━🏏\n"
                     f"┃ 👤 {full_name}  ┊  @{username if username != 'No username' else 'N/A'}\n"
-                    f"┃ 💰 Base Price: {base_price} coins\n"
+                    f"┃ 💰 Base Price: {base_price} 🔷\n"
                     f"┃ 🏆 Welcome to {group_name} Tournament!\n"
                     f"╰━━━━━━━━"
                 )
@@ -28617,7 +28585,7 @@ def _build_reglist_pages(players, group_name):
 
     global_idx = 0
     for price in sorted_prices:
-        price_header = f"<b>💰 Base Price: {price} coins</b>\n{'─' * 20}\n"
+        price_header = f"<b>💰 Base Price: {price} 🔷</b>\n{'─' * 20}\n"
 
         # Flush if even the price header alone won't fit
         if len(current_page) + len(price_header) > PAGE_LIMIT:
@@ -28647,7 +28615,7 @@ def _build_reglist_pages(players, group_name):
             if len(current_page) + len(entry) > PAGE_LIMIT:
                 _flush_page()
                 # Re-add price header as continuation so context is clear
-                current_page += f"<b>💰 Base Price: {price} coins</b> (cont.)\n{'─' * 20}\n"
+                current_page += f"<b>💰 Base Price: {price} 🔷</b> (cont.)\n{'─' * 20}\n"
 
             current_page += entry
 
@@ -28935,7 +28903,7 @@ async def auctionset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     for base_price in sorted_prices:
         players_in_group = price_groups[base_price]
-        message += f"💰 <b>Base Price: {base_price} Coins</b>\n"
+        message += f"💰 <b>Base Price: {base_price} 🔷</b>\n"
         
         # List all user IDs in this price group
         user_ids = [str(p['user_id']) for p in players_in_group]

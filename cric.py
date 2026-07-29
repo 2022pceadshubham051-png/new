@@ -3439,93 +3439,27 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return block
     
-    now = datetime.now().strftime("%d %b %Y  %H:%M")
-    text = (
-        f"📋 <b>LIVE SCORECARD</b>  ●  {match.total_overs} Overs\n"
-        f"🏟️ <i>CricoVerse Hand Cricket</i>  ·  {now}\n"
-        f"═══════════════\n\n"
-    )
-    text += _innings_block(first_team, second_team, "1ST", "1st")
-    
-    if match.innings >= 2:
-        text += "\n"
-        if match.target > 0:
-            needed = match.target - second_team.score
-            balls_left = (match.total_overs * 6) - second_team.balls
-            rrr = round(needed / (balls_left / 6), 2) if balls_left > 0 else 0
-            text += (
-                f"🎯 <b>TARGET: {match.target}</b>  ·  "
-                f"Need <b>{needed}</b> off <b>{balls_left}b</b>  ·  RRR: <b>{rrr}</b>\n\n"
-            )
-        text += _innings_block(second_team, first_team, "2ND", "2nd")
-    
-    text += f"\n<i>🔄 Tap Refresh for latest scores</i>"
-
-    _refresh_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh Scorecard", callback_data=f"scorecard_refresh_{group_id}", style="primary")]])
-
-    # ── Check if worm chart data available (either innings) ──
+    # ── Worm chart photo, then the professional emoji rich table ──
     has_data = (
         len(getattr(match, 'team_x_over_runs', [])) > 0 or
         len(getattr(match, 'team_y_over_runs', [])) > 0 or
         getattr(match, 'current_over_runs', 0) > 0
     )
-
-    worm_sent = False
     if has_data:
         try:
             worm_bio = await asyncio.to_thread(generate_worm_graph, match)
             if worm_bio:
-                # If text fits in caption, send as one message
-                if len(text) <= 1024:
-                    await update.message.reply_photo(
-                        photo=worm_bio,
-                        caption=text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=_refresh_kb
-                    )
-                else:
-                    # Send worm chart first with short caption, then full scorecard as text
-                    short_cap = f"📋 <b>LIVE SCORECARD</b>  •  {match.total_overs} Overs\n<i>Full scorecard below ⬇️</i>"
-                    await update.message.reply_photo(
-                        photo=worm_bio,
-                        caption=short_cap,
-                        parse_mode=ParseMode.HTML
-                    )
-                    # Split text into 2 parts if too long for a single message
-                    if len(text) > 4096:
-                        await update.message.reply_text(text[:4090] + "…", parse_mode=ParseMode.HTML)
-                        await update.message.reply_text("…" + text[4090:], parse_mode=ParseMode.HTML, reply_markup=_refresh_kb)
-                    else:
-                        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_refresh_kb)
+                await update.message.reply_photo(
+                    photo=worm_bio,
+                    caption=f"📈 <b>SCORE WORM</b>  •  {match.total_overs} Overs",
+                    parse_mode=ParseMode.HTML,
+                )
                 if update.effective_chat.type != "private":
                     set_image_cooldown(group_id)
-                worm_sent = True
         except Exception as worm_sc_err:
             logger.error(f"Worm graph in scorecard cmd error: {worm_sc_err}")
 
-    # ── Fallback: send scorecard image or text if worm was not sent ──
-    if not worm_sent:
-        try:
-            if len(text) <= 1024:
-                try:
-                    await update.message.reply_photo(photo=SCORECARD_PHOTO, caption=text, parse_mode=ParseMode.HTML, reply_markup=_refresh_kb)
-                    if update.effective_chat.type != "private":
-                        set_image_cooldown(group_id)
-                    return
-                except:
-                    pass
-            # Long scorecard or image failed → send as text (possibly split)
-            if len(text) > 4096:
-                await update.message.reply_text(text[:4090] + "…", parse_mode=ParseMode.HTML)
-                await update.message.reply_text("…" + text[4090:], parse_mode=ParseMode.HTML, reply_markup=_refresh_kb)
-            else:
-                await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_refresh_kb)
-        except Exception as e:
-            clean = text.replace("<b>","").replace("</b>","").replace("<i>","").replace("</i>","").replace("<code>","").replace("</code>","")
-            try:
-                await update.message.reply_text(clean[:4096], reply_markup=_refresh_kb)
-            except:
-                pass
+    await send_new_scorecard(update.message, group_id, match)
 
 async def cleanup_inactive_matches(context: ContextTypes.DEFAULT_TYPE):
     """Auto-end matches inactive for > 10 minutes"""
@@ -15140,19 +15074,19 @@ def _nsc_html_batting_table(bat_team: "Team") -> str:
         if p.balls_faced <= 0 and not p.is_out:
             continue
         sno += 1
-        not_out = "*" if not p.is_out else ""
+        not_out = " 🟢" if not p.is_out else ""
         name = html.escape(f"{p.first_name}{not_out}")
         rows += (
-            f"<tr><td align='center'>{sno}</td><td>{name}</td>"
+            f"<tr><td align='center'>{sno}</td><td>🧢 {name}</td>"
             f"<td align='right'>{p.runs}</td><td align='right'>{p.balls_faced}</td>"
             f"<td align='right'>{p.get_strike_rate()}</td>"
-            f"<td align='right'>{p.sixes}</td><td align='right'>{p.boundaries}</td></tr>"
+            f"<td align='right'>{p.sixes} 🚀</td><td align='right'>{p.boundaries} 🔥</td></tr>"
         )
     if not rows:
-        rows = "<tr><td colspan='7' align='center'>Did not bat</td></tr>"
+        rows = "<tr><td colspan='7' align='center'>😴 Did not bat</td></tr>"
     return (
         "<table bordered striped>"
-        "<tr><th>S.No</th><th>Name</th><th>Run</th><th>Balls</th><th>S.R</th><th>6s</th><th>4s</th></tr>"
+        "<tr><th>#️⃣</th><th>🧢 Name</th><th>🏏 Run</th><th>⚪ Balls</th><th>⚡ S.R</th><th>🚀 6s</th><th>🔥 4s</th></tr>"
         f"{rows}</table>"
     )
 
@@ -15168,17 +15102,17 @@ def _nsc_html_bowling_table(bowl_team: "Team") -> str:
         extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
         name = html.escape(p.first_name)
         rows += (
-            f"<tr><td align='center'>{sno}</td><td>{name}</td>"
+            f"<tr><td align='center'>{sno}</td><td>🎯 {name}</td>"
             f"<td align='right'>{format_overs(p.balls_bowled)}</td>"
-            f"<td align='right'>{p.wickets}</td>"
+            f"<td align='right'>{p.wickets} 🎳</td>"
             f"<td align='right'>{p.get_economy()}</td>"
             f"<td align='right'>{extras}</td></tr>"
         )
     if not rows:
-        rows = "<tr><td colspan='6' align='center'>Did not bowl</td></tr>"
+        rows = "<tr><td colspan='6' align='center'>😴 Did not bowl</td></tr>"
     return (
         "<table bordered striped>"
-        "<tr><th>S.No</th><th>Name</th><th>Ovr</th><th>Wkt</th><th>Eco</th><th>Extra</th></tr>"
+        "<tr><th>#️⃣</th><th>🎯 Name</th><th>⏱️ Ovr</th><th>🎳 Wkt</th><th>💰 Eco</th><th>➕ Extra</th></tr>"
         f"{rows}</table>"
     )
 
@@ -15191,16 +15125,16 @@ def build_new_scorecard_html(match: "Match", group_id: int) -> str:
 
     def _innings(bat_team, bowl_team, letter):
         label = html.escape(_nsc_team_label(bat_team, letter))
-        block = f"<h3>{label} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</h3>"
-        block += "<p>Batting</p>"
+        block = f"<h3>🏏 {label} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</h3>"
+        block += "<p>🏏 <b>Batting</b></p>"
         block += _nsc_html_batting_table(bat_team)
-        block += "<p>Bowling</p>"
+        block += "<p>🎯 <b>Bowling</b></p>"
         block += _nsc_html_bowling_table(bowl_team)
         return block
 
     used = NEW_SCORECARD_USE_COUNT.get(group_id, 0)
     out = _innings(first, second, "X") + "<hr/>" + _innings(second, first, "Y")
-    out += f"<footer>📟 command count - {used} out of {MAX_NEW_SCORECARD_USES}</footer>"
+    out += f"<footer>📟 command count - {used} out of {MAX_NEW_SCORECARD_USES} 🎮</footer>"
     return out
 
 

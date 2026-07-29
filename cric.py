@@ -12205,7 +12205,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         )
     
     # Start timer
-    auction.bid_end_time = time.time() + 25
+    auction.bid_end_time = time.time() + 30
     auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
 # /soloplayers
@@ -20591,7 +20591,7 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     if not auction.bid_timer_task and auction.phase == AuctionPhase.AUCTION_LIVE:
-        auction.bid_end_time = time.time() + 25
+        auction.bid_end_time = time.time() + 30
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
         
         await update.message.reply_text(
@@ -20634,7 +20634,7 @@ async def cancelbid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Reset bid timer
     if auction.bid_timer_task:
         auction.bid_timer_task.cancel()
-    auction.bid_end_time = time.time() + 25
+    auction.bid_end_time = time.time() + 30
     auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
     await update.message.reply_text(
         f"🔄 <b>LAST BID CANCELLED!</b>\n"
@@ -22278,7 +22278,7 @@ async def resumeauction_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     if not auction.bid_timer_task and auction.phase == AuctionPhase.AUCTION_LIVE:
-        auction.bid_end_time = time.time() + 25
+        auction.bid_end_time = time.time() + 30
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat.id, auction))
         await update.message.reply_text(
             "▶️ <b>AUCTION RESUMED!</b>\n"
@@ -22533,7 +22533,7 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             auction.bid_timer_task.cancel()
             auction.bid_timer_task = None
         
-        auction.bid_end_time = time.time() + 25
+        auction.bid_end_time = time.time() + 30
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
         try:
@@ -22629,7 +22629,7 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if auction.bid_timer_task:
             auction.bid_timer_task.cancel()
-        auction.bid_end_time = time.time() + 25
+        auction.bid_end_time = time.time() + 30
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
         await query.answer(f"✅ Bid placed: {amount} 🔷!", show_alert=False)
@@ -22685,10 +22685,10 @@ async def _update_auction_history_message(context, chat_id: int, auction):
 
 
 async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: Auction):
-    """⏳ Bid Timer with live countdown + merged bid info (single message) + history log"""
+    """⏳ Bid Timer with live countdown + merged bid info (single photo message) + history log"""
     try:
         # ── Live countdown: edit a single merged message every 5 seconds ──
-        countdown_secs = 25
+        countdown_secs = 30
         reminder_sent = False
 
         def countdown_text(s):
@@ -22741,17 +22741,25 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 ]
             ])
 
-        # Send initial merged countdown+bid message
+        # Send initial merged countdown+bid message WITH a photo/GIF attached
+        bid_media = GIFS.get("new_bid")
         try:
-            cd_msg = await context.bot.send_message(
-                chat_id, countdown_text(countdown_secs), parse_mode=ParseMode.HTML,
+            cd_msg = await context.bot.send_animation(
+                chat_id, animation=bid_media, caption=countdown_text(countdown_secs), parse_mode=ParseMode.HTML,
                 reply_markup=quick_kb_markup()
             )
             auction.countdown_message_id = cd_msg.message_id
         except Exception:
-            auction.countdown_message_id = None
+            try:
+                cd_msg = await context.bot.send_photo(
+                    chat_id, photo=MEDIA_ASSETS.get("new_bid"), caption=countdown_text(countdown_secs),
+                    parse_mode=ParseMode.HTML, reply_markup=quick_kb_markup()
+                )
+                auction.countdown_message_id = cd_msg.message_id
+            except Exception:
+                auction.countdown_message_id = None
 
-        # Tick every 5 seconds, update countdown
+        # Tick every 5 seconds, update countdown — buttons re-attached on EVERY edit so they never disappear
         elapsed = 0
         while elapsed < countdown_secs:
             await asyncio.sleep(5)
@@ -22761,11 +22769,12 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 break
             if auction.countdown_message_id:
                 try:
-                    await context.bot.edit_message_text(
+                    await context.bot.edit_message_caption(
                         chat_id=chat_id,
                         message_id=auction.countdown_message_id,
-                        text=countdown_text(max(remaining, 0)),
-                        parse_mode=ParseMode.HTML
+                        caption=countdown_text(max(remaining, 0)),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=quick_kb_markup()
                     )
                 except Exception:
                     pass  # message may have been deleted or edited externally

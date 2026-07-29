@@ -12085,6 +12085,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
     auction.last_bid_teams = []  # Reset bid history for new player
     auction.last_bidder_tag = None
     auction.last_team_name = None
+    auction.live_bid_log = []
     auction.bids_frozen = False
     auction.pending_sold_confirmation = False
     
@@ -12174,13 +12175,17 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         f"╰━━━━━━━━\n"
     )
     
-    # Quick bid buttons (+3, +5, +10 above base price)
+    # Quick bid buttons (+3, +5 top row, +10 bottom row)
     base = player["base_price"]
-    quick_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"⚡ +3  ({base+3})", callback_data=f"quickbid_{chat_id}_{base+3}", style="primary"),
-        InlineKeyboardButton(f"⚡ +5  ({base+5})", callback_data=f"quickbid_{chat_id}_{base+5}", style="primary"),
-        InlineKeyboardButton(f"⚡ +10 ({base+10})", callback_data=f"quickbid_{chat_id}_{base+10}", style="primary"),
-    ]])
+    quick_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(f"⚡ +3  ({base+3})", callback_data=f"quickbid_{chat_id}_{base+3}", style="primary"),
+            InlineKeyboardButton(f"⚡ +5  ({base+5})", callback_data=f"quickbid_{chat_id}_{base+5}", style="primary"),
+        ],
+        [
+            InlineKeyboardButton(f"⚡ +10 ({base+10})", callback_data=f"quickbid_{chat_id}_{base+10}", style="primary"),
+        ]
+    ])
 
     try:
         await context.bot.send_animation(
@@ -22516,6 +22521,12 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         auction.last_bidder_tag = get_user_tag(update.effective_user)
         auction.last_team_name = team_name
 
+        # Log this bid for the live log
+        if not hasattr(auction, 'live_bid_log'):
+            auction.live_bid_log = []
+        auction.live_bid_log.append({"team": team_name, "bidder": auction.last_bidder_tag, "amount": amount})
+        await _update_auction_history_message(context, chat_id, auction)
+
         # Reset Timer: Cancel old, set new end time, start new task
         # (bid_timer sends a single merged countdown+bid message — no separate confirmation message)
         if auction.bid_timer_task:
@@ -22610,6 +22621,12 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         auction.last_bidder_tag = get_user_tag(user)
         auction.last_team_name = team_name
 
+        # Log this bid for the live log
+        if not hasattr(auction, 'live_bid_log'):
+            auction.live_bid_log = []
+        auction.live_bid_log.append({"team": team_name, "bidder": auction.last_bidder_tag, "amount": amount})
+        await _update_auction_history_message(context, chat_id, auction)
+
         if auction.bid_timer_task:
             auction.bid_timer_task.cancel()
         auction.bid_end_time = time.time() + 25
@@ -22619,8 +22636,9 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _update_auction_history_message(context, chat_id: int, auction):
-    """Edit or send the running auction history log message."""
-    if not auction.auction_history:
+    """Edit or send the running auction history log message (sold/unsold history + live bids for current player)."""
+    live_log = getattr(auction, "live_bid_log", []) or []
+    if not auction.auction_history and not live_log:
         return
     lines = ["📜 <b>AUCTION HISTORY LOG</b>", "─────────────────"]
     for idx, entry in enumerate(auction.auction_history, 1):
@@ -22638,6 +22656,14 @@ async def _update_auction_history_message(context, chat_id: int, auction):
     lines.append(f"✅ Sold: <b>{sum(1 for e in auction.auction_history if e['sold'])}</b>  "
                  f"❌ Unsold: <b>{sum(1 for e in auction.auction_history if not e['sold'])}</b>  "
                  f"📦 Remaining: <b>{len(auction.player_pool)}</b>")
+
+    # 🔴 Live bidding section — who's bidding what, right now, for the current player
+    if live_log and auction.current_player_id:
+        lines.append("─────────────────")
+        lines.append(f"🔴 <b>LIVE — {auction.current_player_name}</b>")
+        for i, b in enumerate(live_log, 1):
+            lines.append(f"{i}. {b['bidder']} ({b['team']}) ➔ 💰{b['amount']}")
+
     text = "\n".join(lines)
     try:
         if auction.history_message_id:
@@ -22667,32 +22693,36 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
 
         def countdown_text(s):
             color = "🔴" if s <= 10 else ("🟡" if s <= 20 else "🟢")
-            leader = auction.current_highest_bidder or "—"
-            parts = [
-                "⏱ <b>BIDDING TIMER</b>",
-                "━" * 23,
-                f"👤 <b>{auction.current_player_name}</b>",
-                f"💰 Current Bid: <b>{auction.current_highest_bid} 🔷</b>",
-                f"🏆 Leader: <b>{leader}</b>",
-                "━" * 23,
-                f"{color} <b>{s}s remaining</b>",
-                "⌨️ <code>/bid [amount]</code> to outbid!",
-            ]
-            # Merge in the latest bid block (replaces the old separate "NEW BID PLACED" message)
+            p_tag = f'<a href="tg://user?id={auction.current_player_id}">{auction.current_player_name}</a>'
             last_bidder_tag = getattr(auction, "last_bidder_tag", None)
             last_team_name = getattr(auction, "last_team_name", None)
+
             if last_bidder_tag and last_team_name:
-                p_tag = f'<a href="tg://user?id={auction.current_player_id}">{auction.current_player_name}</a>'
-                parts += [
-                    "╭━━ 🔨 CRICOVERSE LIVE BID ━━━━━━",
-                    "┃ 💰 NEW BID PLACED!",
-                    "┃ ─────────────────",
-                    f"┃ 👤 Player: {p_tag}",
-                    f"┃ 🪙 Bid Amount: {auction.current_highest_bid} 🔷",
-                    "┣━─────────────────",
-                    f"┃ 👑 Bid Leader: {last_bidder_tag}",
-                    f"┃ 👥 Team: {last_team_name}",
-                    "╰━━━━━━━━",
+                _team_obj = auction.teams.get(last_team_name)
+                purse_left = _team_obj.purse_remaining if _team_obj else "?"
+                parts = [
+                    "💰 <b>NEW BID PLACED!</b>",
+                    "┌───────────────────",
+                    f"├ 🔨Player : {p_tag}",
+                    f"├ 🪙 Bid Amount : {auction.current_highest_bid} 🔷",
+                    "└───────────────────",
+                    f"👥 TEAM : Team ➔ {last_team_name}",
+                    "┌───────────────────",
+                    f"├ 💰 Purse Remaining ➔ {purse_left} 🔷",
+                    f"├ 👑 Leader ➔ {last_bidder_tag}",
+                    "└───────────────────",
+                    f"{color} {s}s Remaining (/bid amount)",
+                ]
+            else:
+                # No bid yet on this player — waiting for the first bid
+                parts = [
+                    "💰 <b>WAITING FOR BIDS!</b>",
+                    "┌───────────────────",
+                    f"├ 🔨Player : {p_tag}",
+                    f"├ 🪙 Base Price : {auction.current_base_price} 🔷",
+                    "└───────────────────",
+                    "👑 Leader ➔ None",
+                    f"{color} {s}s Remaining (/bid amount)",
                 ]
             return "\n".join(parts)
 

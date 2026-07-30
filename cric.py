@@ -1237,6 +1237,8 @@ def init_db():
         ("total_dots", "INTEGER DEFAULT 0"),
         ("team_total_balls_faced", "INTEGER DEFAULT 0"),
         ("team_total_balls_bowled", "INTEGER DEFAULT 0"),
+        ("team_total_catches", "INTEGER DEFAULT 0"),
+        ("team_total_stumpings", "INTEGER DEFAULT 0"),
     ]:
         try:
             c.execute(f"ALTER TABLE user_stats ADD COLUMN {col_name} {col_def}")
@@ -2209,6 +2211,9 @@ class Player:
         self.has_hat_trick = False     # Flag to celebrate hat-trick only once
         self.is_out = False
         self.dismissal_type = None
+        self.dismissal_fielder_name = None  # 🧤 who caught/stumped this batsman (if any)
+        self.catches = 0     # 🧤 catches taken this match
+        self.stumpings = 0   # 🧤 stumpings this match (used to infer Wicket-Keeper role)
         self.dot_balls_faced = 0
         self.dot_balls_bowled = 0
         self.boundaries = 0
@@ -2860,29 +2865,7 @@ def get_commentary(event_type: str, group_id: int = None, user_id: int = None) -
         style = user_style
     
     # Get commentary based on style
-    if style == "hinglish":
-        comments = HINGLISH_COMMENTARY.get(event_type, [])
-    else:  # english default
-        comments = COMMENTARY.get(event_type, [])
-    
-    if comments:
-        return random.choice(comments)
-    
-    # Fallback
-    fallback = {
-        "dot": "Dot ball.",
-        "single": "Single taken.",
-        "double": "Two runs.",
-        "triple": "Three runs.",
-        "boundary": "Four runs!",
-        "five": "Five runs!",
-        "six": "Six runs!",
-        "wicket": "OUT!",
-        "noball": "No ball!",
-        "wide": "Wide ball!",
-        "freehit": "Free hit!"
-    }
-    return fallback.get(event_type, "Interesting delivery!")
+    return _pick_static_commentary(event_type, style)
 
 # ═══════════════════════════════════════════════════════════════
 # AI COMMENTARY SYSTEM - Powered by Claude API
@@ -2922,9 +2905,37 @@ _AI_EVENT_DESCRIPTIONS = {
     "freehit": "it's a free hit! The batsman cannot be dismissed",
 }
 
+def _pick_static_commentary(event_type: str, style: str) -> str:
+    """Shared lookup: pick a random commentary line for the given resolved style."""
+    if style == "hinglish":
+        comments = HINGLISH_COMMENTARY.get(event_type, [])
+    else:
+        comments = COMMENTARY.get(event_type, [])
+
+    if comments:
+        return random.choice(comments)
+
+    fallback = {
+        "dot": "Dot ball.",
+        "single": "Single taken.",
+        "double": "Two runs.",
+        "triple": "Three runs.",
+        "boundary": "Four runs!",
+        "five": "Five runs!",
+        "six": "Six runs!",
+        "wicket": "OUT!",
+        "noball": "No ball!",
+        "wide": "Wide ball!",
+        "freehit": "Free hit!"
+    }
+    return fallback.get(event_type, "Interesting delivery!")
+
+
 async def get_ai_commentary_async(event_type: str, style: str = "english") -> str:
-    """AI commentary disabled — always returns static commentary now."""
-    return get_commentary(event_type, group_id=None, user_id=None)
+    """Static commentary lookup — honors the `style` the caller resolved
+    (group/user commentary_style setting), instead of silently defaulting
+    back to English every time."""
+    return _pick_static_commentary(event_type, style)
 
 
 async def _fetch_ai_commentary_line(event_type: str, style: str) -> Optional[str]:
@@ -3026,9 +3037,10 @@ def save_match_stats(match, winner_team, loser_team):
                      team_total_wickets, team_total_balls_bowled,
                      team_total_sixes, team_total_fours,
                      team_highest_score, team_total_hundreds,
-                     team_total_fifties, team_total_ducks, team_total_dots)
+                     team_total_fifties, team_total_ducks, team_total_dots,
+                     team_total_catches, team_total_stumpings)
                     VALUES (?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(user_id) DO UPDATE SET
                         username = excluded.username,
                         first_name = excluded.first_name,
@@ -3044,7 +3056,9 @@ def save_match_stats(match, winner_team, loser_team):
                         team_total_hundreds = team_total_hundreds + ?,
                         team_total_fifties = team_total_fifties + ?,
                         team_total_ducks = team_total_ducks + ?,
-                        team_total_dots = team_total_dots + ?
+                        team_total_dots = team_total_dots + ?,
+                        team_total_catches = team_total_catches + ?,
+                        team_total_stumpings = team_total_stumpings + ?
                 """, (
                     uid, player.username or "", player.first_name,
                     1, is_win,
@@ -3056,6 +3070,7 @@ def save_match_stats(match, winner_team, loser_team):
                     1 if 50 <= player.runs < 100 else 0,
                     1 if player.runs == 0 and player.balls_faced > 0 else 0,
                     getattr(player, 'dots', 0),
+                    getattr(player, 'catches', 0), getattr(player, 'stumpings', 0),
                     # ON CONFLICT UPDATE values
                     is_win, player.runs, player.balls_faced,
                     player.wickets, player.balls_bowled,
@@ -3064,7 +3079,8 @@ def save_match_stats(match, winner_team, loser_team):
                     1 if player.runs >= 100 else 0,
                     1 if 50 <= player.runs < 100 else 0,
                     1 if player.runs == 0 and player.balls_faced > 0 else 0,
-                    getattr(player, 'dots', 0)
+                    getattr(player, 'dots', 0),
+                    getattr(player, 'catches', 0), getattr(player, 'stumpings', 0)
                 ))
             conn_s.commit()
             conn_s.close()
@@ -3311,6 +3327,112 @@ def end_over_logic(match):
 # REPLACEMENT 3: Replace scorecard_command function
 # ============================================================
 
+def _solo_pad(s, w):
+    s = html.escape(str(s))
+    return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+
+def _solo_rpad(s, w):
+    s = str(s)
+    return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
+
+def _build_solo_scorecard(match):
+    """Build the standalone Solo Scorecard message: Batting table + Bowling
+    table, with Refresh/Back buttons. Returns (text, InlineKeyboardMarkup)."""
+    players = match.solo_players
+
+    bat_header = f"{_solo_pad('Batter', 14)}{_solo_rpad('R', 4)}{_solo_rpad('B', 4)}{_solo_rpad('4', 3)}{_solo_rpad('6', 3)}{_solo_rpad('SR', 7)}\n"
+    bat_table = bat_header + ("─" * 35) + "\n"
+    for i, p in enumerate(players):
+        status = ""
+        if p.is_out:
+            status = "*"
+        elif i == match.current_solo_bat_idx:
+            status = " (batting)"
+        name = f"{p.first_name}{status}"
+        bat_table += f"{_solo_pad(name, 14)}{_solo_rpad(p.runs, 4)}{_solo_rpad(p.balls_faced, 4)}{_solo_rpad(p.boundaries, 3)}{_solo_rpad(p.sixes, 3)}{_solo_rpad(p.get_strike_rate(), 7)}\n"
+    if not players:
+        bat_table += "  No batters yet\n"
+
+    bowl_header = f"{_solo_pad('Bowler', 14)}{_solo_rpad('O', 5)}{_solo_rpad('R', 4)}{_solo_rpad('W', 3)}{_solo_rpad('Eco', 6)}\n"
+    bowl_table = bowl_header + ("─" * 32) + "\n"
+    any_bowled = False
+    for i, p in enumerate(players):
+        if p.balls_bowled <= 0:
+            continue
+        any_bowled = True
+        bowl_table += f"{_solo_pad(p.first_name, 14)}{_solo_rpad(format_overs(p.balls_bowled), 5)}{_solo_rpad(p.runs_conceded, 4)}{_solo_rpad(p.wickets, 3)}{_solo_rpad(p.get_economy(), 6)}\n"
+    if not any_bowled:
+        bowl_table += "  No bowling yet\n"
+
+    text = "🏏 <b>SOLO SCORECARD</b>\n─────────────────\n"
+    text += "Batting\n"
+    text += f"<pre>{bat_table}</pre>"
+    text += "Bowling\n"
+    text += f"<pre>{bowl_table}</pre>"
+
+    group_id = getattr(match, "group_id", None) or getattr(match, "chat_id", None)
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Refresh", callback_data=f"soloscore_refresh_{group_id}", style="primary"),
+        InlineKeyboardButton("◀ Back", callback_data=f"soloscore_back_{group_id}", style="primary"),
+    ]])
+    return text, kb
+
+
+async def soloscore_refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Refresh button on the standalone Solo Scorecard message."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        group_id = int(query.data[len("soloscore_refresh_"):])
+    except ValueError:
+        return
+    match = active_matches.get(group_id)
+    if not match:
+        await query.answer("Match ended!", show_alert=True)
+        return
+    text, kb = _build_solo_scorecard(match)
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception as e:
+        logger.error(f"soloscore_refresh_callback edit error: {e}")
+
+
+async def soloscore_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Back button on the standalone Solo Scorecard message → show the solo leaderboard."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        group_id = int(query.data[len("soloscore_back_"):])
+    except ValueError:
+        return
+    match = active_matches.get(group_id)
+    if not match:
+        await query.answer("Match ended!", show_alert=True)
+        return
+
+    sorted_players = sorted(match.solo_players, key=lambda x: x.runs, reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+    msg = "🏆 <b>SOLO BATTLE LEADERBOARD</b>\n─────────────────\n\n"
+    for i, p in enumerate(sorted_players, 1):
+        rank = medals[i-1] if i <= 3 else f"<b>{i}.</b>"
+        status = ""
+        if p.is_out: status = " ❌"
+        elif (i-1) == match.current_solo_bat_idx: status = " 🏏"
+        elif (i-1) == match.current_solo_bowl_idx: status = " ⚾"
+        sr = round((p.runs / max(p.balls_faced, 1)) * 100, 1)
+        msg += f"{rank} <b>{html.escape(p.first_name)}</b>{status}\n"
+        msg += f"   📊 <b>{p.runs}</b> runs ({p.balls_faced} balls)  SR: {sr}\n\n"
+    msg += "─────────────────"
+
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Table", callback_data=f"soloscore_refresh_{group_id}", style="primary")]])
+    try:
+        await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception as e:
+        logger.error(f"soloscore_back_callback edit error: {e}")
+
+
 async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏏 Enhanced scorecard → auto-detects Team/Solo mode"""
     group_id = update.effective_chat.id
@@ -3320,23 +3442,10 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🏏 No active match! Use /game to begin")
         return
 
-    # ── SOLO MODE: show solo leaderboard instead ──
+    # ── SOLO MODE: standalone Batting/Bowling table scorecard ──
     if getattr(match, 'game_mode', None) in ["SOLO", "MAGICBALL"] or match.phase in [GamePhase.SOLO_JOINING, GamePhase.SOLO_MATCH]:
-        sorted_players = sorted(match.solo_players, key=lambda x: x.runs, reverse=True)
-        medals = ["🥇", "🥈", "🥉"]
-        msg = "🏆 <b>SOLO BATTLE LEADERBOARD</b>\n"
-        msg += "─────────────────\n\n"
-        for i, p in enumerate(sorted_players, 1):
-            rank = medals[i-1] if i <= 3 else f"<b>{i}.</b>"
-            status = ""
-            if p.is_out: status = " ❌"
-            elif (i-1) == match.current_solo_bat_idx: status = " 🏏"
-            elif (i-1) == match.current_solo_bowl_idx: status = " ⚾"
-            sr = round((p.runs / max(p.balls_faced, 1)) * 100, 1)
-            msg += f"{rank} <b>{p.first_name}</b>{status}\n"
-            msg += f"   📊 <b>{p.runs}</b> runs ({p.balls_faced} balls)  SR: {sr}\n\n"
-        msg += "─────────────────"
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        text, kb = _build_solo_scorecard(match)
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
     # ── Image cooldown check ──
@@ -3458,8 +3567,10 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     set_image_cooldown(group_id)
         except Exception as worm_sc_err:
             logger.error(f"Worm graph in scorecard cmd error: {worm_sc_err}")
-
-    await send_new_scorecard(update.message, group_id, match)
+    # NOTE: send_new_scorecard was being called twice — once right after the
+    # cooldown/use-count check above, and again here — which is why /scorecard
+    # sent the card two times. The earlier call already sends it, so this
+    # duplicate call has been removed.
 
 async def cleanup_inactive_matches(context: ContextTypes.DEFAULT_TYPE):
     """Auto-end matches inactive for > 10 minutes"""
@@ -5027,7 +5138,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         # Parse page offset
         parts = query.data.split("_")
         fix_offset = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
-        FIX_PAGE = 8
+        FIX_PAGE = 15
 
         fixtures = tournament_fixtures.get(group_id, [])
         if not fixtures:
@@ -5040,38 +5151,49 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         total_completed = sum(1 for f in fixtures if f.get("result"))
         total_remaining = total_fixes - total_completed
 
+        def _fx_pad(s, w):
+            s = html.escape(str(s))
+            return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+        def _round_label(fix, idx):
+            remaining_before = sum(1 for f in fixtures[fixtures.index(fix):] if not f.get("result"))
+            res = fix.get("result")
+            if total_remaining == 1 and not res:
+                return "FINAL"
+            elif total_remaining == 2 and not res and remaining_before <= 2:
+                return "SEMI FINAL"
+            elif total_remaining <= 4 and not res and remaining_before <= 4:
+                return "QUARTER FINAL"
+            return f"Match {idx}"
+
+        # Split into Upcoming Matches and Knockout Schedule (Match | Winner | Status)
+        upcoming = [(i, f) for i, f in enumerate(page_fixes, fix_offset + 1) if not f.get("result")]
+        knockout = [(i, f) for i, f in enumerate(page_fixes, fix_offset + 1)]
+
         text = f"📋 <b>TOURNAMENT FIXTURES</b>\n"
         text += f"─────────────────\n"
-        text += f"📊 {total_completed}/{total_fixes} completed  •  {total_remaining} remaining\n"
-        text += f"─────────────────\n\n"
+        text += f"{total_completed}/{total_fixes} completed  •  {total_remaining} remaining\n\n"
 
-        for i, fix in enumerate(page_fixes, fix_offset + 1):
-            t1 = fix.get("team1", "?")
-            t2 = fix.get("team2", "?")
+        text += "<b>Upcoming Matches</b>\n"
+        if upcoming:
+            up_header = f"{_fx_pad('Match', 24)}{_fx_pad('Round', 12)}\n"
+            up_table = up_header + ("─" * 36) + "\n"
+            for i, fix in upcoming:
+                t1, t2 = fix.get("team1", "?"), fix.get("team2", "?")
+                up_table += f"{_fx_pad(f'{t1} vs {t2}', 24)}{_fx_pad(_round_label(fix, i), 12)}\n"
+            text += f"<pre>{up_table}</pre>"
+        else:
+            text += "<i>No upcoming matches on this page.</i>\n"
+
+        text += "\n<b>Knockout Schedule</b>\n"
+        ko_header = f"{_fx_pad('Match', 24)}{_fx_pad('Winner', 14)}{_fx_pad('Status', 10)}\n"
+        ko_table = ko_header + ("─" * 48) + "\n"
+        for i, fix in knockout:
+            t1, t2 = fix.get("team1", "?"), fix.get("team2", "?")
             res = fix.get("result")
-
-            # Determine round label
-            remaining_before = sum(1 for f in fixtures[fixtures.index(fix):] if not f.get("result"))
-            remaining_total = total_remaining
-            if remaining_total == 1 and not res:
-                round_label = "🏆 FINAL"
-            elif remaining_total == 2 and not res and remaining_before <= 2:
-                round_label = "🥈 SEMI FINAL"
-            elif remaining_total <= 4 and not res and remaining_before <= 4:
-                round_label = "⚡ QUARTER FINAL"
-            else:
-                round_label = f"Match {i}"
-
-            if res:
-                text += f"✅ <b>{round_label}</b>\n"
-                text += f"   🏏 <b>{t1}</b> vs <b>{t2}</b>\n"
-                text += f"   🏆 Winner: <b>{res}</b>\n\n"
-            else:
-                text += f"⏳ <b>{round_label}</b>\n"
-                text += f"   🆚 <b>{t1}</b> vs <b>{t2}</b>\n"
-                text += f"   📅 Upcoming\n\n"
-
-        text = text.strip()
+            status = "Done" if res else "Pending"
+            ko_table += f"{_fx_pad(f'{t1} vs {t2}', 24)}{_fx_pad(res or '-', 14)}{_fx_pad(status, 10)}\n"
+        text += f"<pre>{ko_table}</pre>"
 
         # Navigation buttons
         nav_row = []
@@ -9168,6 +9290,62 @@ async def retirehurt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 # ✅ FIX 3: Enhanced execute_ball with logging
+def decide_dismissal_and_fielder(striker, bowler, bowl_team):
+    """Randomly decide HOW a batsman got out (Bowled/Caught/LBW/Stumped) and,
+    for Caught/Stumped, pick a random fielder from the bowling side (never the
+    bowler themself) to credit with the catch/stumping. Updates the fielder's
+    live match stats (catches/stumpings) and stores the result on the striker
+    for later use in commentary and the scorecard."""
+    roll = random.random()
+    fielder = None
+    candidates = [p for p in bowl_team.players if p.user_id != bowler.user_id]
+
+    if roll < 0.45:
+        dtype = "Bowled"
+    elif roll < 0.85:
+        dtype = "Caught"
+        fielder = random.choice(candidates) if candidates else None
+        if fielder:
+            fielder.catches += 1
+    elif roll < 0.93:
+        dtype = "LBW"
+    else:
+        dtype = "Stumped"
+        fielder = random.choice(candidates) if candidates else None
+        if fielder:
+            fielder.stumpings += 1
+
+    striker.dismissal_type = dtype
+    striker.dismissal_fielder_name = fielder.first_name if fielder else None
+    return dtype, fielder
+
+
+def build_dismissal_line(dismissal_type: str, bowler_name: str, fielder_name: Optional[str], style: str) -> str:
+    """Build a commentary line naming the bowler (and fielder, for
+    Caught/Stumped) in either English or Hinglish."""
+    bowler_name = html.escape(bowler_name or "the bowler")
+    fielder_name = html.escape(fielder_name) if fielder_name else None
+
+    if style == "hinglish":
+        if dismissal_type == "Caught" and fielder_name:
+            return f"🧤 {bowler_name} ki gendbaazi pe {fielder_name} ne zabardast catch lapak liya!"
+        elif dismissal_type == "Stumped" and fielder_name:
+            return f"🧤 {bowler_name} ne fasaya, aur {fielder_name} ne stumps pe lightning stumping kar di!"
+        elif dismissal_type == "LBW":
+            return f"☝️ {bowler_name} ki gendh seedha pado pe — LBW ho gaye!"
+        else:
+            return f"🎯 {bowler_name} ne seedha stumps udaa diye — clean bowled!"
+    else:
+        if dismissal_type == "Caught" and fielder_name:
+            return f"Caught! {fielder_name} takes a fine catch off {bowler_name}'s bowling!"
+        elif dismissal_type == "Stumped" and fielder_name:
+            return f"Stumped! {fielder_name} whips the bails off in a flash, off {bowler_name}!"
+        elif dismissal_type == "LBW":
+            return f"LBW! {bowler_name} strikes right in front of the stumps!"
+        else:
+            return f"Bowled! {bowler_name} shatters the stumps!"
+
+
 async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
     Premium TV Broadcast Style - WITH CORRECT CHASE INFO
@@ -10460,12 +10638,18 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         else:
             # 🎯 REGULAR WICKET
             striker_tag = get_user_tag(striker)
-            commentary = await get_ai_commentary_async("wicket", gc_settings.get(group_id, {}).get("commentary_style", registered_groups.get(group_id, {}).get("commentary_style", "english")))
-            
+            _wkt_style = gc_settings.get(group_id, {}).get("commentary_style", registered_groups.get(group_id, {}).get("commentary_style", "english"))
+            commentary = await get_ai_commentary_async("wicket", _wkt_style)
+
+            # 🧤 Decide HOW they got out, and who took the catch/stumping (if any)
+            dismissal_type, fielder = decide_dismissal_and_fielder(striker, bowler, bowl_team)
+            dismissal_line = build_dismissal_line(dismissal_type, bowler.first_name, striker.dismissal_fielder_name, _wkt_style)
+
             wkt_lines = [
                 f"⚾ <b>{html.escape(bowler.first_name)}</b> takes the wicket!",
-                f"🏏 {striker_tag} → <b>OUT!</b>  {striker.runs} ({striker.balls_faced})",
+                f"🏏 {striker_tag} → <b>OUT ({dismissal_type})!</b>  {striker.runs} ({striker.balls_faced})",
                 f"📊 <b>{bat_team.name}:</b> {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov)",
+                f"💬 <i>{dismissal_line}</i>",
                 f"💬 <i>{commentary}</i>",
             ]
             wicket_msg = themed("❌ WICKET", wkt_lines, "🔴")
@@ -10656,7 +10840,7 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         _bnd_react = None
         # Send message
         try:
-            if gif_url and runs > 0:
+            if gif_url:
                 await context.bot.send_animation(group_id, animation=gif_url, caption=msg, parse_mode=ParseMode.HTML, reply_markup=_bnd_react)
             else:
                 await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML, reply_markup=_bnd_react)
@@ -12172,26 +12356,32 @@ async def soloplayers_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat = update.effective_chat
     if chat.id not in active_matches: return
     match = active_matches[chat.id]
-    
+
     if match.game_mode not in ["SOLO", "MAGICBALL"]:
         await update.message.reply_text("⚠️ This is not a Solo match!")
         return
-        
-    msg = "📜 <b>SOLO BATTLE ROSTER</b>\n"
-    msg += "─────────────────\n"
-    
+
+    def _sp_pad(s, w):
+        s = html.escape(str(s))
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+    header = f"{_sp_pad('S.No', 5)}{_sp_pad('Player', 16)}{_sp_pad('Status', 14)}\n"
+    table = header + ("─" * 35) + "\n"
     for i, p in enumerate(match.solo_players, 1):
-        # Status Logic
-        status = "⏳ <i>Waiting</i>"
-        if p.is_out: status = "❌ <b>OUT</b>"
+        status = "Waiting"
+        if p.is_out:
+            status = "OUT"
         elif match.phase == GamePhase.SOLO_MATCH:
-            if i-1 == match.current_solo_bat_idx: status = "🏏 <b>BATTING</b>"
-            elif i-1 == match.current_solo_bowl_idx: status = "⚾ <b>BOWLING</b>"
-            elif p.is_bowling_banned: status = "🚫 <b>BANNED (Bowl)</b>"
-            
-        msg += f"<b>{i}. {p.first_name}</b>\n   └ {status} • {p.runs} Runs\n"
-        
-    msg += "─────────────────"
+            if i - 1 == match.current_solo_bat_idx:
+                status = "Batting"
+            elif i - 1 == match.current_solo_bowl_idx:
+                status = "Bowling"
+            elif p.is_bowling_banned:
+                status = "Banned (Bowl)"
+        table += f"{_sp_pad(i, 5)}{_sp_pad(p.first_name, 16)}{_sp_pad(status, 14)}\n"
+
+    msg = "📜 <b>SOLO BATTLE ROSTER</b>\n─────────────────\n"
+    msg += f"<pre>{table}</pre>"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 # /soloscore
@@ -15040,9 +15230,18 @@ def build_new_scorecard(match: "Match", group_id: int):
     first = match.batting_first if getattr(match, "batting_first", None) else match.team_x
     second = match.get_other_team(first) if hasattr(match, "get_other_team") else match.team_y
 
-    def _innings(bat_team, bowl_team, letter):
-        block = f"<b>{_nsc_team_label(bat_team, letter)} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</b>\n"
-        block += "Batting\n"
+    def _innings(bat_team, bowl_team, letter, is_second_innings=False):
+        crr = round(bat_team.score / (bat_team.balls / 6), 2) if getattr(bat_team, "balls", 0) > 0 else 0.0
+        block = f"🏏 <b>{_nsc_team_label(bat_team, letter)} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</b>\n"
+        block += f"CRR: {crr}"
+        target = getattr(match, "target", 0)
+        total_overs = getattr(match, "total_overs", 0)
+        if is_second_innings and target:
+            balls_left = max((total_overs * 6) - bat_team.balls, 0)
+            runs_needed = target - bat_team.score
+            rr = round(runs_needed / (balls_left / 6), 2) if balls_left > 0 and runs_needed > 0 else 0.0
+            block += f"  |  RR: {rr}"
+        block += "\nBatting\n"
         block += f"<pre>{_nsc_batting_table(bat_team)}</pre>"
         block += "Bowling\n"
         block += f"<pre>{_nsc_bowling_table(bowl_team)}</pre>"
@@ -15050,10 +15249,10 @@ def build_new_scorecard(match: "Match", group_id: int):
 
     text = _innings(first, second, "X")
     text += "\n"
-    text += _innings(second, first, "Y")
+    text += _innings(second, first, "Y", is_second_innings=True)
 
     used = NEW_SCORECARD_USE_COUNT.get(group_id, 0)
-    text += f"\n📟 command count - {used} out of {MAX_NEW_SCORECARD_USES}"
+    text += f"\ncommand count - {used} out of {MAX_NEW_SCORECARD_USES}"
 
     return text, None
 
@@ -15074,19 +15273,19 @@ def _nsc_html_batting_table(bat_team: "Team") -> str:
         if p.balls_faced <= 0 and not p.is_out:
             continue
         sno += 1
-        not_out = " 🟢" if not p.is_out else ""
+        not_out = "*" if not p.is_out else ""
         name = html.escape(f"{p.first_name}{not_out}")
         rows += (
-            f"<tr><td align='center'>{sno}</td><td>🧢 {name}</td>"
+            f"<tr><td align='center'>{sno}</td><td>{name}</td>"
             f"<td align='right'>{p.runs}</td><td align='right'>{p.balls_faced}</td>"
             f"<td align='right'>{p.get_strike_rate()}</td>"
-            f"<td align='right'>{p.sixes} 🚀</td><td align='right'>{p.boundaries} 🔥</td></tr>"
+            f"<td align='right'>{p.sixes}</td><td align='right'>{p.boundaries}</td></tr>"
         )
     if not rows:
-        rows = "<tr><td colspan='7' align='center'>😴 Did not bat</td></tr>"
+        rows = "<tr><td colspan='7' align='center'>Did not bat</td></tr>"
     return (
         "<table bordered striped>"
-        "<tr><th>#️⃣</th><th>🧢 Name</th><th>🏏 Run</th><th>⚪ Balls</th><th>⚡ S.R</th><th>🚀 6s</th><th>🔥 4s</th></tr>"
+        "<tr><th>#</th><th>Name</th><th>Run</th><th>Balls</th><th>S.R</th><th>6s</th><th>4s</th></tr>"
         f"{rows}</table>"
     )
 
@@ -15102,17 +15301,17 @@ def _nsc_html_bowling_table(bowl_team: "Team") -> str:
         extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
         name = html.escape(p.first_name)
         rows += (
-            f"<tr><td align='center'>{sno}</td><td>🎯 {name}</td>"
+            f"<tr><td align='center'>{sno}</td><td>{name}</td>"
             f"<td align='right'>{format_overs(p.balls_bowled)}</td>"
-            f"<td align='right'>{p.wickets} 🎳</td>"
+            f"<td align='right'>{p.wickets}</td>"
             f"<td align='right'>{p.get_economy()}</td>"
             f"<td align='right'>{extras}</td></tr>"
         )
     if not rows:
-        rows = "<tr><td colspan='6' align='center'>😴 Did not bowl</td></tr>"
+        rows = "<tr><td colspan='6' align='center'>Did not bowl</td></tr>"
     return (
         "<table bordered striped>"
-        "<tr><th>#️⃣</th><th>🎯 Name</th><th>⏱️ Ovr</th><th>🎳 Wkt</th><th>💰 Eco</th><th>➕ Extra</th></tr>"
+        "<tr><th>#</th><th>Name</th><th>Ovr</th><th>Wkt</th><th>Eco</th><th>Extra</th></tr>"
         f"{rows}</table>"
     )
 
@@ -15123,18 +15322,28 @@ def build_new_scorecard_html(match: "Match", group_id: int) -> str:
     first = match.batting_first if getattr(match, "batting_first", None) else match.team_x
     second = match.get_other_team(first) if hasattr(match, "get_other_team") else match.team_y
 
-    def _innings(bat_team, bowl_team, letter):
+    def _innings(bat_team, bowl_team, letter, is_second_innings=False):
         label = html.escape(_nsc_team_label(bat_team, letter))
+        crr = round(bat_team.score / (bat_team.balls / 6), 2) if getattr(bat_team, "balls", 0) > 0 else 0.0
         block = f"<h3>🏏 {label} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</h3>"
-        block += "<p>🏏 <b>Batting</b></p>"
+        rr_text = ""
+        target = getattr(match, "target", 0)
+        total_overs = getattr(match, "total_overs", 0)
+        if is_second_innings and target:
+            balls_left = max((total_overs * 6) - bat_team.balls, 0)
+            runs_needed = target - bat_team.score
+            rr = round(runs_needed / (balls_left / 6), 2) if balls_left > 0 and runs_needed > 0 else 0.0
+            rr_text = f"  |  RR: {rr}"
+        block += f"<p>CRR: {crr}{rr_text}</p>"
+        block += "<p><b>Batting</b></p>"
         block += _nsc_html_batting_table(bat_team)
-        block += "<p>🎯 <b>Bowling</b></p>"
+        block += "<p><b>Bowling</b></p>"
         block += _nsc_html_bowling_table(bowl_team)
         return block
 
     used = NEW_SCORECARD_USE_COUNT.get(group_id, 0)
-    out = _innings(first, second, "X") + "<hr/>" + _innings(second, first, "Y")
-    out += f"<footer>📟 command count - {used} out of {MAX_NEW_SCORECARD_USES} 🎮</footer>"
+    out = _innings(first, second, "X") + "<hr/>" + _innings(second, first, "Y", is_second_innings=True)
+    out += f"<footer>command count - {used} out of {MAX_NEW_SCORECARD_USES}</footer>"
     return out
 
 
@@ -17692,8 +17901,16 @@ async def send_potm_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, m
         # Calculate MVP Score (Improved Formula)
         best_player = None
         best_score = -1
+        best_tiebreak = (-1, -1)  # (runs + wickets*20, sixes + boundaries) — for deterministic ties
 
         for p in all_players:
+            # 🐛 FIX: a player who never batted or bowled a single ball must not
+            # be eligible for MOTM. Previously best_score started at -1 and a
+            # totally-inactive player's score of 0 could "win" by default just
+            # by being first in the list, if nobody else had scored yet.
+            if p.balls_faced == 0 and p.balls_bowled == 0:
+                continue
+
             # Advanced scoring: Runs + Wickets*25 + SR_bonus + Economy_bonus + Impact
             score = p.runs + (p.wickets * 25)
             
@@ -17715,9 +17932,15 @@ async def send_potm_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, m
             
             # Boundaries Bonus
             score += (p.sixes * 3) + (p.boundaries * 1)
-            
-            if score > best_score:
+
+            # 🐛 FIX: deterministic tie-break instead of "first in list order wins".
+            # Prefers the player with more combined runs+wickets impact, then
+            # more boundaries, so near-identical scores don't hinge on team order.
+            tiebreak = (p.runs + p.wickets * 20, p.sixes + p.boundaries)
+
+            if score > best_score or (score == best_score and tiebreak > best_tiebreak):
                 best_score = score
+                best_tiebreak = tiebreak
                 best_player = p
 
         if not best_player: 
@@ -18783,6 +19006,9 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
         else:
             ccc_line = f"├👑 𝗖𝗖𝗖     ➜ Unranked\n"
 
+        player_role = compute_player_role(user_id)
+        role_line = f"├🎭 𝗥𝗼𝗹𝗲     ➜ {player_role}\n"
+
         jersey_num = user_data.get(user_id, {}).get("jersey_number")
         jersey_line = f"#{jersey_num}" if jersey_num is not None else "—"
 
@@ -18802,6 +19028,7 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
             f"├🆔 𝗜𝗗      ➜ {user_id}\n"
             f"├👤 𝗡𝗮𝗺𝗲    ➜ {html.escape(user_name)}\n"
             f"├🎽 𝗝𝗲𝗿𝘀𝗲𝘆  ➜ {jersey_line}\n"
+            f"{role_line}"
             f"{ccc_line}"
             f"└{BAR}\n\n"
             f"📊 𝗖𝗔𝗥𝗘𝗘𝗥 𝗥𝗘𝗖𝗢𝗥𝗗\n"
@@ -22216,8 +22443,20 @@ async def team_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+def _auc_pad(s, w):
+    s = html.escape(str(s))
+    return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+
+def _auc_rpad(s, w):
+    s = str(s)
+    return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
+
 def _build_auction_summary_pages(auction: "Auction") -> list:
-    """Build paginated pages for auction summary (/list)."""
+    """Build paginated pages for auction summary (/list) as three tables:
+    Auction Summary (Player/Sold To/Price), Current Purse (Team/Purse/Players),
+    Unsold Players (Player/Base Price)."""
     sold_players = auction.sold_players
     unsold_players = auction.unsold_players
     remaining = auction.player_pool
@@ -22227,79 +22466,72 @@ def _build_auction_summary_pages(auction: "Auction") -> list:
     total = sold_count + unsold_count + remaining_count
 
     header = (
-        f"📊 <b>CRICOVERSE AUCTION SUMMARY</b>\n"
-        f"╭━─────────────────\n"
-        f"┃ ✅ Sold: <b>{sold_count}</b>  |  ❌ Unsold: <b>{unsold_count}</b>  |  ⏳ Remaining: <b>{remaining_count}</b>\n"
-        f"┃ 📦 Total Pool: <b>{total}</b>\n"
-        f"╰━━━━━━━━\n\n"
+        f"📊 <b>AUCTION SUMMARY</b>\n"
+        f"─────────────────\n"
+        f"✅ Sold: <b>{sold_count}</b>  |  ❌ Unsold: <b>{unsold_count}</b>  |  ⏳ Remaining: <b>{remaining_count}</b>  |  📦 Total: <b>{total}</b>\n"
     )
 
-    # Team purse summary block
-    team_block = ""
-    if auction.teams:
-        team_block = "╭━━ 💰 TEAM PURSE STATUS ━━━━━━\n"
-        for tname, tobj in sorted(auction.teams.items(), key=lambda x: x[1].purse_remaining, reverse=True):
-            squad_n = len(tobj.players)
-            team_block += f"┃ 🏆 {html.escape(tname)}: <b>{tobj.purse_remaining} 🪙</b> left | {squad_n} players\n"
-        team_block += "╰━━━━━━━━\n\n"
-
-    # Build entries for sold players
-    sold_entries = []
-    for i, sp in enumerate(sold_players, 1):
-        p_id = sp.get('player_id', '')
+    # ── Auction Summary table: Player | Role | Sold To | Price ──
+    sold_header = f"{_auc_pad('Player', 14)}{_auc_pad('Role', 12)}{_auc_pad('Sold To', 12)}{_auc_rpad('Price', 7)}\n"
+    sold_table = sold_header + ("─" * 45) + "\n"
+    for sp in sold_players:
         p_name = sp.get('player_name', 'Unknown')
-        p_tag = f'<a href=\"tg://user?id={p_id}\">{html.escape(p_name)}</a>' if p_id else html.escape(p_name)
-        sold_entries.append(f"┃ {i}. {p_tag}\n┃    ↳ 👥 {html.escape(str(sp.get('team','?')))} — 🪙 {sp.get('price',0)}\n")
+        p_id = sp.get('player_id')
+        role = compute_player_role(p_id) if p_id else "Unranked"
+        sold_table += f"{_auc_pad(p_name, 14)}{_auc_pad(role, 12)}{_auc_pad(sp.get('team', '?'), 12)}{_auc_rpad(sp.get('price', 0), 7)}\n"
+    if not sold_players:
+        sold_table += "  No players sold yet\n"
 
-    # Build entries for unsold players
-    unsold_entries = []
+    # ── Current Purse table: Team | Purse | Players ──
+    purse_table = ""
+    if auction.teams:
+        purse_header = f"{_auc_pad('Team', 16)}{_auc_rpad('Purse', 10)}{_auc_rpad('Players', 9)}\n"
+        purse_table = purse_header + ("─" * 35) + "\n"
+        for tname, tobj in sorted(auction.teams.items(), key=lambda x: x[1].purse_remaining, reverse=True):
+            purse_table += f"{_auc_pad(tname, 16)}{_auc_rpad(tobj.purse_remaining, 10)}{_auc_rpad(len(tobj.players), 9)}\n"
+
+    # ── Unsold Players table: Player | Role | Base Price ──
+    unsold_header = f"{_auc_pad('Player', 16)}{_auc_pad('Role', 12)}{_auc_rpad('Base Price', 10)}\n"
+    unsold_table = unsold_header + ("─" * 38) + "\n"
     for up in unsold_players:
         u_name = up.get('player_name', 'Unknown') if isinstance(up, dict) else str(up)
-        u_id = up.get('player_id', '') if isinstance(up, dict) else ''
-        u_tag = f'<a href=\"tg://user?id={u_id}\">{html.escape(u_name)}</a>' if u_id else html.escape(u_name)
+        u_id = up.get('player_id') if isinstance(up, dict) else None
         base = up.get('base_price', 0) if isinstance(up, dict) else 0
-        unsold_entries.append(f"┃ 🔴 {u_tag} (Base: {base} 🪙)\n")
+        role = compute_player_role(u_id) if u_id else "Unranked"
+        unsold_table += f"{_auc_pad(u_name, 16)}{_auc_pad(role, 12)}{_auc_rpad(base, 10)}\n"
+    if not unsold_players:
+        unsold_table += "  No unsold players\n"
 
     pages = []
     PAGE_LIMIT = 3500
 
-    # Page builder helper
-    def new_page_base(page_num):
-        return (
-            f"📊 <b>AUCTION SUMMARY</b>\n"
-            f"─────────────────\n"
-        )
+    def new_page_base():
+        return f"📊 <b>AUCTION SUMMARY</b> (cont.)\n─────────────────\n"
 
-    current = header + team_block
-    # Add sold section header
-    current += f"╭━━ ✅ SOLD PLAYERS ({sold_count}) ━━━━━━\n"
-    if not sold_entries:
-        current += "┃ <i>No players sold yet.</i>\n"
-    for entry in sold_entries:
-        if len(current) + len(entry) > PAGE_LIMIT:
-            pages.append(current + "╰━━━━━━━━")
-            current = new_page_base(len(pages) + 1) + f"╭━━ ✅ SOLD (continued) ━━━━━━\n"
-        current += entry
-    current += "╰━━━━━━━━\n\n"
+    current = header + "\n<b>Auction Summary</b>\n" + f"<pre>{sold_table}</pre>"
+    purse_block = ("\n<b>Current Purse</b>\n" + f"<pre>{purse_table}</pre>") if purse_table else ""
+    unsold_block = "\n<b>Unsold Players</b>\n" + f"<pre>{unsold_table}</pre>"
 
-    # Add unsold section
-    current += f"╭━━ ❌ UNSOLD PLAYERS ({unsold_count}) ━━━━━━\n"
-    if not unsold_entries:
-        current += "┃ <i>No unsold players.</i>\n"
-    for entry in unsold_entries:
-        if len(current) + len(entry) > PAGE_LIMIT:
-            pages.append(current + "╰━━━━━━━━")
-            current = new_page_base(len(pages) + 1) + f"╭━━ ❌ UNSOLD (continued) ━━━━━━\n"
-        current += entry
-    current += "╰━━━━━━━━\n"
+    if len(current) + len(purse_block) > PAGE_LIMIT:
+        pages.append(current)
+        current = new_page_base() + purse_block
+    else:
+        current += purse_block
+
+    if len(current) + len(unsold_block) > PAGE_LIMIT:
+        pages.append(current)
+        current = new_page_base() + unsold_block
+    else:
+        current += unsold_block
 
     # Remaining pool list
     if remaining:
-        rem_line = "⏳ <b>Remaining Pool:</b> " + ", ".join(html.escape(rp.get('player_name','?')) for rp in remaining)
-        if len(current) + len(rem_line) + 5 > PAGE_LIMIT:
+        rem_line = "\n<b>Remaining Pool:</b> " + ", ".join(html.escape(rp.get('player_name', '?')) for rp in remaining)
+        if len(current) + len(rem_line) > PAGE_LIMIT:
             pages.append(current)
-            current = new_page_base(len(pages) + 1)
-        current += "\n" + rem_line
+            current = new_page_base() + rem_line
+        else:
+            current += rem_line
 
     pages.append(current)
     return pages
@@ -22726,7 +22958,6 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not hasattr(auction, 'live_bid_log'):
             auction.live_bid_log = []
         auction.live_bid_log.append({"team": team_name, "bidder": auction.last_bidder_tag, "amount": amount})
-        await _update_auction_history_message(context, chat_id, auction)
 
         # Reset Timer: Cancel old, set new end time, start new task
         # (bid_timer sends a single merged countdown+bid message — no separate confirmation message)
@@ -22737,10 +22968,18 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         auction.bid_end_time = time.time() + 30
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
+        # 🐛 SPEED FIX: delete the /bid command message right away instead of
+        # waiting on the (slower) history-log edit below first.
         try:
             await update.message.delete()
         except Exception:
             pass
+
+    # 🐛 SPEED FIX: fire-and-forget, OUTSIDE the lock — a Telegram message-edit
+    # API call was previously awaited INSIDE the lock before anything else
+    # could happen, which is why bids felt slow (every other bid had to wait
+    # for this network round-trip to finish first).
+    asyncio.create_task(_update_auction_history_message(context, chat_id, auction))
 
 
 async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -22826,14 +23065,23 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not hasattr(auction, 'live_bid_log'):
             auction.live_bid_log = []
         auction.live_bid_log.append({"team": team_name, "bidder": auction.last_bidder_tag, "amount": amount})
-        await _update_auction_history_message(context, chat_id, auction)
 
         if auction.bid_timer_task:
             auction.bid_timer_task.cancel()
         auction.bid_end_time = time.time() + 30
         auction.bid_timer_task = asyncio.create_task(bid_timer(context, chat_id, auction))
 
+        # 🐛 SPEED FIX: answer the button immediately so the user's tap feels
+        # instant. The history-log message edit below is a real Telegram API
+        # call (network round-trip) — it used to be awaited BEFORE answer(),
+        # which is exactly why bidding felt slow, especially with multiple
+        # people bidding back-to-back (they were all queued behind this edit
+        # while still holding the auction lock).
         await query.answer(f"✅ Bid placed: {amount} 🔷!", show_alert=False)
+
+    # 🐛 SPEED FIX: fire-and-forget, OUTSIDE the lock — so it never blocks the
+    # next person's bid, and never delays this callback's response.
+    asyncio.create_task(_update_auction_history_message(context, chat_id, auction))
 
 
 async def _update_auction_history_message(context, chat_id: int, auction):
@@ -28787,176 +29035,156 @@ async def tpower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"🏏 Power granted to {target_name} for group `{group_id}`", parse_mode=ParseMode.MARKDOWN)
 
-def _build_reglist_pages(players, group_name):
-    """Build paginated registered players pages. Returns list of page strings."""
-    PAGE_LIMIT = 3600
-    CONT_HEADER = (
-        f"📋 <b>REGISTERED PLAYERS</b> (cont.)\n"
+def _reglist_price_dropdown_keyboard(group_id: int, price_groups: dict) -> InlineKeyboardMarkup:
+    """Dropdown of base-price buttons (50/30/20/10) — only prices that actually
+    have registered players are shown, each labeled with its player count."""
+    rows = []
+    for price in [50, 30, 20, 10]:
+        count = len(price_groups.get(price, []))
+        if count > 0:
+            rows.append([InlineKeyboardButton(
+                f"💰 {price} 🔷  ({count})",
+                callback_data=f"reglist_price_{group_id}_{price}_0",
+                style="primary"
+            )])
+    # Any other/custom base prices used, shown after the standard four
+    other_prices = sorted([p for p in price_groups if p not in (50, 30, 20, 10)], reverse=True)
+    for price in other_prices:
+        count = len(price_groups[price])
+        rows.append([InlineKeyboardButton(
+            f"💰 {price} 🔷  ({count})",
+            callback_data=f"reglist_price_{group_id}_{price}_0",
+            style="primary"
+        )])
+    rows.append([InlineKeyboardButton("❌ Close", callback_data="reglist_close", style="danger")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _reglist_dropdown_text(group_name: str, total: int) -> str:
+    return (
+        f"📋 <b>REGISTERED PLAYERS</b>\n"
         f"🏆 <b>{html.escape(str(group_name))}</b>\n"
+        f"👥 Total: <b>{total}</b> players\n"
         f"─────────────────\n\n"
+        f"👇 Select a base price to view its player table:"
     )
 
+
+def _group_players_by_price(players):
+    """players rows: (user_id, username, full_name, base_price, registered_at)"""
     price_groups = defaultdict(list)
     for user_id_p, username, full_name, base_price, registered_at in players:
         price_groups[base_price].append({
             'user_id': user_id_p,
             'username': username or 'No Username',
             'full_name': full_name or 'Unknown',
-            'registered_at': registered_at or '',
         })
+    return price_groups
 
-    sorted_prices = sorted(price_groups.keys(), reverse=True)
-    total = len(players)
 
-    pages = []
-    header = (
+_REGLIST_ROWS_PER_PAGE = 20
+
+
+def _build_reglist_table_page(players_for_price: list, price: int, group_name: str, page_idx: int):
+    """Build one page of the S.No | Player Name | Id | username table for a
+    single base-price category, returned as a monospace <pre> block."""
+    total_pages = max(1, math.ceil(len(players_for_price) / _REGLIST_ROWS_PER_PAGE))
+    page_idx = max(0, min(page_idx, total_pages - 1))
+    start = page_idx * _REGLIST_ROWS_PER_PAGE
+    chunk = players_for_price[start:start + _REGLIST_ROWS_PER_PAGE]
+
+    def _pad(s, w):
+        s = str(s)
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+    header_line = f"{_pad('S.No', 5)}{_pad('Player Name', 16)}{_pad('Id', 12)}{_pad('Username', 16)}\n"
+    table = header_line + ("─" * 49) + "\n"
+    for i, p in enumerate(chunk, start=start + 1):
+        name = p['full_name'][:14]
+        uname = f"@{p['username']}"[:14]
+        table += f"{_pad(i, 5)}{_pad(name, 16)}{_pad(p['user_id'], 12)}{_pad(uname, 16)}\n"
+    if not chunk:
+        table += "  No players in this category\n"
+
+    text = (
         f"📋 <b>REGISTERED PLAYERS</b>\n"
-        f"🏆 <b>{html.escape(str(group_name))}</b>\n"
-        f"👥 Total: <b>{total}</b> players\n"
-        f"─────────────────\n\n"
+        f"🏆 <b>{html.escape(str(group_name))}</b>  ·  💰 Base Price: <b>{price} 🔷</b>\n"
+        f"─────────────────\n"
+        f"<pre>{table}</pre>"
+        f"<i>Page {page_idx + 1} of {total_pages}</i>"
     )
-    current_page = header
-
-    def _flush_page():
-        """Append current_page to pages and reset to continuation header."""
-        nonlocal current_page
-        pages.append(current_page.rstrip())
-        current_page = CONT_HEADER
-
-    global_idx = 0
-    for price in sorted_prices:
-        price_header = f"<b>💰 Base Price: {price} 🔷</b>\n{'─' * 20}\n"
-
-        # Flush if even the price header alone won't fit
-        if len(current_page) + len(price_header) > PAGE_LIMIT:
-            _flush_page()
-
-        current_page += price_header
-
-        for player in price_groups[price]:
-            global_idx += 1
-            fname = html.escape(str(player['full_name']))
-            uname = html.escape(str(player['username']))
-            uid = player['user_id']
-            reg_str = ""
-            if player['registered_at']:
-                try:
-                    reg_dt = datetime.fromisoformat(str(player['registered_at']))
-                    reg_str = f"  🕐 {reg_dt.strftime('%d %b %Y')}"
-                except Exception:
-                    pass
-            entry = (
-                f"{global_idx}. <b>{fname}</b>\n"
-                f"   👤 @{uname}{reg_str}\n"
-                f"   🔑 <code>{uid}</code>\n"
-            )
-
-            # Flush if this player entry won't fit on current page
-            if len(current_page) + len(entry) > PAGE_LIMIT:
-                _flush_page()
-                # Re-add price header as continuation so context is clear
-                current_page += f"<b>💰 Base Price: {price} 🔷</b> (cont.)\n{'─' * 20}\n"
-
-            current_page += entry
-
-        current_page += "\n"  # spacing after each price group
-
-    if current_page.strip():
-        pages.append(current_page.rstrip())
-
-    return pages
+    return text, total_pages, page_idx
 
 
-def _reglist_keyboard(group_id: int, page_idx: int, total_pages: int) -> InlineKeyboardMarkup:
-    """Build Prev / Page indicator / Next / Close navigation keyboard."""
+def _reglist_table_keyboard(group_id: int, price: int, page_idx: int, total_pages: int) -> InlineKeyboardMarkup:
     nav_row = []
     if page_idx > 0:
-        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reglist_page_{group_id}_{page_idx - 1}", style="primary"))
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reglist_price_{group_id}_{price}_{page_idx - 1}", style="primary"))
     nav_row.append(InlineKeyboardButton(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop", style="primary"))
     if page_idx < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"reglist_page_{group_id}_{page_idx + 1}", style="primary"))
-    close_row = [InlineKeyboardButton("❌ Close", callback_data="reglist_close", style="danger")]
-    return InlineKeyboardMarkup([nav_row, close_row])
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"reglist_price_{group_id}_{price}_{page_idx + 1}", style="primary"))
+    back_row = [
+        InlineKeyboardButton("◀ Back", callback_data=f"reglist_back_{group_id}", style="primary"),
+        InlineKeyboardButton("❌ Close", callback_data="reglist_close", style="danger"),
+    ]
+    return InlineKeyboardMarkup(([nav_row] if nav_row else []) + [back_row])
 
 
-async def reglist_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle Prev / Next navigation for /registeredlist pagination."""
+async def reglist_price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the S.No/Player Name/Id/username table for the chosen base price."""
     query = update.callback_query
     await query.answer()
-
     try:
-        # Format: reglist_page_<group_id>_<page_idx>
-        # Use rsplit to safely handle negative group_ids (which contain hyphens/underscores after split)
-        data = query.data  # e.g. "reglist_page_-1001234567890_2"
-        # Strip prefix "reglist_page_" then rsplit on "_" once to separate page_idx
-        stripped = data[len("reglist_page_"):]  # "-1001234567890_2"
-        last_underscore = stripped.rfind("_")
-        group_id = int(stripped[:last_underscore])
-        page_idx = int(stripped[last_underscore + 1:])
+        # Format: reglist_price_<group_id>_<price>_<page_idx>
+        stripped = query.data[len("reglist_price_"):]
+        group_id_str, price_str, page_str = stripped.rsplit("_", 2)
+        group_id = int(group_id_str)
+        price = int(price_str)
+        page_idx = int(page_str)
     except (IndexError, ValueError):
         return
 
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        'SELECT user_id, username, full_name, base_price, registered_at '
-        'FROM registered_players WHERE group_id = ? ORDER BY base_price DESC, registered_at',
-        (group_id,)
-    )
-    players = c.fetchall()
-    c.execute('SELECT group_name FROM tournament_groups WHERE group_id = ?', (group_id,))
-    res = c.fetchone()
-    group_name = res[0] if res else "Unknown"
-    conn.close()
+    players, group_name, _ = await asyncio.to_thread(_fetch_registeredlist_data, group_id)
+    price_groups = _group_players_by_price(players)
+    players_for_price = price_groups.get(price, [])
+
+    text, total_pages, page_idx = _build_reglist_table_page(players_for_price, price, group_name, page_idx)
+    kb = _reglist_table_keyboard(group_id, price, page_idx, total_pages)
+
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception as e:
+        logger.error(f"reglist_price_callback edit error: {e}")
+
+
+async def reglist_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Back button from a price table → return to the base-price dropdown."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        group_id = int(query.data[len("reglist_back_"):])
+    except ValueError:
+        return
+
+    players, group_name, _ = await asyncio.to_thread(_fetch_registeredlist_data, group_id)
+    price_groups = _group_players_by_price(players)
 
     if not players:
-        await query.answer("No players found!", show_alert=True)
-        return
-
-    pages = _build_reglist_pages(players, group_name)
-    total_pages = len(pages)
-
-    if page_idx < 0 or page_idx >= total_pages:
-        await query.answer("Invalid page!", show_alert=True)
-        return
-
-    page_text = pages[page_idx] + f"\n\n<i>Page {page_idx + 1} of {total_pages}</i>"
-    kb = _reglist_keyboard(group_id, page_idx, total_pages)
-
-    try:
-        await query.edit_message_text(page_text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    except Exception as e:
-        logger.error(f"reglist_page_callback edit error: {e}")
-
-
-async def reglist_close_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete the registeredlist message on Close button."""
-    query = update.callback_query
-    await query.answer()
-    try:
-        await query.message.delete()
-    except Exception:
         try:
-            await query.edit_message_reply_markup(reply_markup=None)
+            await query.edit_message_text(
+                f"📋 <b>REGISTERED PLAYERS</b>\n🏆 <b>{html.escape(str(group_name))}</b>\n─────────────────\n❌ No players registered yet.",
+                parse_mode=ParseMode.HTML
+            )
         except Exception:
             pass
-
-
-async def reglist_next_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Legacy handler — forward to reglist_page_callback."""
-    query = update.callback_query
-    await query.answer()
-    try:
-        data = query.data  # e.g. "reglist_next_-1001234_2"
-        stripped = data[len("reglist_next_"):]
-        last_underscore = stripped.rfind("_")
-        group_id = int(stripped[:last_underscore])
-        page_idx = int(stripped[last_underscore + 1:])
-    except (IndexError, ValueError):
         return
-    # Reuse new pagination logic
-    query.data = f"reglist_page_{group_id}_{page_idx}"
-    await reglist_page_callback(update, context)
+
+    text = _reglist_dropdown_text(group_name, len(players))
+    kb = _reglist_price_dropdown_keyboard(group_id, price_groups)
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception as e:
+        logger.error(f"reglist_back_callback edit error: {e}")
 
 def _check_tournament_power_user_db(user_id: int, group_id: int) -> bool:
     conn_chk = sqlite3.connect(TOURNAMENT_DB_PATH)
@@ -29052,24 +29280,12 @@ async def registeredlist_command(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
-    # ── Build pages ──
-    pages = _build_reglist_pages(players, group_name)
-    total_pages = len(pages)
+    # ── Show base-price dropdown (50/30/20/10) first ──
+    price_groups = _group_players_by_price(players)
+    text = _reglist_dropdown_text(group_name, len(players))
+    kb = _reglist_price_dropdown_keyboard(group_id, price_groups)
 
-    # Add registration deadline to first page footer
-    reg_footer = ""
-    if reg_info:
-        try:
-            end_dt = datetime.fromisoformat(reg_info[0])
-            tname = reg_info[1] or group_name
-            reg_footer = f"\n⏰ <i>Registration closes: {end_dt.strftime('%d %b %Y %H:%M')}</i>"
-        except Exception:
-            pass
-
-    first_page_text = pages[0] + reg_footer + f"\n\n<i>Page 1 of {total_pages}</i>"
-    kb = _reglist_keyboard(group_id, 0, total_pages)
-
-    await update.message.reply_text(first_page_text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 async def auctionset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏏 Display auction set - registered players grouped by base price"""
@@ -29664,21 +29880,31 @@ async def mysquad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     pool = match.team_x.players + match.team_y.players
-    names = [p.first_name for p in pool if p.user_id in squad["players"]]
+    picked = [p for p in pool if p.user_id in squad["players"]]
     cap = get_fantasy_squad_cap(match)
 
-    lines = [f"👤 {html.escape(n)}" for n in names]
-    lines.append(f"\n📊 <b>Squad Size:</b> {len(names)}/{cap}")
+    def _pad(s, w):
+        s = html.escape(str(s))
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+    header = f"{_pad('S.No', 5)}{_pad('Player', 14)}{_pad('Role', 12)}\n"
+    table = header + ("─" * 31) + "\n"
+    for i, p in enumerate(picked, 1):
+        role = compute_player_role(p.user_id)
+        table += f"{_pad(i, 5)}{_pad(p.first_name, 14)}{_pad(role, 12)}\n"
+
+    msg = "🏆 <b>YOUR FANTASY DREAM XI</b>\n─────────────────\n"
+    msg += f"<pre>{table}</pre>"
+    msg += f"📊 Squad Size: {len(picked)}/{cap}\n"
     if getattr(match, "fantasy_window_open", False) and match.phase == GamePhase.TOSS:
-        lines.append("🔓 Picks are still OPEN — tap more players above!")
+        msg += "🔓 Picks are still OPEN — tap more players above!"
     else:
-        lines.append(f"🔒 Picks are LOCKED · <b>{squad.get('match_points', 0)}</b> pts so far this match")
-    msg = themed("🏆 YOUR FANTASY DREAM XI", lines, "🏏")
+        msg += f"🔒 Picks are LOCKED · <b>{squad.get('match_points', 0)}</b> pts so far this match"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
 async def fantasylb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the global, all-time Fantasy Dream III leaderboard."""
+    """Show the global, all-time Fantasy Dream III leaderboard as a table."""
     ranked = sorted(fantasy_data.items(), key=lambda kv: kv[1].get("points", 0), reverse=True)
     ranked = [r for r in ranked if r[1].get("points", 0) > 0][:15]
 
@@ -29688,18 +29914,25 @@ async def fantasylb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    medals = ["🥇", "🥈", "🥉"]
-    lines = []
+    def _pad(s, w):
+        s = html.escape(str(s))
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+    def _rpad(s, w):
+        s = str(s)
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
+    header = f"{_pad('Rank', 5)}{_pad('Player', 15)}{_pad('Role', 12)}{_rpad('Points', 8)}\n"
+    table = header + ("─" * 40) + "\n"
     for i, (uid, d) in enumerate(ranked):
-        medal = medals[i] if i < 3 else f"{i+1}."
         title_key = d.get("title")
         title_info = get_fantasy_title_info(title_key) if title_key else None
-        title_tag = f" {title_info['name']}" if title_info else ""
-        lines.append(f"{medal} {html.escape(d.get('first_name', 'Player'))}{title_tag} — <b>{d.get('points', 0):,}</b> pts")
+        role = title_info['name'] if title_info else "Manager"
+        table += f"{_pad(i + 1, 5)}{_pad(d.get('first_name', 'Player'), 15)}{_pad(role, 12)}{_rpad(d.get('points', 0), 8)}\n"
 
-    lines.append("")
-    lines.append("🛍️ <code>/fantasyshop</code> → spend points on a title")
-    msg = themed("🏆 FANTASY DREAM XI — GLOBAL LEADERBOARD", lines, "🎮")
+    msg = "🏆 <b>FANTASY DREAM XI — GLOBAL LEADERBOARD</b>\n─────────────────\n"
+    msg += f"<pre>{table}</pre>"
+    msg += "🛍️ <code>/fantasyshop</code> → spend points on a title"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
@@ -29879,8 +30112,9 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
          InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0", style="primary")],
         [InlineKeyboardButton("🏆 Most Wins",   callback_data="lb_wins_0", style="primary"),
          InlineKeyboardButton("🎯 Win Rate",    callback_data="lb_winrate_0", style="success")],
-        [InlineKeyboardButton("🚀 Most Sixes",  callback_data="lb_sixes_0", style="primary"),
-         InlineKeyboardButton("🌟 MOM Awards",  callback_data="lb_mom_0", style="primary")],
+        [InlineKeyboardButton("4️⃣ Most Fours", callback_data="lb_fours_0", style="primary"),
+         InlineKeyboardButton("🚀 Most Sixes",  callback_data="lb_sixes_0", style="primary")],
+        [InlineKeyboardButton("🌟 MOM Awards",  callback_data="lb_mom_0", style="primary")],
     ])
 
     lb_photo = MEDIA_ASSETS.get("botstats")
@@ -30020,6 +30254,57 @@ def _compute_ccc_ranking_rows():
     return scored
 
 
+PLAYER_ROLE_MIN_MATCHES = 3  # below this, not enough data → shown as "Unranked"
+
+
+def compute_player_role(user_id: int) -> str:
+    """Auto-detect a player's role from their career stats (batting vs bowling
+    output, combining Team + Solo numbers, plus stumpings for keeper detection).
+    Returns one of: 'Wicket-Keeper', 'Batter', 'Bowler', 'All-Rounder', or
+    'Unranked' (not enough matches yet)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT
+            (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS matches,
+            (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS runs,
+            (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS wickets,
+            (COALESCE(total_balls_bowled,0) + COALESCE(team_total_balls_bowled,0)) AS balls_bowled,
+            COALESCE(team_total_stumpings,0) AS stumpings,
+            COALESCE(team_total_catches,0) AS catches
+        FROM user_stats WHERE user_id = ?
+    """, (user_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return "Unranked"
+    matches, runs, wickets, balls_bowled, stumpings, catches = row
+    if matches < PLAYER_ROLE_MIN_MATCHES:
+        return "Unranked"
+
+    # 🧤 Stumpings can only realistically come from wicket-keeping in this
+    # simulation, so any real stumping tally is treated as a strong signal.
+    if stumpings > 0:
+        return "Wicket-Keeper"
+
+    # Batting output vs bowling output, both normalised per match so a player
+    # who's played a lot doesn't automatically look "better" at everything.
+    bat_points = (runs / max(matches, 1))
+    bowl_points = (wickets * 20) / max(matches, 1)
+
+    if bat_points < 3 and bowl_points < 3:
+        return "Unranked"
+
+    ratio = bat_points / max(bowl_points, 0.01)
+    if ratio > 2.2:
+        return "Batter"
+    elif ratio < 0.45:
+        return "Bowler"
+    else:
+        return "All-Rounder"
+
+
 def get_ccc_rankings_with_trend(limit: Optional[int] = None):
     """
     Returns the CCC ranking rows (optionally truncated to `limit`), each tagged with a
@@ -30075,32 +30360,44 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
 
     if metric == "runs":
         c.execute("""
-            SELECT user_id, first_name,
+            SELECT user_id, first_name, username,
                    (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS tr,
-                   (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS mp
+                   (COALESCE(total_balls_faced,0) + COALESCE(team_total_balls_faced,0)) AS tb
             FROM user_stats
             WHERE (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) > 0
             ORDER BY tr DESC
         """)
         all_rows = c.fetchall()
-        title = "🏃 TOP RUN SCORERS → ALL TIME"
+        title = "TOP RUN SCORERS → ALL TIME"
         total = len(all_rows)
         rows = all_rows[offset:offset+page_size]
     elif metric == "wickets":
         c.execute("""
-            SELECT user_id, first_name,
+            SELECT user_id, first_name, username,
                    (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS tw
             FROM user_stats
             WHERE (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) > 0
             ORDER BY tw DESC
         """)
         all_rows = c.fetchall()
-        title = "⚾ TOP WICKET TAKERS → ALL TIME"
+        title = "TOP WICKET TAKERS → ALL TIME"
+        total = len(all_rows)
+        rows = all_rows[offset:offset+page_size]
+    elif metric == "fours":
+        c.execute("""
+            SELECT user_id, first_name, username,
+                   (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) AS tf
+            FROM user_stats
+            WHERE (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) > 0
+            ORDER BY tf DESC
+        """)
+        all_rows = c.fetchall()
+        title = "MOST FOURS HIT"
         total = len(all_rows)
         rows = all_rows[offset:offset+page_size]
     elif metric == "wins":
         c.execute("""
-            SELECT user_id, first_name,
+            SELECT user_id, first_name, username,
                    (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS tw,
                    (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS tp
             FROM user_stats
@@ -30108,12 +30405,12 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
             ORDER BY tw DESC
         """)
         all_rows = c.fetchall()
-        title = "🏆 MOST MATCH WINS"
+        title = "MOST MATCH WINS"
         total = len(all_rows)
         rows = all_rows[offset:offset+page_size]
     elif metric == "winrate":
         c.execute("""
-            SELECT user_id, first_name,
+            SELECT user_id, first_name, username,
                    (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS tw,
                    (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS tp
             FROM user_stats
@@ -30121,30 +30418,30 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
             ORDER BY CAST(tw AS REAL)/tp DESC
         """)
         all_rows = c.fetchall()
-        title = "🎯 BEST WIN RATE (min 5 matches)"
+        title = "BEST WIN RATE (min 5 matches)"
         total = len(all_rows)
         rows = all_rows[offset:offset+page_size]
     elif metric == "sixes":
         c.execute("""
-            SELECT user_id, first_name,
+            SELECT user_id, first_name, username,
                    (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) AS ts
             FROM user_stats
             WHERE (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) > 0
             ORDER BY ts DESC
         """)
         all_rows = c.fetchall()
-        title = "🚀 MOST SIXES HIT"
+        title = "MOST SIXES HIT"
         total = len(all_rows)
         rows = all_rows[offset:offset+page_size]
     elif metric == "mom":
         c.execute("""
-            SELECT user_id, first_name, COALESCE(player_of_match_count,0) AS mom
+            SELECT user_id, first_name, username, COALESCE(player_of_match_count,0) AS mom
             FROM user_stats
             WHERE COALESCE(player_of_match_count,0) > 0
             ORDER BY mom DESC
         """)
         all_rows = c.fetchall()
-        title = "🌟 MOST MAN OF MATCH AWARDS"
+        title = "MOST MAN OF MATCH AWARDS"
         total = len(all_rows)
         rows = all_rows[offset:offset+page_size]
     else:
@@ -30173,8 +30470,9 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
              InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0", style="primary")],
             [InlineKeyboardButton("🏆 Most Wins",   callback_data="lb_wins_0", style="primary"),
              InlineKeyboardButton("🎯 Win Rate",    callback_data="lb_winrate_0", style="success")],
-            [InlineKeyboardButton("🚀 Most Sixes",  callback_data="lb_sixes_0", style="primary"),
-             InlineKeyboardButton("🌟 MOM Awards",  callback_data="lb_mom_0", style="primary")],
+            [InlineKeyboardButton("4️⃣ Most Fours", callback_data="lb_fours_0", style="primary"),
+             InlineKeyboardButton("🚀 Most Sixes",  callback_data="lb_sixes_0", style="primary")],
+            [InlineKeyboardButton("🌟 MOM Awards",  callback_data="lb_mom_0", style="primary")],
         ])
         try:
             await query.edit_message_caption(caption=main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
@@ -30193,27 +30491,28 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # 🏅 CCC RANKING → always top 10 only, no pagination
     if metric == "ccc":
         rows = await asyncio.to_thread(get_ccc_rankings_with_trend, 10)
-        medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
-        lines = []
-        for i, row in enumerate(rows):
-            medal = medals[i] if i < 10 else f"<b>#{row['rank']}</b>"
-            name = html.escape(row["first_name"] or "Player")
-            name = name if len(name) <= 16 else name[:15] + "…"
-            jnum = jersey_number_prefix(row["user_id"])
-            lines.append(
-                f'{medal} <a href="tg://user?id={row["user_id"]}">{jnum}{name}</a>\n'
-                f'     <code>⭐ {row["rating"]:>7} · {row["matches"]}M</code>  {row["trend"]}'
-            )
+
+        def _pad(s, w):
+            s = html.escape(str(s))
+            return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+        def _rpad(s, w):
+            s = str(s)
+            return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
+        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('Rating', 8)}\n"
+        table = header + ("─" * 41) + "\n"
+        for row in rows:
+            name = (row.get("first_name") or "Player")[:12]
+            uname = f"@{row.get('username') or '-'}"[:12]
+            table += f"{_pad(row['rank'], 5)}{_pad(name, 14)}{_pad(uname, 14)}{_rpad(row['rating'], 8)}\n"
+        if not rows:
+            table += f"  No one's qualified yet — play {CCC_MIN_MATCHES}+ matches!\n"
 
         text  = "🏅 <b>CCC RANKING</b> · CricoVerse Career Rating\n"
         text += "─────────────────\n"
-        text += f"🌍 Overall skill ranking · min {CCC_MIN_MATCHES} matches\n"
-        text += "─────────────────\n\n"
-        if lines:
-            text += "\n".join(lines)
-        else:
-            text += f"<i>No one's qualified yet → play {CCC_MIN_MATCHES}+ matches! 🏏</i>"
-        text += "\n\n─────────────────"
+        text += f"Overall skill ranking · min {CCC_MIN_MATCHES} matches\n"
+        text += f"<pre>{table}</pre>"
 
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="lb_back", style="primary")]])
         try:
@@ -30228,63 +30527,71 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     PAGE_SIZE = 10
     title, rows, total = await asyncio.to_thread(_lb_query, metric, offset, PAGE_SIZE)
 
-    medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
-    lines = []
+    def _pad(s, w):
+        s = html.escape(str(s))
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
 
-    def _lb_name(name):
-        """Truncate long names so rows don't wrap unevenly on mobile."""
-        name = html.escape(name or "Player")
-        return name if len(name) <= 16 else name[:15] + "…"
+    def _rpad(s, w):
+        s = str(s)
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
 
+    def _uname(u):
+        return f"@{u}"[:12] if u else "-"
+
+    table = ""
     if metric == "runs":
-        for i, row in enumerate(rows):
-            uid, name, tr, mp = row
+        header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('Runs', 6)}{_rpad('SR', 7)}\n"
+        table += header + ("─" * 43) + "\n"
+        for i, (uid, name, uname, tr, tb) in enumerate(rows):
             rank = offset + i + 1
-            avg = round(tr/max(mp,1),1)
-            medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{tr:>6} runs · avg {avg}</code>')
+            sr = round((tr / tb) * 100, 1) if tb else 0.0
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(tr, 6)}{_rpad(sr, 7)}\n"
     elif metric == "wickets":
-        for i, row in enumerate(rows):
-            uid, name, tw = row
+        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('Wkts', 6)}\n"
+        table += header + ("─" * 39) + "\n"
+        for i, (uid, name, uname, tw) in enumerate(rows):
             rank = offset + i + 1
-            medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{tw:>6} wkts</code>')
-    elif metric == "wins":
-        for i, row in enumerate(rows):
-            uid, name, tw, tp = row
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 14)}{_pad(_uname(uname), 14)}{_rpad(tw, 6)}\n"
+    elif metric == "fours":
+        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('4s', 6)}\n"
+        table += header + ("─" * 39) + "\n"
+        for i, (uid, name, uname, tf) in enumerate(rows):
             rank = offset + i + 1
-            medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{tw:>4}W / {tp} played</code>')
-    elif metric == "winrate":
-        for i, row in enumerate(rows):
-            uid, name, tw, tp = row
-            rank = offset + i + 1
-            wr = round(tw/max(tp,1)*100,1)
-            medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{wr:>5}% ({tw}/{tp})</code>')
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 14)}{_pad(_uname(uname), 14)}{_rpad(tf, 6)}\n"
     elif metric == "sixes":
-        for i, row in enumerate(rows):
-            uid, name, ts = row
+        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('6s', 6)}\n"
+        table += header + ("─" * 39) + "\n"
+        for i, (uid, name, uname, ts) in enumerate(rows):
             rank = offset + i + 1
-            medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{ts:>6} 🚀</code>')
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 14)}{_pad(_uname(uname), 14)}{_rpad(ts, 6)}\n"
+    elif metric == "wins":
+        header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('Wins', 6)}{_rpad('Played', 8)}\n"
+        table += header + ("─" * 44) + "\n"
+        for i, (uid, name, uname, tw, tp) in enumerate(rows):
+            rank = offset + i + 1
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(tw, 6)}{_rpad(tp, 8)}\n"
+    elif metric == "winrate":
+        header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('Win%', 7)}\n"
+        table += header + ("─" * 37) + "\n"
+        for i, (uid, name, uname, tw, tp) in enumerate(rows):
+            rank = offset + i + 1
+            wr = round(tw / max(tp, 1) * 100, 1)
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(wr, 7)}\n"
     elif metric == "mom":
-        for i, row in enumerate(rows):
-            uid, name, mom = row
+        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('MOM', 6)}\n"
+        table += header + ("─" * 39) + "\n"
+        for i, (uid, name, uname, mom) in enumerate(rows):
             rank = offset + i + 1
-            medal = medals[i] if offset == 0 and i < 10 else f"<b>#{rank}</b>"
-            lines.append(f'{medal} <a href="tg://user?id={uid}">{_lb_name(name)}</a>\n     <code>{mom:>6} 🌟</code>')
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 14)}{_pad(_uname(uname), 14)}{_rpad(mom, 6)}\n"
+
+    if not rows:
+        table += "  No data yet — play some matches!\n"
 
     text  = f"🏆 <b>{title}</b>\n"
     text += "─────────────────\n"
     if total > 0:
-        text += f"📊 #{offset+1}–#{min(offset+PAGE_SIZE, total)} of {total} players\n"
-    text += "─────────────────\n\n"
-    if lines:
-        text += "\n".join(lines)
-    else:
-        text += "<i>No data yet → play some matches! 🏏</i>"
-    text += "\n\n─────────────────"
+        text += f"#{offset+1}–#{min(offset+PAGE_SIZE, total)} of {total} players\n"
+    text += f"<pre>{table}</pre>"
 
     # Only show Prev/Next navigation + Back (NO category tabs)
     bottom_row = []
@@ -32099,9 +32406,11 @@ def main():
     application.add_handler(CommandHandler("tourrestore", tourrestore_command))
     application.add_handler(CallbackQueryHandler(reg_group_callback, pattern="^reg_group_"))
     application.add_handler(CallbackQueryHandler(reg_price_callback, pattern="^reg_price_"))
-    application.add_handler(CallbackQueryHandler(reglist_next_callback, pattern="^reglist_next_"))
-    application.add_handler(CallbackQueryHandler(reglist_page_callback, pattern="^reglist_page_"))
+    application.add_handler(CallbackQueryHandler(reglist_price_callback, pattern="^reglist_price_"))
+    application.add_handler(CallbackQueryHandler(reglist_back_callback, pattern="^reglist_back_"))
     application.add_handler(CallbackQueryHandler(reglist_close_callback, pattern="^reglist_close$"))
+    application.add_handler(CallbackQueryHandler(soloscore_refresh_callback, pattern="^soloscore_refresh_"))
+    application.add_handler(CallbackQueryHandler(soloscore_back_callback, pattern="^soloscore_back_"))
     
     application.add_handler(CommandHandler("bidder", bidder_command))
     application.add_handler(CommandHandler("aucplayer", aucplayer_command))

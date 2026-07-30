@@ -621,9 +621,18 @@ def ce(key: str, fallback: str) -> str:
 
 def styled_button(text: str, callback_data: Optional[str] = None, url: Optional[str] = None,
                    style: Optional[str] = None, emoji_key: Optional[str] = None) -> "InlineKeyboardButton":
-    """Build an InlineKeyboardButton, optionally colored ('primary'/'success'/'danger')
-    and/or with a custom emoji icon. Degrades gracefully on older python-telegram-bot
-    versions that don't yet know about the `style`/`icon_custom_emoji_id` fields."""
+    """Build an InlineKeyboardButton with Telegram Premium colors ('primary'/'success'/'danger')
+    and custom emoji icons across all bot features (Toss, Batting, Bowling, Stats, etc.)."""
+    if not style:
+        t_low = (text or "").lower()
+        cb_low = (callback_data or "").lower()
+        if any(w in t_low or w in cb_low for w in ["close", "cancel", "leave", "back", "delete", "stop", "exit", "reject", "no", "remove", "rmjersey"]):
+            style = "danger"
+        elif any(w in t_low or w in cb_low for w in ["bat", "bowl", "heads", "tails", "start", "done", "join", "confirm", "yes", "accept", "buy", "win", "ready", "swap", "take", "keep"]):
+            style = "success"
+        else:
+            style = "primary"
+
     kwargs = {}
     if callback_data is not None:
         kwargs["callback_data"] = callback_data
@@ -637,10 +646,13 @@ def styled_button(text: str, callback_data: Optional[str] = None, url: Optional[
     try:
         return InlineKeyboardButton(text, **kwargs)
     except TypeError:
-        # Installed python-telegram-bot predates Bot API 9.4 support — pip install -U python-telegram-bot
         kwargs.pop("style", None)
         kwargs.pop("icon_custom_emoji_id", None)
         return InlineKeyboardButton(text, **kwargs)
+
+def btn(text: str, callback_data: Optional[str] = None, url: Optional[str] = None,
+        style: Optional[str] = None, emoji_key: Optional[str] = None) -> "InlineKeyboardButton":
+    return styled_button(text, callback_data=callback_data, url=url, style=style, emoji_key=emoji_key)
 
 
 
@@ -805,281 +817,310 @@ MEDIA_ASSETS = {
 # Ultimate Professional English Commentary (Expanded)
 COMMENTARY = {
     "dot": [
-        "Solid defense! No run conceded. 🧱",
-        "Beaten! That was a jaffa! 🔥",
-        "Straight to the fielder. Dot ball. 😐",
-        "Swing and a miss! The batsman had no clue. 💨",
-        "Dot ball. Pressure is building up on the batting side! 😰",
-        "Respect the bowler! That was a really good delivery. 🙌",
-        "No run there. Excellent fielding inside the circle. 🤐",
-        "Played back to the bowler. 🤚",
-        "A loud shout for LBW, but turned down. Dot ball. 🔉",
-        "Good line and length. The batsman leaves it alone. 👀",
-        "Can't get it through the gap. Frustration growing! 😤",
-        "Top class bowling! Giving nothing away. 🔒",
-        "Defended with a straight bat. Textbook cricket. 📚",
-        "The batsman is struggling to time the ball. 🐢",
-        "Another dot! The required run rate is creeping up. 📈"
+        "{striker} defends with a straight bat off {bowler}'s delivery! 🧱",
+        "{bowler} fires it in, and {striker} is completely beaten! 🔥",
+        "{striker} tries to hit {bowler}, but finds the fielder! Dot ball. 😐",
+        "{bowler} bowls a fantastic line, {striker} leaves it alone! 👀",
+        "{striker} cannot find the gap off {bowler}. Pressure building! 😰",
+        "Respect the bowler! {bowler} sends down a dot ball to {striker}. 🙌",
+        "No run! Excellent fielding inside the circle off {bowler}'s bowl. 🤐",
+        "{striker} plays it back to {bowler}. Dot ball! 🤚",
+        "Loud shout for LBW as {bowler} strikes {striker}, but turned down! 🔉",
+        "Good length from {bowler}, {striker} safely defends. 👀",
+        "{striker} is struggling to time {bowler}'s delivery. 🐢",
+        "Top class bowling from {bowler}! Giving nothing away to {striker}. 🔒",
+        "Defended cleanly by {striker} off {bowler}. 📚",
+        "{bowler} keeps it tight! Another dot ball for {striker}. 📈",
+        "{striker} tries a big swing against {bowler} but misses completely! 💨",
+        "Pushed to cover by {striker}, but no run off {bowler}! 🛑",
+        "{bowler} deceives {striker} with a beautiful slower ball! 🎭",
+        "{striker} sways out of the way of {bowler}'s bouncer! 🎯",
+        "Crisp defense by {striker} off {bowler}. Dot ball! 🛡️",
+        "{bowler} builds the pressure with 6 tight balls to {striker}! ⏳"
     ],
     "single": [
-        "Quick single! Good running between the wickets. 🏃‍♂️",
-        "Push and run! Strike rotated smartly. 🔄",
-        "Just a single added to the tally. 1️⃣",
-        "Good call! One run completed safely. 👟",
-        "Direct hit missed! That was close. 🎯",
-        "Tucked away off the hips for a single. 🏏",
-        "Dropped at his feet and they scamper through. ⚡",
-        "Fielder fumbles, and they steal a run. 🤲",
-        "Sensible batting. Taking the single on offer. 🧠",
-        "Nicely placed for a single. 🚶",
-        "Smart cricket! Rotating the strike to keep the scoreboard ticking. ⏱️",
-        "A little hesitation, but they make it in the end. 😅"
+        "{striker} finds the gap off {bowler} and scampers for a single! 🏃‍♂️",
+        "{striker} pushes {bowler}'s delivery to long-on to rotate the strike! 🔄",
+        "{striker} taps it softly and steals a quick single off {bowler}! ⚡",
+        "{bowler} bowls full, {striker} drives it to mid-off for 1 run! 👟",
+        "Tucked away off the hips by {striker} off {bowler} for a single! 🏏",
+        "Sensible batting! {striker} takes the easy single off {bowler}. 🧠",
+        "{striker} plays {bowler} into the deep for a single! 🚶",
+        "Smart cricket from {striker}! Rotating the strike off {bowler}. ⏱️",
+        "{striker} drops it at his feet and runs 1 off {bowler}! 👟",
+        "Fielder fumbles, and {striker} steals a run off {bowler}! 🤲",
+        "{striker} glides {bowler}'s ball to third man for 1! 🎯",
+        "{striker} flicks {bowler} to fine leg for a single! 🏃",
+        "Direct hit missed! {striker} completes the single off {bowler}. 😅",
+        "{striker} works {bowler} through mid-wicket for 1 run! 🔄",
+        "{striker} pushes {bowler} towards cover and takes a sharp single! ⚡",
+        "Controlled shot from {striker} off {bowler} for 1! 🛡️",
+        "{bowler} bowls short, {striker} pulls for a single! ⚾",
+        "{striker} eases {bowler}'s delivery down to long-off for 1! 🏃‍♂️",
+        "Quick call from {striker} and they complete the single off {bowler}! 🗣️",
+        "Tidy placement by {striker} off {bowler} for 1 run. 👟"
     ],
     "double": [
-        "In the gap! They will get two easily. ✌️",
-        "Great running between the wickets! Two runs added. 🏃‍♂️🏃‍♂️",
-        "Pushed hard for the second! Excellent fitness shown. 💪",
-        "Fielder was slow to react! They steal a couple. 😴",
-        "Two runs added. Good placement into the deep. ⚡",
-        "They turn for the second run immediately! Aggressive running. ⏩",
-        "Misfield allows them to come back for two. 🤦‍♂️",
-        "Good throw from the deep, but the batsman is safe. ⚾",
-        "Calculated risk taken for the second run! ✅",
-        "The fielder cuts it off, but they get a couple. 🛡️"
+        "{striker} places it in the gap off {bowler} and they come back for two! ✌️",
+        "{striker} turns hard for the second run off {bowler}'s bowling! Excellent running! 💪",
+        "{striker} chips it over midwicket off {bowler} for a comfortable couple! ⏩",
+        "In the gap! {striker} pushes {bowler} hard and collects 2 runs! 🏃‍♂️🏃‍♂️",
+        "Fielder was slow to react to {bowler}'s ball, {striker} steals two! ⚡",
+        "Two runs added as {striker} lofts {bowler} into the deep! ⏩",
+        "Misfield allows {striker} to come back for 2 off {bowler}! 🤦‍♂️",
+        "{striker} glances {bowler} fine and scampers for 2 runs! 👟",
+        "{striker} drives {bowler} through extra cover for a pair of runs! 🎯",
+        "Aggressive running between wickets by {striker} off {bowler}! 2 runs! ✅",
+        "{striker} cuts {bowler} past point for a good couple! ✂️",
+        "{striker} lofts {bowler} into vacant space for 2 runs! 🚀",
+        "{bowler} strays down leg, {striker} glances for 2 runs! 🏃",
+        "{striker} pulls {bowler} into the deep and picks up 2! 💪",
+        "Superb placement by {striker} off {bowler} for 2 runs! 🎯",
+        "{striker} works {bowler} off the pads for a quick double! ✌️",
+        "{striker} beats the inner ring off {bowler} and comes back for 2! 💨",
+        "Deep fielder stops it, but {striker} gets 2 off {bowler}! 🛡️",
+        "Calculated risk taken by {striker} off {bowler}! 2 runs completed! ⏩",
+        "{striker} drives {bowler} past mid-on for a hard-earned 2 runs! 🏃‍♂️"
     ],
     "triple": [
-        "Superb fielding effort! Saved the boundary just in time. 🛑 3 runs.",
-        "They are running hard! Three runs taken. 🏃‍♂️💨",
-        "Excellent stamina! Pushing for the third run. 🔋",
-        "Just short of the boundary! 3 runs added to the score. 🚧",
-        "The outfield is slow, the ball stops just before the rope. 🐢",
-        "Great relay throw! But they collect three runs. 🤝"
+        "Great shot by {striker} off {bowler}! Deep boundary chase gives 3 runs! 🏃‍♂️🏃‍♂️🏃‍♂️",
+        "{striker} pierces the outfield off {bowler}! Brilliant running for 3! ⚡",
+        "{striker} lofts {bowler} into the deep gap, they turn for a 3rd run! 💨",
+        "Terrific effort in the deep, but {striker} takes 3 runs off {bowler}! 👟",
+        "{striker} drives {bowler} wide of long-off, 3 runs completed! 🌟"
     ],
     "boundary": [
-        "CRACKING SHOT! Raced to the fence like a bullet! 🚀 FOUR!",
-        "What timing! Found the gap perfectly. 🏎️ 4 Runs!",
-        "Beautiful shot! That is textbook batting! 😍",
-        "The fielder is just a spectator! That's a boundary! 👀",
-        "One bounce and over the rope! Four runs! 🎾",
-        "Misfield and four! The bowler is absolutely furious. 😠",
-        "Surgical precision! Placed perfectly for FOUR! 🔪",
-        "Hit powerfully! No chance for the fielder. 🤠",
-        "Straight down the ground! Umpire had to duck! 🦆 FOUR!",
-        "Edged but it flies past the slip cordon! Lucky boundary. 🍀",
-        "Played away fine! The fielder gives chase in vain. 🧹",
-        "That was pure elegance! Caressed to the boundary. ✨",
-        "Power and placement! A terrific shot for four. 💪",
-        "Short ball punished! Dispatched to the fence. 👮‍♂️",
-        "Drilled away! What a sound off the bat! 🔊"
-    ],
-    "five": [
-        "FIVE RUNS! Overthrows! Bonus runs for the team. 🎁",
-        "Comedy of errors on the field! 5 runs conceded. 🤡",
-        "Running for five! Incredible stamina displayed! 🏃‍♂️💨",
-        "Bonus runs! The batting team is delighted with that gift. 🎉",
-        "Throw hits the stumps and deflects away! 5 runs! 🎱"
+        "{striker} smashes {bowler}'s delivery through the covers for FOUR! 🚀",
+        "{striker} uses the pace of {bowler} and guides it past third man for 4! 🏏",
+        "{striker} pulls {bowler} with authority! That races away for a boundary! 💥",
+        "{striker} lofts {bowler} over mid-off! One bounce and into the rope! 🎯",
+        "CRACK! {striker} punishes {bowler}'s short ball for FOUR! 💥",
+        "Glorious cover drive by {striker} off {bowler}! Pure class for 4! 🌟",
+        "{striker} steps out to {bowler} and hits it over mid-wicket for FOUR! 🚀",
+        "CHAU_KA! {striker} drills {bowler} straight down the ground for 4! 💥",
+        "Sweetly timed by {striker} off {bowler}! Finds the boundary line! 🎯",
+        "{striker} cuts {bowler} fiercely past point for FOUR! ⚡",
+        "Over the infield! {striker} lofts {bowler} for a boundary! 🚀",
+        "Fielder chases but cannot stop {striker}'s shot off {bowler}! 4 runs! 🏃",
+        "{striker} sweeps {bowler} beautifully for a FOUR! 🧹",
+        "What a stroke by {striker} off {bowler}! Boundary added to the score! 💎",
+        "{striker} upper cuts {bowler} over third man for FOUR! ✈️",
+        "{bowler} strays in line, and {striker} flicks it for a boundary! 💥",
+        "{striker} drives {bowler} through the gap for a magnificent FOUR! 🌟",
+        "Empathetic shot! {striker} hammers {bowler} to the boundary rope! 🏏",
+        "{striker} takes on {bowler} and clears the inner ring for 4! 🚀",
+        "Sublime timing from {striker} off {bowler}! Boundary! 🎯"
     ],
     "six": [
-        "HUGE! That's out of the stadium! 🌌 SIX!",
-        "Muscle power! Sent into orbit! 💪",
-        "MAXIMUM! What a clean connection! 💥",
-        "It's raining sixes! Destruction mode activated! 🔨",
-        "Helicopter Shot! That is magnificent! 🚁",
-        "That's a monster hit! The bowler looks devastated. 😭",
-        "Gone with the wind! High and handsome! 🌬️",
-        "That ball is in the parking lot! Fetch that! 🚗",
-        "Clean striking! It's landed in the top tier! 🏟️",
-        "Steered over the fielders! What a shot! ✂️",
-        "Smoked down the ground! That is a massive six! 🚬",
-        "The crowd catches it! That's a fan favorite shot! 🙌",
-        "Pick that up! Sent traveling into the night sky! 🚀",
-        "Pure timing! He didn't even try to hit that hard. 🪄",
-        "The bowler missed the yorker, and it's gone for SIX! 📏"
+        "SHOWING MUSCLE POWER! {striker} launches {bowler} for a massive SIX! 🚀🔥",
+        "{striker} connects beautifully off {bowler}! That is out of the park for 6! 💥6️⃣",
+        "{striker} dances down the track to {bowler} and hits a monster SIX! 🌟",
+        "{striker} hammers {bowler} over deep midwicket! Pure timing and power for 6! ⚡",
+        "BOOM! {striker} clears the boundary ropes off {bowler}'s bowling for SIX! 🚀",
+        "MASSIVE! {striker} sends {bowler}'s delivery high into the stands for 6! 💥",
+        "{striker} picks up the slower ball from {bowler} and deposits it for SIX! 🎯",
+        "THAT IS HUGE! {striker} lofts {bowler} way back into the crowd for 6! 🚀",
+        "{striker} stands tall and pulls {bowler} over deep square leg for SIX! 🔥",
+        "UNSTOPPABLE! {striker} hits {bowler} for a maximum! 6️⃣",
+        "Clean striking! {striker} smokes {bowler} straight over long-on for 6! 💥",
+        "{striker} launches a sky-high SIX off {bowler}'s delivery! ✈️",
+        "Pure luxury! {striker} lofts {bowler} over extra cover for SIX! 🌟",
+        "{striker} dispatches {bowler} with supreme confidence! MAXIMUM 6! 🚀",
+        "{striker} takes on {bowler}'s bouncer and hooks it for SIX! 🔥",
+        "Out of the ground! {striker} hits a gigantic 6 off {bowler}! 💥",
+        "{striker} flicks {bowler} off his pads into the stands for SIX! ⚡",
+        "Brilliant hitting! {striker} sends {bowler} flying over the ropes for 6! 🎯",
+        "{striker} clears his front leg and clears long-off off {bowler} for SIX! 🚀",
+        "WHAT A SHOT! {striker} hammers {bowler} for a towering 6! 6️⃣"
     ],
-    "wicket": [
-        "OUT! Game over for the batsman! ❌",
-        "Clean Bowled! Shattered the stumps! 🪵",
-        "Caught! Fielder makes no mistake. Wicket! 👐",
-        "Gone! The big fish is in the net! 🎣",
-        "Edged and taken! A costly mistake by the batsman. 🏏",
-        "Stumping! Lightning fast hands by the keeper! ⚡",
-        "Run Out! A terrible mix-up in the middle. 🚦",
-        "LBW! That looked plumb! The finger goes up! ☝️",
-        "Caught and Bowled! Great reflexes by the bowler! 🤲",
-        "Hit Wicket! Oh no, he stepped on his own stumps! 😱",
-        "The partnership is broken! Massive moment in the game. 💔",
-        "He has holed out to the deep! End of a good innings. 🔚",
-        "Golden Duck! He goes back without troubling the scorers. 🦆",
-        "The stumps are taking a walk! cartwheeling away! 🤸‍♂️",
-        "What a catch! He plucked that out of thin air! 🦅"
+    "wicket_bowled": [
+        "🎯 {bowler} CLEAN BOWLS {striker}! The stumps are completely shattered! 🔥",
+        "🎯 {bowler} bowls an absolute jaffa! It sneaks past {striker}'s bat and hits the timber!",
+        "🎯 Timber strike! {bowler} sends {striker}'s stumps flying!",
+        "🎯 What a delivery by {bowler}! {striker} is clean bowled!",
+        "🎯 {bowler} knocks down the stumps of {striker}! Out Bowled!",
+        "🎯 Perfectly pitched by {bowler}, uproots {striker}'s off stump!",
+        "🎯 {bowler} bowl a dream delivery to dismiss {striker} BOWLED!",
+        "🎯 Fast and straight from {bowler}! {striker} is clean bowled!",
+        "🎯 Stumps flying everywhere! {bowler} gets {striker} BOWLED!",
+        "🎯 {striker} misreads {bowler}'s line and gets clean bowled!"
     ],
-    "noball": [
-        "NO BALL! Overstepped the line! 🚨",
-        "Free Hit coming up! A free swing for the batsman! 🔥",
-        "Illegal delivery. Umpire signals No Ball. 🙅‍♂️",
-        "That was a beamer! Dangerous delivery. No Ball. 🤕",
-        "Bowler loses his grip. No Ball called. 🧼"
+    "wicket_lbw": [
+        "☝️ Massive appeal from {bowler}, and the umpire raises the finger! {striker} is OUT LBW!",
+        "☝️ {bowler} strikes {striker} right in front of the stumps! Plumb LBW!",
+        "☝️ {bowler} traps {striker} dead in front! Finger goes up immediately!",
+        "☝️ {bowler}'s ball hits {striker}'s pads directly in line! OUT LBW!",
+        "☝️ Loud LBW appeal by {bowler}, and the umpire agrees! {striker} is out!",
+        "☝️ {striker} misses the flick off {bowler}, trapped right in front LBW!",
+        "☝️ {bowler} gets the decision! {striker} dismissed LBW!",
+        "☝️ Dead in front! {bowler} gets {striker} out LBW!",
+        "☝️ {bowler} bowls straight, {striker} misses, umpire gives LBW!",
+        "☝️ Straight on the pads from {bowler}! {striker} has to walk back LBW!"
     ],
-    "wide": [
-        "Wide Ball! Radar is off. 📡",
-        "Too wide! Extra run conceded. 🎁",
-        "Wayward delivery. Drifting down the leg side. 🚌",
-        "Too high! Umpire signals a wide for height. 🦒",
-        "Spilled down the leg side. Keeper collects it. Wide. 🧤"
+    "wicket_caught": [
+        "🧤 {bowler} forces the edge, and {fielder} takes a brilliant catch to dismiss {striker}!",
+        "🧤 {striker} lofts it in the air off {bowler}, and {fielder} takes a safe catch in the deep!",
+        "🧤 Stunning catch by {fielder}! {bowler} gets the big wicket of {striker}!",
+        "🧤 {striker} edges {bowler}'s delivery, and {fielder} snatches it cleanly!",
+        "🧤 Safe hands! {fielder} takes the catch off {bowler} to dismiss {striker}!",
+        "🧤 {striker} goes for a big hit off {bowler}, but {fielder} holds on in the outfield!",
+        "🧤 Sharp catch by {fielder} off {bowler}'s bowling to get {striker} out!",
+        "🧤 {bowler} deceives {striker}, and {fielder} completes the catch!",
+        "🧤 Airborne catch! {fielder} dives and takes a beauty off {bowler} to dismiss {striker}!",
+        "🧤 {striker} hit it straight to {fielder} off {bowler}! OUT Caught!"
     ]
 }
 
-SHUBH_SPECIAL = {
-
-    "dot": [
-        "Wah bhai! Bat lekar aaye ho ya bas attendance mark karne? 📝",
-        "Itna slow reaction, lagta hai brain abhi bhi loading screen pe hai. ⏳",
-        "Dot ball! Scoreboard bhi tumse umeed chhod chuka hai. 📉",
-        "Shot maarne ka confidence tha, par skill ne leave le li. 🏖️",
-        "Bowler match khel raha hai, batsman sightseeing kar raha hai. 🧳",
-        "Ye batting nahi, public patience test hai. 🧠",
-        "Ball ko dekh ke aisa react kiya jaise unknown number ka call ho. 📞",
-    ],
-
-    "single": [
-        "Finally ek run! Is historic moment ke liye documentary banegi. 🎥",
-        "Single leke itna proud jaise century maar di. Calm down bro. 😏",
-        "Scoreboard ne sympathy run accept kar liya. 🙏",
-        "Achievement unlocked: Kuch toh kiya finally. 🎮",
-        "Risk lene ka option shayad settings me disabled hai. ⚙️",
-        "Ye run nahi, charity accept hui hai. 🎁",
-    ],
-
-    "double": [
-        "Do run! Lagta hai fielders ne donation drive start kari hai. 💸",
-        "Effort zyada, talent optional. Classic combo. 🤡",
-        "Do run mil gaye, ab 10 ball rest karega hero. 🛌",
-        "Ye skill nahi, luck ka EMI chal raha hai. 💳",
-        "Fielders bhi confuse, batsman bhi confuse. Perfect chaos. 🌪️",
-    ],
-
-    "triple": [
-        "Teen run! Lagta hai peeche se kutta chase kar raha tha. 🐕",
-        "Running Olympic level, batting gali level. 🏃",
-        "Ye cricket nahi, panic attack tha live. 🚨",
-        "Fielders ne comedy show open kar diya. 🎪",
-        "Sabka system hang ho gaya ek saath. 💻",
-    ],
-
-    "four": [
-        "OHH boundary! Galti se professional shot nikal gaya. 😏",
-        "Rare moment! Screenshot lelo, repeat nahi hoga. 📸",
-        "Ball boundary gayi, bowler therapy lene jayega. 🛋️",
-        "Finally bat aur ball ka introduction ho gaya. 🤝",
-        "Bowler ka confidence ab recycle bin me hai. 🗑️",
-        "Lagta hai accidental timing perfect ho gayi. 🚑",
-    ],
-
-    "six": [
-        "OHHHH SIX! Ball stadium ke bahar, bowler apni izzat dhoond raha hai. 🔍",
-        "Ye six nahi, bowler ke confidence ka public execution tha. ☠️",
-        "Ball orbit me, bowler depression me. Perfect balance. 🪐",
-        "Bowler ab apni life choices question kar raha hai. 🤯",
-        "Ye shot nahi, bowler ke career pe nuclear attack tha. ☢️",
-        "Ball gayi space me, bowler reality check me. 🌌",
-        "Bowler internally retire ho chuka hai, announcement pending hai. 📢",
-        "Ye six nahi, emotional damage tha HD quality me. 📺",
-        "Ball ne boundary cross nahi ki, bowler ki aukaat cross kar di. 📉",
-        "Bowler ka confidence ab coma me hai. Doctor bulao. 🚑",
-        "Ball stadium ke bahar, bowler future ke bahar. 🚪",
-        "Is six ke baad bowler ne apni bio change kar di: 'Former cricketer'. 📝",
-        "Ye six nahi, resignation letter tha bowler ke naam. 📦",
-        "Ball itni door gayi, shayad next match me wapas aaye. ⏳",
-        "Bowler ki soul thodi der ke liye body se logout ho gayi. 👻",
-    ],
-
-    "five": [
-        "5 runs! Fielders ne circus audition clear kar liya. 🎪",
-        "Free ke runs! Batsman bhi believe nahi kar raha. 🤡",
-        "Fielding level: Error 404 skills not found. ❌",
-        "Ye cricket nahi, comedy central hai. 📺",
-        "Runs earned nahi, donated hain respectfully. 💸",
-    ],
-
-    "wicket": [
-        "OUT! Thank you for wasting everyone's time. 👏",
-        "Short stay, zero impact, full embarrassment. 🪦",
-        "Confidence unlimited, performance not found. ❌",
-        "Ye batting nahi, cameo disaster tha. 🎬",
-        "Batsman uninstall ho gaya crease se permanently. 🗑️",
-        "Audience bhi relief feel kar rahi hai. Finally. 😌",
-        "Bowler ne free reality check de diya. 🧾",
-    ]
-}
-
-# 🇮🇳 HINGLISH SPECIAL — generic energetic Hindi-English mixed commentary.
-# Not tied to any real commentator; just lively desi cricket energy.
 HINGLISH_COMMENTARY = {
     "dot": [
-        "Oye guru! Ball ne aisi kahani likhi, bat ne kalam hi gira di! 🧱",
-        "Bowler ne missile chhodi, batsman statue ban khada raha! 🚀",
-        "Ye ball nahi, paheli thi! Batsman solve hi nahi kar paya! ❓",
-        "Pressure cooker ki seeti baj rahi hai, par run nahi pak raha! 🍲",
-        "Bat hawa mein ghuma, par ball ne usko dhokha de diya! 🎭",
-        "Dot ball! Batsman ke hausle pe brake lag gaya! 🛑"
+        "{striker} ne {bowler} ki ball pe defensive shot khela, koi run nahi! 🧱",
+        "{bowler} ki tez gendaaz pe {striker} puri tarah beat ho gaye! 🔥",
+        "{striker} ne {bowler} ko try kiya, par fielder ke paas seedha gaya! 😐",
+        "{bowler} ne shandar line phenki, {striker} ne leave kar diya! 👀",
+        "{striker} ko {bowler} ke khilaaf gap nahi mil raha, pressure badh raha hai! 😰",
+        "Bowler ki izzat! {bowler} ne {striker} ko dot ball daal di. 🙌",
+        "Koi run nahi! Inner circle me shandar fielding off {bowler}'s ball. 🤐",
+        "{striker} ne ball seedha {bowler} ke haath me daal di. Dot ball! 🤚",
+        "{bowler} ne {striker} ke khilaaf LBW ki zordar appeal ki, par not out! 🔉",
+        "{bowler} ki ache length ki ball, {striker} ne safe play kiya. 👀",
+        "{striker} ko {bowler} ki ball timing karne me dikkat ho rahi hai. 🐢",
+        "Top class bowling from {bowler}! {striker} ko koi moka nahi de rahe. 🔒",
+        "{striker} ne straight bat se defend kiya off {bowler}. 📚",
+        "{bowler} tight bowling kar rahe hain! Ek aur dot ball for {striker}. 📈",
+        "{striker} ne {bowler} pe bada shot maarna chaha par miss ho gaye! 💨",
+        "{striker} ne cover par push kiya, par run nahi mila off {bowler}! 🛑",
+        "{bowler} ne {striker} ko slower ball se chakma diya! 🎭",
+        "{striker} ne {bowler} ki bouncer ko chhoda! 🎯",
+        "Crisp defense by {striker} off {bowler}. Dot ball! 🛡️",
+        "{bowler} ne {striker} par dot balls se pressure bana diya! ⏳"
     ],
-
     "single": [
-        "Oye hoye! Boond boond se sagar banta hai, ye ek run sona hai! 🪙",
-        "Chhota kadam, bada sapna! Scoreboard ko jagaya! 📈",
-        "Single liya jaise chor ne khazana chura liya ho! 🏃",
-        "Ye run nahi, umeed ki roshni hai andhere mein! 💡",
-        "Smart cricket! Risk kam, profit zyada! 🧠"
+        "{striker} ne {bowler} ki ball par single lekar strike rotate ki! 🏃‍♂️",
+        "{striker} ne {bowler} ki gendaaz ko long-on par bhej kar 1 run liya! 🔄",
+        "{striker} ne halka push kiya aur {bowler} ke khilaaf quick single chura liya! ⚡",
+        "{bowler} ki full length ball ko {striker} ne 1 run ke liye khela! 👟",
+        "{striker} ne {bowler} ki ball ko fine leg par bhej kar single liya! 🏏",
+        "Samajhdaari bhari batting! {striker} ne {bowler} pe single le liya. 🧠",
+        "{striker} ne {bowler} ki gendaaz pe deep me 1 run le liya! 🚶",
+        "Smart cricket by {striker}! Strike rotate kar rahe hain off {bowler}. ⏱️",
+        "{striker} ne paon ke paas ball chhodi aur 1 run daud kar poora kiya! 👟",
+        "Fielder se fumble hua aur {striker} ne {bowler} pe run chura liya! 🤲",
+        "{striker} ne {bowler} ko third man par cut karke 1 run liya! 🎯",
+        "{striker} ne {bowler} ki ball ko leg side par bhej kar single banaya! 🏃",
+        "Direct hit miss! {striker} ne safely 1 run poora kiya off {bowler}. 😅",
+        "{striker} ne {bowler} ko mid-wicket ke beech me 1 run ke liye khela! 🔄",
+        "{striker} ne cover par ball push ki aur sharp single liya off {bowler}! ⚡",
+        "Controlled shot by {striker} off {bowler} for 1 run! 🛡️",
+        "{bowler} ki short ball ko {striker} ne pull karke 1 run liya! ⚾",
+        "{striker} ne {bowler} ki ball ko long-off par bhej kar single banaya! 🏃‍♂️",
+        "{striker} ne quick call karke 1 run safely poora kiya off {bowler}! 🗣️",
+        "Badiya placement by {striker} off {bowler} for 1 run. 👟"
     ],
-
     "double": [
-        "Do run nahi, double dhamaka hai guru! 💥",
-        "Fielders bhaagte reh gaye, batsman jeet gaya race! 🏁",
-        "Ye partnership ka cement hai, mazboot buniyad! 🧱",
-        "Do run, jaise sher ki do dahad! 🦁",
-        "Fitness ka festival, fielding ka funeral! ⚰️"
+        "{striker} ne {bowler} ko gap me khela aur daud kar 2 runs le liye! ✌️",
+        "{striker} ne {bowler} ki ball pe zabardast daud lagakar 2 runs poore kiye! 💪",
+        "{striker} ne {bowler} ko mid-wicket ke upar se khela — aasaani se 2 runs! ⏩",
+        "Gap me ball! {striker} ne {bowler} pe hard push karke 2 runs banaye! 🏃‍♂️🏃‍♂️",
+        "Fielder slow tha, {striker} ne {bowler} ki ball pe 2 runs chura liye! ⚡",
+        "2 runs jud gaye! {striker} ne {bowler} ko deep me khela! ⏩",
+        "Misfield ka fayda utha kar {striker} ne {bowler} pe 2 runs daud liye! 🤦‍♂️",
+        "{striker} ne {bowler} ko fine glance karke 2 runs poore kiye! 👟",
+        "{striker} ne {bowler} ko extra cover par drive karke 2 runs liye! 🎯",
+        "Aggressive running! {striker} ne {bowler} pe 2 runs daud kar banaye! ✅",
+        "{striker} ne {bowler} ko point ke paas se cut karke 2 runs le liye! ✂️",
+        "{striker} ne {bowler} ki ball ko khali jagah me 2 runs ke liye khela! 🚀",
+        "{bowler} ne leg side pe daali, {striker} ne glance karke 2 runs liye! 🏃",
+        "{striker} ne {bowler} ko deep me pull karke 2 runs liye! 💪",
+        "Superb placement by {striker} off {bowler} — 2 runs! 🎯",
+        "{striker} ne pads se ball ko work karke quick 2 runs daude! ✌️",
+        "{striker} ne inner ring ko beat karke {bowler} pe 2 runs banaye! 💨",
+        "Deep fielder ne roka, par {striker} ne 2 runs le liye off {bowler}! 🛡️",
+        "Risk liya par {striker} ne {bowler} pe 2 runs poore kiye! ⏩",
+        "{striker} ne {bowler} ko mid-on ke paas khela aur 2 runs banaye! 🏃‍♂️"
     ],
-
     "triple": [
-        "Teen run! Ye toh cheetah ki raftaar aur sher ka jazba hai! 🐆",
-        "Running between wickets ka Taj Mahal bana diya! 🏛️",
-        "Fielders thak gaye, batsman jeet gaya marathon! 🏃‍♂️",
-        "Teen run nahi, teamwork ka teer hai! 🎯",
-        "Ye cricket nahi, Olympic sprint lag raha hai! 🥇"
+        "Kya shot hai! {striker} ne {bowler} ko outfield me khela aur 3 runs daud liye! 🏃‍♂️🏃‍♂️🏃‍♂️",
+        "{striker} ne {bowler} ki ball ko gap me bheja — zabardast running for 3 runs! ⚡",
+        "Deep fielder jab tak ball laata, {striker} ne {bowler} pe 3 runs le liye! 💨"
     ],
-
-    "four": [
-        "Oye guru! Ball ne boundary ko chummi de di! FOUR! 💋",
-        "Ye shot nahi, kala hai! Artist ka masterpiece! 🎨",
-        "Fielder bas darshak ban gaya, ball superstar ban gayi! ⭐",
-        "Timing aisi jaise ghadi ki sui! Perfect connection! ⏱️",
-        "Boundary! Ball ne visa liya aur rope ke paar chali gayi! ✈️"
+    "boundary": [
+        "CHAU_KA! {striker} ne {bowler} ki ball par shandar FOUR laga diya! 🚀",
+        "{striker} ne {bowler} ki pace ka istemal kiya aur 4 runs bhej diye! 🏏",
+        "{striker} ne {bowler} ko pull karke raseed kiya FOUR! 💥",
+        "{striker} ne {bowler} ko mid-off ke upar se FOUR maara! 🎯",
+        "ZABARDAST SHOT! {striker} ne {bowler} ki short ball pe FOUR lagaya! 💥",
+        "Glorious cover drive by {striker} off {bowler}! Pure timing for 4! 🌟",
+        "{striker} ne kadam nikal kar {bowler} ko FOUR maara! 🚀",
+        "{striker} ne {bowler} ki ball ko straight drive karke FOUR banaya! 💥",
+        "Timing at its best! {striker} ne {bowler} ko boundary line ke paar bheja! 🎯",
+        "{striker} ne {bowler} ko point ke bagal se FOUR ke liye cut kiya! ⚡",
+        "Infield ke upar se! {striker} ne {bowler} ko FOUR maara! 🚀",
+        "Fielder rok nahi paaya — {striker} ka shot {bowler} pe FOUR gaya! 4 runs! 🏃",
+        "{striker} ne {bowler} ko sweep karke badiya FOUR lagaya! 🧹",
+        "Shandar stroke! {striker} ne {bowler} ki gendaaz pe FOUR jada! 💎",
+        "{striker} ne {bowler} ko upper cut karke FOUR maara! ✈️",
+        "{striker} ne {bowler} ko pad se flick karke boundary bhej diya! 💥",
+        "{striker} ne {bowler} ko gap me drive karke FOUR lagaya! 🌟",
+        "Kamaal ka shot! {striker} ne {bowler} ko boundary ke paar bheja! 🏏",
+        "{striker} ne {bowler} par attack karke inner ring clear ki — FOUR! 🚀",
+        "Sublime timing by {striker} off {bowler}! FOUR runs! 🎯"
     ],
-
     "six": [
-        "Oye hoye! Ye ball nahi, rocket hai! Chand pe landing karega! 🌕",
-        "Maximum! Stadium chhota pad gaya is shot ke liye! 💥",
-        "Muscle power ka pradarshan! Ye cricket nahi, yudh hai! ⚔️",
-        "Ball hawa mein aise uda jaise azaad panchi! 🕊️",
-        "Six! Gravity bhi haar maan gayi! 🌌",
-        "Ye shot nahi, prakriti ka prakop hai! 🌪️"
+        "DHA_MAKEDAAR CHHAKKA! {striker} ne {bowler} ko stadium ke bahar bhej diya! 🚀6️⃣",
+        "{striker} ne {bowler} pe dikhaya muscle power — kya shandar SIX! 🔥",
+        "{striker} ne aage badhkar {bowler} ko monster SIX maara! 🌟",
+        "{striker} ne {bowler} ki ball pe perfect timing ke saath SIX jada! ⚡",
+        "BOOM! {striker} ne {bowler} ko boundary ke bahar 6 runs ke liye bhej diya! 🚀",
+        "BOHOT BADA CHHAKKA! {striker} ne {bowler} ko crowd me bhej diya for SIX! 💥",
+        "{striker} ne {bowler} ki slower ball ko pehchan kar SIX maara! 🎯",
+        "KYA HIT HAI! {striker} ne {bowler} ko out of the park bhej diya — 6! 🚀",
+        "{striker} ne {bowler} ko deep square leg ke upar se SIX maara! 🔥",
+        "UNSTOPPABLE! {striker} ne {bowler} pe MAXIMUM 6 lagaya! 6️⃣",
+        "Clean hit! {striker} ne {bowler} ko straight long-on par SIX maara! 💥",
+        "{striker} ne {bowler} ki ball pe Aasman me SIX bhej diya! ✈️",
+        "Pure class! {striker} ne {bowler} ko extra cover ke upar se SIX maara! 🌟",
+        "{striker} ne {bowler} ko poore confidence se SIX ke liye hit kiya! 🚀",
+        "{striker} ne {bowler} ki bouncer par hook shot karke SIX lagaya! 🔥",
+        "Stadium se bahar! {striker} ne {bowler} pe 6 runs banaye! 💥",
+        "{striker} ne {bowler} ko leg side par glance karke SIX maara! ⚡",
+        "Kamaal ki hitting! {striker} ne {bowler} ko 6 runs ke liye bhej diya! 🎯",
+        "{striker} ne front leg hata kar {bowler} ko long-off par SIX maara! 🚀",
+        "KYA SHOT HAI! {striker} ne {bowler} pe 6 runs ka monster shot maara! 6️⃣"
     ],
-
-    "five": [
-        "Oye guru! Fielders confuse ho gaye, batsman ne bonus jeet liya! 5 RUNS! 🤯",
-        "Ye run nahi, cricket ka lottery ticket hai! 🎟️",
-        "Fielding ki galti, batting ki Diwali! 🪔",
-        "Ball bhaagti rahi, batsman kamayi karta raha! 💰",
-        "Paanch run! Bhagwan bhi batsman ke saath hai aaj! 🙏"
+    "wicket_bowled": [
+        "🎯 {bowler} ne {striker} ki stumps ko udaa diya — CLEAN BOWLED! 🔥",
+        "🎯 {bowler} ki zabardast in-swinger pe {striker} bowled ho gaye!",
+        "🎯 Timber strike! {bowler} ne {striker} ke stumps udha diye!",
+        "🎯 Kya delivery thi {bowler} ki! {striker} clean bowled ho gaye!",
+        "🎯 {bowler} ne {striker} ke stumps ukhaad diye — OUT Bowled!",
+        "🎯 Pitch hoke seedhi nikli! {bowler} ne {striker} ka off stump gira diya!",
+        "🎯 {bowler} ki dream delivery pe {striker} BOWLED ho gaye!",
+        "🎯 Tez aur seedhi ball off {bowler}! {striker} clean bowled!",
+        "🎯 Stumps hawa me! {bowler} ne {striker} ko BOWLED kar diya!",
+        "🎯 {striker} ne {bowler} ki line miss ki aur clean bowled ho gaye!"
     ],
-
-    "wicket": [
-        "OUT! Batsman ka kila toot gaya, bowler ban gaya sikandar! 🏰",
-        "Stumps ud gaye jaise aandhi mein patte! 🍃",
-        "Catch liya! Match ka rukh badal diya! 🔄",
-        "Ye wicket nahi, bijli gir gayi batting par! ⚡",
-        "Batsman aaya, dekha, aur haar gaya! ❌",
-        "Bowler ne likh di batsman ki antim kahani! 📖"
+    "wicket_lbw": [
+        "☝️ {bowler} ki gendaaz seedha pads pe lagi! Umpire ne ungli utha di — {striker} OUT LBW!",
+        "☝️ {bowler} ne {striker} ko stumps ke saamne fasa liya! LBW out!",
+        "☝️ {bowler} ki ball line me lagi, {striker} OUT LBW!",
+        "☝️ {bowler} ne zordar appeal ki aur Umpire ne {striker} ko LBW out de diya!",
+        "☝️ {striker} flick miss kar gaye off {bowler}, seedha LBW out!",
+        "☝️ {bowler} ne wicket nikala! {striker} LBW dismissed!",
+        "☝️ {bowler} ki seedhi ball pe {striker} LBW ho gaye!",
+        "☝️ {bowler} ne ball pad par maari, {striker} OUT LBW!",
+        "☝️ {bowler} ki line miss hui aur {striker} ko LBW walk back karna padega!"
+    ],
+    "wicket_caught": [
+        "🧤 {bowler} ki ball pe {striker} ne shot maara, aur {fielder} ne lajawab catch lapak liya!",
+        "🧤 {striker} ne {bowler} pe hawa me shot maara, {fielder} ne safe catch le liya!",
+        "🧤 Shandar catch by {fielder}! {bowler} ko mil gaya {striker} ka bada wicket!",
+        "🧤 {striker} ka edge laga off {bowler}, aur {fielder} ne catch pakad liya!",
+        "🧤 Safe hands! {fielder} ne {bowler} ki ball par {striker} ka catch le liya!",
+        "🧤 {striker} ne bada shot maara off {bowler}, par {fielder} ne outfield me catch kar liya!",
+        "🧤 Sharp catch by {fielder} off {bowler}'s bowling! {striker} OUT!",
+        "🧤 {bowler} ne {striker} ko chakma diya, aur {fielder} ne catch poora kiya!",
+        "🧤 Hawa me jhalak! {fielder} ne dive karke {bowler} pe {striker} ka catch lapaka!",
+        "🧤 {striker} ne seedha {fielder} ke haath me shot maara off {bowler}! OUT Caught!"
     ]
 }
 
@@ -1239,13 +1280,16 @@ def init_db():
         ("team_total_balls_bowled", "INTEGER DEFAULT 0"),
         ("team_total_catches", "INTEGER DEFAULT 0"),
         ("team_total_stumpings", "INTEGER DEFAULT 0"),
+        ("dismissals_bowled", "INTEGER DEFAULT 0"),
+        ("dismissals_lbw", "INTEGER DEFAULT 0"),
+        ("dismissals_caught", "INTEGER DEFAULT 0"),
+        ("catches_taken", "INTEGER DEFAULT 0"),
     ]:
         try:
             c.execute(f"ALTER TABLE user_stats ADD COLUMN {col_name} {col_def}")
         except Exception:
             pass
-    
-    # Create ai_stats table for AI mode statistics
+
     c.execute('''CREATE TABLE IF NOT EXISTS ai_stats (
         user_id INTEGER PRIMARY KEY,
         total_matches INTEGER DEFAULT 0,
@@ -2836,35 +2880,34 @@ def balls_to_float_overs(balls: int) -> float:
 
 # --- AUTO-EXECUTE ON START ---
 
-def get_commentary(event_type: str, group_id: int = None, user_id: int = None) -> str:
-    """
-    Get commentary based on GROUP setting (Admin controlled)
-    Priority: Group Setting > User Setting > Default English
-    """
-    # First check gc_settings (admin-set per group)
+def get_commentary(event_type: str, group_id: int = None, user_id: int = None, striker: str = "Batsman", bowler: str = "Bowler", fielder: str = "Fielder") -> str:
+    """Get commentary based on GROUP setting formatted with player names."""
     group_style = None
     if group_id and group_id in gc_settings:
         group_style = gc_settings[group_id].get("commentary_style")
-    
-    # Fallback to registered_groups commentary_style
     if not group_style and group_id and group_id in registered_groups:
         group_style = registered_groups[group_id].get("commentary_style")
     
-    # If no group setting, check user preference (for DMs or fallback)
     user_style = None
     if user_id and user_id in user_data:
         user_style = user_data[user_id].get("commentary_style")
     
-    # Determine which style to use
-    style = "english"  # Default
-    
+    style = "english"
     if group_style:
         style = group_style
     elif user_style:
         style = user_style
     
-    # Get commentary based on style
-    return _pick_static_commentary(event_type, style)
+    dict_to_use = HINGLISH_COMMENTARY if style == "hinglish" else COMMENTARY
+    comments = dict_to_use.get(event_type, [])
+    if not comments:
+        comments = COMMENTARY.get(event_type, ["Great shot by {striker}!"])
+    
+    tmpl = random.choice(comments)
+    try:
+        return tmpl.format(striker=html.escape(striker), bowler=html.escape(bowler), fielder=html.escape(fielder))
+    except Exception:
+        return tmpl
 
 # ═══════════════════════════════════════════════════════════════
 # AI COMMENTARY SYSTEM - Powered by Claude API
@@ -3104,10 +3147,10 @@ def _team_board_render(match: Match):
     """Builds the (text, keyboard) pair for the team joining board."""
     text = get_team_join_message(match)
     keyboard = [
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")],
-        [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now")]
+        [styled_button("🧊 Join Team X", callback_data="join_team_x"),
+         styled_button("🔥 Join Team Y", callback_data="join_team_y")],
+        [styled_button("🚪 Leave Team", callback_data="leave_team")],
+        [styled_button("🚀 Start Now (Host)", callback_data="team_start_now")]
     ]
     return text, keyboard
 
@@ -3228,16 +3271,16 @@ async def update_team_edit_message(context: ContextTypes.DEFAULT_TYPE, group_id:
         text += "👉 Click button below when done."
         
         # 'Done' button wapas Main Menu le jayega
-        keyboard = [[InlineKeyboardButton(f"✅ Done with Team {match.editing_team}", callback_data="edit_back")]]
+        keyboard = [[styled_button(f"✅ Done with Team {match.editing_team}", callback_data="edit_back")]]
         
     else:
         # --- MAIN MENU (Team Select Karo) ---
         text += "👇 <b>Select a team to edit:</b>"
         keyboard = [
             # Note: Buttons ab 'edit_team_x' use kar rahe hain (no _mode)
-            [InlineKeyboardButton("✏️ Edit Team X", callback_data="edit_team_x"), 
-             InlineKeyboardButton("✏️ Edit Team Y", callback_data="edit_team_y")],
-            [InlineKeyboardButton("✅ Finalize & Start", callback_data="team_edit_done")]
+            [styled_button("✏️ Edit Team X", callback_data="edit_team_x"), 
+             styled_button("✏️ Edit Team Y", callback_data="edit_team_y")],
+            [styled_button("✅ Finalize & Start", callback_data="team_edit_done")]
         ]
 
     await refresh_game_message(context, group_id, match, text, InlineKeyboardMarkup(keyboard), media_key="squads")
@@ -3373,8 +3416,8 @@ def _build_solo_scorecard(match):
 
     group_id = getattr(match, "group_id", None) or getattr(match, "chat_id", None)
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"soloscore_refresh_{group_id}"),
-        InlineKeyboardButton("◀ Back", callback_data=f"soloscore_back_{group_id}"),
+        styled_button("🔄 Refresh", callback_data=f"soloscore_refresh_{group_id}"),
+        styled_button("◀ Back", callback_data=f"soloscore_back_{group_id}"),
     ]])
     return text, kb
 
@@ -3424,7 +3467,7 @@ async def soloscore_back_callback(update: Update, context: ContextTypes.DEFAULT_
         msg += f"   {p.runs} runs ({p.balls_faced} balls)  SR: {sr}\n\n"
     msg += "─────────────────"
 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Table", callback_data=f"soloscore_refresh_{group_id}")]])
+    kb = InlineKeyboardMarkup([[styled_button("✅ Table", callback_data=f"soloscore_refresh_{group_id}")]])
     try:
         await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e:
@@ -3896,7 +3939,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _tme_gid = _cid_str[3:] if _cid_str.startswith("100") else _cid_str
                 _game_url = f"https://t.me/c/{_tme_gid}/{match.main_message_id or 1}"
                 _go_group_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🏟️ Go to Game", url=_game_url)
+                    styled_button("🏟️ Go to Game", url=_game_url)
                 ]])
             except Exception:
                 _go_group_markup = None
@@ -4166,7 +4209,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add to Group button
         bot_username = (await context.bot.get_me()).username
         keyboard = [
-            [InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_username}?startgroup=true")]
+            [styled_button("➕ Add to Group", url=f"https://t.me/{bot_username}?startgroup=true")]
         ]
         
         await update.message.reply_photo(
@@ -4523,13 +4566,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Interactive Help Menu"""
     
     keyboard = [
-        [InlineKeyboardButton("👥 Team Mode", callback_data="help_team"),
-         InlineKeyboardButton("⚔️ Solo Mode", callback_data="help_solo")],
-        [InlineKeyboardButton("🏆 Tournament", callback_data="help_tournament"),
-         InlineKeyboardButton("💰 Fantasy", callback_data="help_fantasy")],
-        [InlineKeyboardButton("🛠 Admin", callback_data="help_admin"),
-         InlineKeyboardButton("📚 How to Play", callback_data="help_tutorial")],
-        [InlineKeyboardButton("❌ Close", callback_data="help_close")]
+        [styled_button("👥 Team Mode", callback_data="help_team"),
+         styled_button("⚔️ Solo Mode", callback_data="help_solo")],
+        [styled_button("🏆 Tournament", callback_data="help_tournament"),
+         styled_button("💰 Fantasy", callback_data="help_fantasy")],
+        [styled_button("🛠 Admin", callback_data="help_admin"),
+         styled_button("📚 How to Play", callback_data="help_tutorial")],
+        [styled_button("❌ Close", callback_data="help_close")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -4563,38 +4606,38 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "help_main":
         text = get_help_main_text()
         keyboard = [
-            [InlineKeyboardButton("👥 Team Mode", callback_data="help_team"),
-             InlineKeyboardButton("⚔️ Solo Mode", callback_data="help_solo")],
-            [InlineKeyboardButton("🏆 Tournament", callback_data="help_tournament"),
-             InlineKeyboardButton("💰 Fantasy", callback_data="help_fantasy")],
-            [InlineKeyboardButton("🛠 Admin", callback_data="help_admin"),
-             InlineKeyboardButton("📚 How to Play", callback_data="help_tutorial")],
-            [InlineKeyboardButton("❌ Close", callback_data="help_close")]
+            [styled_button("👥 Team Mode", callback_data="help_team"),
+             styled_button("⚔️ Solo Mode", callback_data="help_solo")],
+            [styled_button("🏆 Tournament", callback_data="help_tournament"),
+             styled_button("💰 Fantasy", callback_data="help_fantasy")],
+            [styled_button("🛠 Admin", callback_data="help_admin"),
+             styled_button("📚 How to Play", callback_data="help_tutorial")],
+            [styled_button("❌ Close", callback_data="help_close")]
         ]
     
     elif data == "help_team":
         text = get_help_team_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
+        keyboard = [[styled_button("🔙 Back to Menu", callback_data="help_main")]]
         
     elif data == "help_solo":
         text = get_help_solo_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
+        keyboard = [[styled_button("🔙 Back to Menu", callback_data="help_main")]]
     
     elif data == "help_tournament":
         text = get_help_tournament_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
+        keyboard = [[styled_button("🔙 Back to Menu", callback_data="help_main")]]
 
     elif data == "help_fantasy":
         text = get_help_fantasy_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
+        keyboard = [[styled_button("🔙 Back to Menu", callback_data="help_main")]]
 
     elif data == "help_admin":
         text = get_help_admin_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
+        keyboard = [[styled_button("🔙 Back to Menu", callback_data="help_main")]]
         
     elif data == "help_tutorial":
         text = get_help_tutorial_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
+        keyboard = [[styled_button("🔙 Back to Menu", callback_data="help_main")]]
     
     # Update the Caption (Image remains same)
     try:
@@ -4656,12 +4699,12 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         # Step 6: Prepare UI
         keyboard = [
-            [InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo"),
-             InlineKeyboardButton("🤖 AI Mode (DM)", callback_data="mode_ai")],
-            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team")],
-            [InlineKeyboardButton("📝 Registration", callback_data="tour_registration_mode"),
-             InlineKeyboardButton("🏦 Auction", callback_data="tour_auction_mode")],
-            [InlineKeyboardButton("🏆 Tournament Mode", callback_data="mode_tournament")]
+            [styled_button("⚔️ Solo Mode", callback_data="mode_solo"),
+             styled_button("🤖 AI Mode (DM)", callback_data="mode_ai")],
+            [styled_button("👥 Team Mode", callback_data="mode_team")],
+            [styled_button("📝 Registration", callback_data="tour_registration_mode"),
+             styled_button("🏦 Auction", callback_data="tour_auction_mode")],
+            [styled_button("🏆 Tournament Mode", callback_data="mode_tournament")]
         ]
         
         requester_tag = f'<a href="tg://user?id={user.id}">{html.escape(user.first_name)}</a>'
@@ -4754,12 +4797,12 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
 
         # Show tournament 5-button menu
         keyboard = [
-            [InlineKeyboardButton("🏏 Start Match", callback_data="tour_start_match")],
-            [InlineKeyboardButton("📊 Points Table", callback_data="tour_points_table"),
-             InlineKeyboardButton("📋 Fixtures", callback_data="tour_fixtures")],
-            [InlineKeyboardButton("✏️ Edit Team", callback_data="tour_edit_team"),
-             InlineKeyboardButton("🔙 Back", callback_data="back_to_modes")],
-            [InlineKeyboardButton("🛑 End Tour", callback_data="tour_end_confirm")]
+            [styled_button("🏏 Start Match", callback_data="tour_start_match")],
+            [styled_button("📊 Points Table", callback_data="tour_points_table"),
+             styled_button("📋 Fixtures", callback_data="tour_fixtures")],
+            [styled_button("✏️ Edit Team", callback_data="tour_edit_team"),
+             styled_button("🔙 Back", callback_data="back_to_modes")],
+            [styled_button("🛑 End Tour", callback_data="tour_end_confirm")]
         ]
 
         caption = (
@@ -4884,7 +4927,7 @@ async def auction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "╰━━━━━━━━"
         )
         
-        keyboard = [[InlineKeyboardButton("🎤 Be Auctioneer", callback_data="become_auctioneer")]]
+        keyboard = [[styled_button("🎤 Be Auctioneer", callback_data="become_auctioneer")]]
         
         # ✅ FIX: Use edit_caption
         await query.message.edit_caption(
@@ -4912,9 +4955,9 @@ async def auction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "back_to_modes":
         keyboard = [
-            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team"),
-            InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo")],
-            [InlineKeyboardButton("🏆 Tournament", callback_data="mode_tournament")]
+            [styled_button("👥 Team Mode", callback_data="mode_team"),
+            styled_button("⚔️ Solo Mode", callback_data="mode_solo")],
+            [styled_button("🏆 Tournament", callback_data="mode_tournament")]
         ]
         
         # ✅ FIX: Use edit_caption
@@ -4943,8 +4986,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
 
         if query.data == "tour_end_confirm":
             keyboard = [[
-                InlineKeyboardButton("✅ Yes, End Tour", callback_data="tour_end_yes"),
-                InlineKeyboardButton("❌ Cancel", callback_data="tour_end_no")
+                styled_button("✅ Yes, End Tour", callback_data="tour_end_yes"),
+                styled_button("❌ Cancel", callback_data="tour_end_no")
             ]]
             text = (
                 "🛑 <b>END TOURNAMENT?</b>\n"
@@ -5040,7 +5083,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         text += f"<pre>{table}</pre>"
         text += "📌 <i>Win=2pts  Tie=1pt  Loss=0pts</i>"
 
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
+        keyboard = [[styled_button("🔙 Back", callback_data="mode_tournament")]]
         rm = InlineKeyboardMarkup(keyboard)
         try:
             if img_bio:
@@ -5113,18 +5156,18 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         # Navigation buttons
         nav_row = []
         if fix_offset > 0:
-            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"tour_fixtures_{max(0, fix_offset - FIX_PAGE)}"))
+            nav_row.append(styled_button("◀️", callback_data=f"tour_fixtures_{max(0, fix_offset - FIX_PAGE)}"))
         if fix_offset + FIX_PAGE < total_fixes:
-            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"tour_fixtures_{fix_offset + FIX_PAGE}"))
+            nav_row.append(styled_button("▶️", callback_data=f"tour_fixtures_{fix_offset + FIX_PAGE}"))
 
         page_info = f"📄 {fix_offset//FIX_PAGE + 1}/{(total_fixes + FIX_PAGE - 1)//FIX_PAGE}"
         if nav_row:
-            nav_row.insert(len(nav_row)//2, InlineKeyboardButton(page_info, callback_data="noop"))
+            nav_row.insert(len(nav_row)//2, styled_button(page_info, callback_data="noop"))
 
         keyboard = []
         if nav_row:
             keyboard.append(nav_row)
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")])
+        keyboard.append([styled_button("🔙 Back", callback_data="mode_tournament")])
         rm = InlineKeyboardMarkup(keyboard)
 
         try:
@@ -5161,7 +5204,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
                 "• Send <code>done</code> when finished\n\n"
                 "─────────────────"
             )
-            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
+            keyboard = [[styled_button("🔙 Back", callback_data="mode_tournament")]]
             try:
                 await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
             except:
@@ -5187,8 +5230,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             "─────────────────"
         )
         
-        keyboard = [[InlineKeyboardButton("✅ Done", callback_data="tour_teams_done"),
-                     InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
+        keyboard = [[styled_button("✅ Done", callback_data="tour_teams_done"),
+                     styled_button("🔙 Back", callback_data="mode_tournament")]]
         try:
             photo = MEDIA_ASSETS.get("tournament_teams")
             await context.bot.send_photo(
@@ -5289,8 +5332,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"─────────────────"
         )
         keyboard = [
-            [InlineKeyboardButton("🎙 Become Host", callback_data=f"tour_host_{mid}")],
-            [InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]
+            [styled_button("🎙 Become Host", callback_data=f"tour_host_{mid}")],
+            [styled_button("🔙 Back", callback_data="mode_tournament")]
         ]
         try:
             photo = MEDIA_ASSETS.get("tournament_match")
@@ -5325,10 +5368,10 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"🔢 Select number of overs (1–20):"
         )
         keyboard = [
-            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(1, 6)],
-            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(6, 11)],
-            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(11, 16)],
-            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(16, 21)],
+            [styled_button(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(1, 6)],
+            [styled_button(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(6, 11)],
+            [styled_button(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(11, 16)],
+            [styled_button(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(16, 21)],
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -5360,7 +5403,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"🔵 Host: Select <b>Team X</b>:"
         )
         keyboard = [
-            [InlineKeyboardButton(tn, callback_data=f"tour_teamx_{mid}_{tn}")] for tn in all_teams
+            [styled_button(tn, callback_data=f"tour_teamx_{mid}_{tn}")] for tn in all_teams
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -5388,7 +5431,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"🔴 Now select <b>Team Y</b>:"
         )
         keyboard = [
-            [InlineKeyboardButton(tn, callback_data=f"tour_teamy_{mid}_{tn}")] for tn in all_teams
+            [styled_button(tn, callback_data=f"tour_teamy_{mid}_{tn}")] for tn in all_teams
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -5471,7 +5514,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"Use <code>/startregistration</code> here to open registration.\n"
             f"─────────────────"
         )
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
+        keyboard = [[styled_button("🔙 Back", callback_data="mode_tournament")]]
         await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     elif query.data == "tour_auction_mode":
@@ -5480,8 +5523,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             await query.message.reply_text(text, reply_markup=notice_markup, parse_mode=ParseMode.HTML)
             return
         keyboard = [
-            [InlineKeyboardButton("🎯 Start Auction", callback_data="start_auction")],
-            [InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]
+            [styled_button("🎯 Start Auction", callback_data="start_auction")],
+            [styled_button("🔙 Back", callback_data="mode_tournament")]
         ]
         try:
             await query.message.edit_caption(
@@ -5967,14 +6010,14 @@ def _mres_squad(group_id: int, team1: str, team2: str) -> List[Tuple[int, str, s
 def _mres_overs_keyboard(mid) -> InlineKeyboardMarkup:
     rows = []
     for start in range(1, 21, 5):
-        rows.append([InlineKeyboardButton(str(o), callback_data=f"mres_overs_{o}") for o in range(start, min(start + 5, 21))])
+        rows.append([styled_button(str(o), callback_data=f"mres_overs_{o}") for o in range(start, min(start + 5, 21))])
     return InlineKeyboardMarkup(rows)
 
 
 def _mres_wkts_keyboard() -> InlineKeyboardMarkup:
     rows = []
     for start in range(0, 20, 5):
-        rows.append([InlineKeyboardButton(str(w), callback_data=f"mres_wktmargin_{w}") for w in range(start, min(start + 5, 20))])
+        rows.append([styled_button(str(w), callback_data=f"mres_wktmargin_{w}") for w in range(start, min(start + 5, 20))])
     return InlineKeyboardMarkup(rows)
 
 
@@ -5994,9 +6037,9 @@ def _mres_stats_prompt_text(session: Dict) -> str:
 
 def _mres_stats_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏭ Skip (didn't play)", callback_data="mres_playerskip")],
-        [InlineKeyboardButton("✅ Finish & Save now", callback_data="mres_playerdone")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")],
+        [styled_button("⏭ Skip (didn't play)", callback_data="mres_playerskip")],
+        [styled_button("✅ Finish & Save now", callback_data="mres_playerdone")],
+        [styled_button("❌ Cancel", callback_data="mres_cancel")],
     ])
 
 
@@ -6126,8 +6169,8 @@ async def addresult_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "squad": [], "idx": 0, "stats": {}, "stage": "team_x",
     }
 
-    kb = [[InlineKeyboardButton(tn, callback_data=f"mres_tx_{tn}")] for tn in all_teams]
-    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")])
+    kb = [[styled_button(tn, callback_data=f"mres_tx_{tn}")] for tn in all_teams]
+    kb.append([styled_button("❌ Cancel", callback_data="mres_cancel")])
     await update.message.reply_text(
         "🏆 <b>Manual Result Entry</b>\n─────────────────\n🔵 Select <b>Team X</b>:",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML,
@@ -6161,8 +6204,8 @@ async def mres_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tx = data[len("mres_tx_"):]
         session["team1"] = tx
         all_teams = [t for t in tournament_teams.get(group_id, {}).keys() if t != tx]
-        kb = [[InlineKeyboardButton(tn, callback_data=f"mres_ty_{tn}")] for tn in all_teams]
-        kb.append([InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")])
+        kb = [[styled_button(tn, callback_data=f"mres_ty_{tn}")] for tn in all_teams]
+        kb.append([styled_button("❌ Cancel", callback_data="mres_cancel")])
         await query.edit_message_text(
             f"✅ Team X = <b>{html.escape(tx)}</b>\n─────────────────\n🔴 Select <b>Team Y</b>:",
             reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML,
@@ -6191,10 +6234,10 @@ async def mres_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["stage"] = "winner"
         t1, t2 = session["team1"], session["team2"]
         kb = [
-            [InlineKeyboardButton(t1, callback_data="mres_win_t1")],
-            [InlineKeyboardButton(t2, callback_data="mres_win_t2")],
-            [InlineKeyboardButton("🤝 Tie", callback_data="mres_win_tie")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")],
+            [styled_button(t1, callback_data="mres_win_t1")],
+            [styled_button(t2, callback_data="mres_win_t2")],
+            [styled_button("🤝 Tie", callback_data="mres_win_tie")],
+            [styled_button("❌ Cancel", callback_data="mres_cancel")],
         ]
         await query.edit_message_text(
             f"✅ <b>{overs} overs</b>\n─────────────────\n⚔️ <b>{t1}</b> vs <b>{t2}</b>\n\n🏆 Who won?",
@@ -6215,9 +6258,9 @@ async def mres_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _mres_advance_to_stats(query, context, group_id, edit=True)
             return
         kb = [
-            [InlineKeyboardButton("🏃 By Runs", callback_data="mres_margintype_runs")],
-            [InlineKeyboardButton("🎯 By Wickets", callback_data="mres_margintype_wkts")],
-            [InlineKeyboardButton("⏭ Skip margin", callback_data="mres_margintype_skip")],
+            [styled_button("🏃 By Runs", callback_data="mres_margintype_runs")],
+            [styled_button("🎯 By Wickets", callback_data="mres_margintype_wkts")],
+            [styled_button("⏭ Skip margin", callback_data="mres_margintype_skip")],
         ]
         await query.edit_message_text(
             f"✅ Result: <b>{session['winner']} won</b>\n\n📏 Winning margin?",
@@ -6476,10 +6519,10 @@ async def tourlb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     metric = "runs"
     text = _tourlb_text(group_id, metric)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏃 Runs",    callback_data=f"tourlb_{group_id}_runs"),
-         InlineKeyboardButton("⚾ Wickets", callback_data=f"tourlb_{group_id}_wickets")],
-        [InlineKeyboardButton("🚀 Sixes",   callback_data=f"tourlb_{group_id}_sixes"),
-         InlineKeyboardButton("4️⃣ Fours",   callback_data=f"tourlb_{group_id}_fours")],
+        [styled_button("🏃 Runs",    callback_data=f"tourlb_{group_id}_runs"),
+         styled_button("⚾ Wickets", callback_data=f"tourlb_{group_id}_wickets")],
+        [styled_button("🚀 Sixes",   callback_data=f"tourlb_{group_id}_sixes"),
+         styled_button("4️⃣ Fours",   callback_data=f"tourlb_{group_id}_fours")],
     ])
 
     # Try generate image
@@ -6613,10 +6656,10 @@ async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user)
     
     # Buttons
     keyboard = [
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")],
-        [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now")]
+        [styled_button("🧊 Join Team X", callback_data="join_team_x"),
+         styled_button("🔥 Join Team Y", callback_data="join_team_y")],
+        [styled_button("🚪 Leave Team", callback_data="leave_team")],
+        [styled_button("🚀 Start Now (Host)", callback_data="team_start_now")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -6714,7 +6757,7 @@ async def _build_not_approved_notice(context: ContextTypes.DEFAULT_TYPE, chat_id
         f"Please ask {who} to give me the authorization to use this feature.\n\n"
         f"─────────────────"
     )
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📩 Contact Owner", url=f"tg://user?id={OWNER_ID}")]])
+    keyboard = InlineKeyboardMarkup([[styled_button("📩 Contact Owner", url=f"tg://user?id={OWNER_ID}")]])
     return text, keyboard
 
 
@@ -6753,8 +6796,8 @@ async def team_start_now_callback(update: Update, context: ContextTypes.DEFAULT_
 
     # Ask for explicit Yes/No confirmation before force-starting
     confirm_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, Force Start", callback_data="team_start_confirm_yes"),
-         InlineKeyboardButton("❌ No, Cancel", callback_data="team_start_confirm_no")]
+        [styled_button("✅ Yes, Force Start", callback_data="team_start_confirm_yes"),
+         styled_button("❌ No, Cancel", callback_data="team_start_confirm_no")]
     ])
     try:
         await context.bot.send_message(
@@ -6881,7 +6924,7 @@ async def end_team_join_phase(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     match.host_id = None
     match.host_name = None
 
-    keyboard = [[InlineKeyboardButton("🙋‍♂️ I Want to be Host", callback_data="become_host")]]
+    keyboard = [[styled_button("🙋‍♂️ I Want to be Host", callback_data="become_host")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     host_text = f"🚨 <b>REGISTRATION CLOSED</b> 🚨\n"
@@ -7038,9 +7081,9 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Refresh Game Board
     text = get_team_join_message(match)
     keyboard = [
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")]
+        [styled_button("🧊 Join Team X", callback_data="join_team_x"),
+         styled_button("🔥 Join Team Y", callback_data="join_team_y")],
+        [styled_button("🚪 Leave Team", callback_data="leave_team")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -7079,7 +7122,7 @@ async def host_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     # Loop from 1 to 20 (inclusive)
     for i in range(1, 21):
         # Add button to current row
-        row.append(InlineKeyboardButton(f"{i}", callback_data=f"overs_{i}"))
+        row.append(styled_button(f"{i}", callback_data=f"overs_{i}"))
         
         # If row has 5 buttons, add it to keyboard and start new row
         if len(row) == 5:
@@ -7281,9 +7324,9 @@ async def start_team_edit_phase(query, context: ContextTypes.DEFAULT_TYPE, match
     cap_y_name = captain_y.first_name if captain_y else "Not Selected"
     
     keyboard = [
-        [InlineKeyboardButton("Edit Team X", callback_data="edit_team_x")],
-        [InlineKeyboardButton("Edit Team Y", callback_data="edit_team_y")],
-        [InlineKeyboardButton("✅ Done - Proceed", callback_data="team_edit_done")]
+        [styled_button("Edit Team X", callback_data="edit_team_x")],
+        [styled_button("Edit Team Y", callback_data="edit_team_y")],
+        [styled_button("✅ Done - Proceed", callback_data="team_edit_done")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -7368,15 +7411,15 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if match.game_mode == "TEAM":
         keyboard = [
             [
-                InlineKeyboardButton("🧊 Team X", callback_data=f"midjoin_x_{user.id}"),
-                InlineKeyboardButton("🔥 Team Y", callback_data=f"midjoin_y_{user.id}")
+                styled_button("🧊 Team X", callback_data=f"midjoin_x_{user.id}"),
+                styled_button("🔥 Team Y", callback_data=f"midjoin_y_{user.id}")
             ],
-            [InlineKeyboardButton("❌ Reject", callback_data=f"midjoin_reject_{user.id}")]
+            [styled_button("❌ Reject", callback_data=f"midjoin_reject_{user.id}")]
         ]
     else:
         keyboard = [
-            [InlineKeyboardButton("✅ Accept", callback_data=f"midjoin_solo_{user.id}")],
-            [InlineKeyboardButton("❌ Reject", callback_data=f"midjoin_reject_{user.id}")]
+            [styled_button("✅ Accept", callback_data=f"midjoin_solo_{user.id}")],
+            [styled_button("❌ Reject", callback_data=f"midjoin_reject_{user.id}")]
         ]
 
     msg = (
@@ -7816,8 +7859,8 @@ async def team_edit_done_callback(update: Update, context: ContextTypes.DEFAULT_
     cap_y_name = captain_y.first_name if captain_y else "Not Selected"
     
     keyboard = [
-        [InlineKeyboardButton("Become Captain - Team X", callback_data="captain_team_x")],
-        [InlineKeyboardButton("Become Captain - Team Y", callback_data="captain_team_y")]
+        [styled_button("Become Captain - Team X", callback_data="captain_team_x")],
+        [styled_button("Become Captain - Team Y", callback_data="captain_team_y")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -8470,7 +8513,7 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match.players_cmd_uses = uses + 1
     text = await _build_players_text(match)
     refresh_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"players_refresh_{group_id}")
+        styled_button("🔄 Refresh", callback_data=f"players_refresh_{group_id}")
     ]])
 
     try:
@@ -8514,7 +8557,7 @@ async def players_refresh_callback(update: Update, context: ContextTypes.DEFAULT
 
     text = await _build_players_text(match)
     refresh_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"players_refresh_{group_id}")
+        styled_button("🔄 Refresh", callback_data=f"players_refresh_{group_id}")
     ]])
     try:
         if query.message.photo:
@@ -9206,14 +9249,12 @@ async def retirehurt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ✅ FIX 3: Enhanced execute_ball with logging
 def decide_dismissal_and_fielder(striker, bowler, bowl_team):
-    """Randomly decide HOW a batsman got out (Bowled/Caught/LBW/Stumped) and,
-    for Caught/Stumped, pick a random fielder from the bowling side (never the
-    bowler themself) to credit with the catch/stumping. Updates the fielder's
-    live match stats (catches/stumpings) and stores the result on the striker
-    for later use in commentary and the scorecard."""
+    """Decide HOW a batsman got out (Bowled/Caught/LBW only, NO stumped).
+    For Caught, pick a random fielder from the bowling side (never the bowler themself)
+    to credit with the catch and increment fielder.catches += 1."""
     roll = random.random()
     fielder = None
-    candidates = [p for p in bowl_team.players if p.user_id != bowler.user_id]
+    candidates = [p for p in bowl_team.players if getattr(p, 'user_id', None) != getattr(bowler, 'user_id', None)]
 
     if roll < 0.45:
         dtype = "Bowled"
@@ -9221,44 +9262,39 @@ def decide_dismissal_and_fielder(striker, bowler, bowl_team):
         dtype = "Caught"
         fielder = random.choice(candidates) if candidates else None
         if fielder:
-            fielder.catches += 1
-    elif roll < 0.93:
-        dtype = "LBW"
+            fielder.catches = getattr(fielder, 'catches', 0) + 1
     else:
-        dtype = "Stumped"
-        fielder = random.choice(candidates) if candidates else None
-        if fielder:
-            fielder.stumpings += 1
+        dtype = "LBW"
 
     striker.dismissal_type = dtype
-    striker.dismissal_fielder_name = fielder.first_name if fielder else None
+    striker.dismissal_fielder_name = getattr(fielder, 'first_name', None) if fielder else None
     return dtype, fielder
 
 
-def build_dismissal_line(dismissal_type: str, bowler_name: str, fielder_name: Optional[str], style: str) -> str:
-    """Build a commentary line naming the bowler (and fielder, for
-    Caught/Stumped) in either English or Hinglish."""
+def build_dismissal_line(dismissal_type: str, bowler_name: str, fielder_name: Optional[str], style: str, striker_name: str = "Batsman") -> str:
+    """Build a commentary line naming striker, bowler (and fielder for Caught) in English or Hinglish."""
     bowler_name = html.escape(bowler_name or "the bowler")
-    fielder_name = html.escape(fielder_name) if fielder_name else None
+    fielder_name = html.escape(fielder_name) if fielder_name else "Fielder"
+    striker_name = html.escape(striker_name or "Batsman")
 
-    if style == "hinglish":
-        if dismissal_type == "Caught" and fielder_name:
-            return f"🧤 {bowler_name} ki gendbaazi pe {fielder_name} ne zabardast catch lapak liya!"
-        elif dismissal_type == "Stumped" and fielder_name:
-            return f"🧤 {bowler_name} ne fasaya, aur {fielder_name} ne stumps pe lightning stumping kar di!"
-        elif dismissal_type == "LBW":
-            return f"☝️ {bowler_name} ki gendh seedha pado pe — LBW ho gaye!"
-        else:
-            return f"🎯 {bowler_name} ne seedha stumps udaa diye — clean bowled!"
+    dict_to_use = HINGLISH_COMMENTARY if style == "hinglish" else COMMENTARY
+    if dismissal_type == "Caught":
+        tmpl_list = dict_to_use.get("wicket_caught", [])
+    elif dismissal_type == "LBW":
+        tmpl_list = dict_to_use.get("wicket_lbw", [])
     else:
-        if dismissal_type == "Caught" and fielder_name:
-            return f"Caught! {fielder_name} takes a fine catch off {bowler_name}'s bowling!"
-        elif dismissal_type == "Stumped" and fielder_name:
-            return f"Stumped! {fielder_name} whips the bails off in a flash, off {bowler_name}!"
+        tmpl_list = dict_to_use.get("wicket_bowled", [])
+
+    if tmpl_list:
+        tmpl = random.choice(tmpl_list)
+        return tmpl.format(striker=striker_name, bowler=bowler_name, fielder=fielder_name)
+    else:
+        if dismissal_type == "Caught":
+            return f"🧤 {bowler_name} to {striker_name}, caught by {fielder_name}!"
         elif dismissal_type == "LBW":
-            return f"LBW! {bowler_name} strikes right in front of the stumps!"
+            return f"☝️ {bowler_name} traps {striker_name} LBW!"
         else:
-            return f"Bowled! {bowler_name} shatters the stumps!"
+            return f"🎯 {bowler_name} clean bowls {striker_name}!"
 
 
 async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
@@ -9336,7 +9372,7 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
     bot_username = context.bot.username
     # deep link: t.me/botname?start=bowl_{group_id} → opens DM directly
     dm_deep_url = f"https://t.me/{bot_username}"
-    keyboard = [[InlineKeyboardButton("⚾ Deliver Bowl", url=dm_deep_url)]]
+    keyboard = [[styled_button("⚾ Deliver Bowl", url=dm_deep_url)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # GIF
@@ -9378,7 +9414,7 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
         game_msg_id = match.main_message_id or 1
         game_url = f"https://t.me/c/{tme_gid}/{game_msg_id}"
         dm_bowl_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏟️ Go to Game", url=game_url)
+            styled_button("🏟️ Go to Game", url=game_url)
         ]])
     except Exception:
         dm_bowl_markup = None
@@ -10551,21 +10587,19 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
                 await execute_ball(context, group_id, match)
             return
         else:
-            # 🎯 REGULAR WICKET
+            # 🎯 REGULAR WICKET (Single commentary line with player names)
             striker_tag = get_user_tag(striker)
             _wkt_style = gc_settings.get(group_id, {}).get("commentary_style", registered_groups.get(group_id, {}).get("commentary_style", "english"))
-            commentary = await get_ai_commentary_async("wicket", _wkt_style)
 
-            # 🧤 Decide HOW they got out, and who took the catch/stumping (if any)
+            # 🧤 Decide HOW they got out (Bowled/Caught/LBW only) & credit catch if Caught
             dismissal_type, fielder = decide_dismissal_and_fielder(striker, bowler, bowl_team)
-            dismissal_line = build_dismissal_line(dismissal_type, bowler.first_name, striker.dismissal_fielder_name, _wkt_style)
+            dismissal_line = build_dismissal_line(dismissal_type, bowler.first_name, striker.dismissal_fielder_name, _wkt_style, striker.first_name)
 
             wkt_lines = [
                 f"⚾ <b>{html.escape(bowler.first_name)}</b> takes the wicket!",
                 f"🏏 {striker_tag} → <b>OUT ({dismissal_type})!</b>  {striker.runs} ({striker.balls_faced})",
                 f"📊 <b>{bat_team.name}:</b> {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov)",
-                f"💬 <i>{dismissal_line}</i>",
-                f"💬 <i>{commentary}</i>",
+                f"💬 <i>{dismissal_line}</i>"
             ]
             wicket_msg = themed("❌ WICKET", wkt_lines, "🔴")
             
@@ -10687,15 +10721,7 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             6: "six"
         }
         comm_key = events.get(runs, "dot")
-        _comm_style = "english"
-        if group_id and group_id in gc_settings:
-            _comm_style = gc_settings[group_id].get("commentary_style", "english")
-        elif group_id and group_id in registered_groups:
-            _comm_style = registered_groups[group_id].get("commentary_style", "english")
-        try:
-            commentary = await get_ai_commentary_async(comm_key, _comm_style)
-        except Exception:
-            commentary = get_commentary(comm_key, group_id=group_id)
+        commentary = get_commentary(comm_key, group_id=group_id, striker=striker.first_name, bowler=bowler.first_name)
         
         # Get GIF
         event_type = getattr(MatchEvent, f"RUNS_{runs}") if runs > 0 else MatchEvent.DOT_BALL
@@ -11855,10 +11881,10 @@ async def addauctionplayer_command(update: Update, context: ContextTypes.DEFAULT
     
     # Base price selection
     keyboard = [
-        [InlineKeyboardButton("💰 10", callback_data=f"midauc_base_10_{target_user.id}"),
-         InlineKeyboardButton("💰 20", callback_data=f"midauc_base_20_{target_user.id}")],
-        [InlineKeyboardButton("💰 30", callback_data=f"midauc_base_30_{target_user.id}"),
-         InlineKeyboardButton("💰 50", callback_data=f"midauc_base_50_{target_user.id}")]
+        [styled_button("💰 10", callback_data=f"midauc_base_10_{target_user.id}"),
+         styled_button("💰 20", callback_data=f"midauc_base_20_{target_user.id}")],
+        [styled_button("💰 30", callback_data=f"midauc_base_30_{target_user.id}"),
+         styled_button("💰 50", callback_data=f"midauc_base_50_{target_user.id}")]
     ]
     
     target_tag = get_user_tag(target_user)
@@ -12115,8 +12141,8 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         sold_count = len(auction.sold_players)
         unsold_count = len(auction.unsold_players)
         confirm_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Yes, Conclude Auction", callback_data=f"confirm_endauction_{chat_id}"),
-            InlineKeyboardButton("❌ Keep Going", callback_data="cancel_endauction")
+            styled_button("✅ Yes, Conclude Auction", callback_data=f"confirm_endauction_{chat_id}"),
+            styled_button("❌ Keep Going", callback_data="cancel_endauction")
         ]])
         try:
             await context.bot.send_message(
@@ -12236,11 +12262,11 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
     base = player["base_price"]
     quick_kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(f"⚡ +3  ({base+3})", callback_data=f"quickbid_{chat_id}_{base+3}"),
-            InlineKeyboardButton(f"⚡ +5  ({base+5})", callback_data=f"quickbid_{chat_id}_{base+5}"),
+            styled_button(f"⚡ +3  ({base+3})", callback_data=f"quickbid_{chat_id}_{base+3}"),
+            styled_button(f"⚡ +5  ({base+5})", callback_data=f"quickbid_{chat_id}_{base+5}"),
         ],
         [
-            InlineKeyboardButton(f"⚡ +10 ({base+10})", callback_data=f"quickbid_{chat_id}_{base+10}"),
+            styled_button(f"⚡ +10 ({base+10})", callback_data=f"quickbid_{chat_id}_{base+10}"),
         ]
     ])
 
@@ -12418,7 +12444,7 @@ async def trigger_solo_ball(context, chat_id, match):
     # ✅ FIX: Use deep link ?start=bowl_{chat_id} — bare URL triggers /start welcome message
     bot_username = context.bot.username
     deliver_url = f"https://t.me/{bot_username}"
-    keyboard = [[InlineKeyboardButton("📩 Deliver Bowl", url=deliver_url)]]
+    keyboard = [[styled_button("📩 Deliver Bowl", url=deliver_url)]]
     
     ball_gif = "https://t.me/kyanaamrkhe/6"
     try:
@@ -12432,7 +12458,7 @@ async def trigger_solo_ball(context, chat_id, match):
         _tme_gid = _cid_str[3:] if _cid_str.startswith("100") else _cid_str
         _game_url = f"https://t.me/c/{_tme_gid}/{match.main_message_id or 1}"
         _dm_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏟️ Watch in Group", url=_game_url)
+            styled_button("🏟️ Watch in Group", url=_game_url)
         ]])
     except Exception:
         _dm_markup = None
@@ -12724,8 +12750,8 @@ async def solo_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # 3. Ask for explicit Yes/No confirmation before force-starting
         await query.answer()
         confirm_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Yes, Force Start", callback_data="solo_start_confirm_yes"),
-             InlineKeyboardButton("❌ No, Cancel", callback_data="solo_start_confirm_no")]
+            [styled_button("✅ Yes, Force Start", callback_data="solo_start_confirm_yes"),
+             styled_button("❌ No, Cancel", callback_data="solo_start_confirm_no")]
         ])
         try:
             await context.bot.send_message(
@@ -13102,9 +13128,9 @@ async def aistart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Step 1: Ask what the user wants to do — full match, or just bat / just bowl
     keyboard = [
-        [InlineKeyboardButton("🏏 Batting Only", callback_data="ai_type_bat")],
-        [InlineKeyboardButton("⚾ Bowling Only", callback_data="ai_type_bowl")],
-        [InlineKeyboardButton("🎮 Full AI Match", callback_data="ai_type_full")]
+        [styled_button("🏏 Batting Only", callback_data="ai_type_bat")],
+        [styled_button("⚾ Bowling Only", callback_data="ai_type_bowl")],
+        [styled_button("🎮 Full AI Match", callback_data="ai_type_full")]
     ]
 
     caption = (
@@ -13142,10 +13168,10 @@ async def ai_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Select difficulty (carry match_type forward in the callback_data)
     keyboard = [
-        [InlineKeyboardButton("😊 Easy", callback_data=f"ai_diff_easy_{match_type}")],
-        [InlineKeyboardButton("😐 Medium", callback_data=f"ai_diff_medium_{match_type}")],
-        [InlineKeyboardButton("😈 Hard", callback_data=f"ai_diff_hard_{match_type}")],
-        [InlineKeyboardButton("👹 God Level", callback_data=f"ai_diff_god_{match_type}")]
+        [styled_button("😊 Easy", callback_data=f"ai_diff_easy_{match_type}")],
+        [styled_button("😐 Medium", callback_data=f"ai_diff_medium_{match_type}")],
+        [styled_button("😈 Hard", callback_data=f"ai_diff_hard_{match_type}")],
+        [styled_button("👹 God Level", callback_data=f"ai_diff_god_{match_type}")]
     ]
 
     type_label = {"bat": "🏏 Batting Only", "bowl": "⚾ Bowling Only", "full": "🎮 Full AI Match"}.get(match_type, "AI Match")
@@ -13191,11 +13217,11 @@ async def ai_difficulty_callback(update: Update, context: ContextTypes.DEFAULT_T
     
     # Select overs
     keyboard = [
-        [InlineKeyboardButton("1 Over", callback_data=f"ai_over_1_{difficulty}_{match_type}"),
-         InlineKeyboardButton("2 Overs", callback_data=f"ai_over_2_{difficulty}_{match_type}")],
-        [InlineKeyboardButton("3 Overs", callback_data=f"ai_over_3_{difficulty}_{match_type}"),
-         InlineKeyboardButton("4 Overs", callback_data=f"ai_over_4_{difficulty}_{match_type}")],
-        [InlineKeyboardButton("5 Overs", callback_data=f"ai_over_5_{difficulty}_{match_type}")]
+        [styled_button("1 Over", callback_data=f"ai_over_1_{difficulty}_{match_type}"),
+         styled_button("2 Overs", callback_data=f"ai_over_2_{difficulty}_{match_type}")],
+        [styled_button("3 Overs", callback_data=f"ai_over_3_{difficulty}_{match_type}"),
+         styled_button("4 Overs", callback_data=f"ai_over_4_{difficulty}_{match_type}")],
+        [styled_button("5 Overs", callback_data=f"ai_over_5_{difficulty}_{match_type}")]
     ]
     
     diff_emoji = {"easy": "😊", "medium": "😐", "hard": "😈", "god": "👹"}
@@ -13311,8 +13337,8 @@ async def ai_over_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Ask user to call toss
     keyboard = [
-        [InlineKeyboardButton("🪙 Heads", callback_data="ai_toss_heads"),
-         InlineKeyboardButton("🪙 Tails", callback_data="ai_toss_tails")]
+        [styled_button("🪙 Heads", callback_data="ai_toss_heads"),
+         styled_button("🪙 Tails", callback_data="ai_toss_tails")]
     ]
     
     try:
@@ -13350,8 +13376,8 @@ async def ai_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_call == toss_result:
         # User won toss - let them choose
         keyboard = [
-            [InlineKeyboardButton("🏏 Bat First", callback_data="ai_choice_bat"),
-             InlineKeyboardButton("⚾ Bowl First", callback_data="ai_choice_bowl")]
+            [styled_button("🏏 Bat First", callback_data="ai_choice_bat"),
+             styled_button("⚾ Bowl First", callback_data="ai_choice_bowl")]
         ]
         
         try:
@@ -14842,7 +14868,7 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
                 )
                 encoded_text = quote_plus(share_text)
                 share_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(
+                    styled_button(
                         "📤 Share Result",
                         url=f"https://t.me/share/url?url=https%3A%2F%2Ft.me%2FCricoVerseBot&text={encoded_text}"
                     )
@@ -15401,8 +15427,8 @@ async def send_final_scorecard(context: ContextTypes.DEFAULT_TYPE, group_id: int
     # ── Rematch button (moved here from the removed old victory message) ──
     rematch_data = f"rematch_{group_id}_{match.total_overs}_{match.game_mode or 'TEAM'}"
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("➡️ 2nd Innings", callback_data=f"scorecard_worm_{group_id}_2"),
-        InlineKeyboardButton("🔁 Rematch!", callback_data=rematch_data)
+        styled_button("➡️ 2nd Innings", callback_data=f"scorecard_worm_{group_id}_2"),
+        styled_button("🔁 Rematch!", callback_data=rematch_data)
     ]])
 
     # Bug 4 Fix: Use worm graph as the OFFICIAL MATCH SCORECARD image instead of static photo
@@ -17983,9 +18009,9 @@ async def rematch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"⏳ <i>Lobby opens now → tap to join!</i>"
 
     join_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-        [InlineKeyboardButton("🚪 Leave", callback_data="leave_team")]
+        [styled_button("🧊 Join Team X", callback_data="join_team_x"),
+         styled_button("🔥 Join Team Y", callback_data="join_team_y")],
+        [styled_button("🚪 Leave", callback_data="leave_team")]
     ])
 
     try:
@@ -18394,6 +18420,19 @@ async def update_player_stats_after_match(match: Match, winner: Team, loser: Tea
             ls = stats.get("last_5_scores", []) + [player.runs]
             stats["last_5_scores"] = ls[-5:]
 
+        # Catches & Dismissals tracking
+        c_taken = getattr(player, 'catches', 0)
+        if c_taken > 0:
+            stats["catches_taken"] = stats.get("catches_taken", 0) + c_taken
+        if player.is_out:
+            dtype = getattr(player, 'dismissal_type', 'Bowled')
+            if dtype == "Bowled":
+                stats["dismissals_bowled"] = stats.get("dismissals_bowled", 0) + 1
+            elif dtype == "LBW":
+                stats["dismissals_lbw"] = stats.get("dismissals_lbw", 0) + 1
+            elif dtype == "Caught":
+                stats["dismissals_caught"] = stats.get("dismissals_caught", 0) + 1
+
         if player.balls_bowled > 0:
             stats["total_wickets"]        = stats.get("total_wickets", 0) + player.wickets
             stats["total_balls_bowled"]   = stats.get("total_balls_bowled", 0) + player.balls_bowled
@@ -18430,6 +18469,16 @@ async def update_player_stats_after_match(match: Match, winner: Team, loser: Tea
         elif player.runs >= 50:                    t["fifties"]   = t.get("fifties", 0) + 1
         if player.runs == 0 and player.balls_faced > 0 and player.is_out:
             t["ducks"] = t.get("ducks", 0) + 1
+        if c_taken > 0:
+            t["catches_taken"] = t.get("catches_taken", 0) + c_taken
+        if player.is_out:
+            dtype = getattr(player, 'dismissal_type', 'Bowled')
+            if dtype == "Bowled":
+                t["dismissals_bowled"] = t.get("dismissals_bowled", 0) + 1
+            elif dtype == "LBW":
+                t["dismissals_lbw"] = t.get("dismissals_lbw", 0) + 1
+            elif dtype == "Caught":
+                t["dismissals_caught"] = t.get("dismissals_caught", 0) + 1
         if not player.is_out and player.balls_faced > 0:
             t["times_not_out"] = t.get("times_not_out", 0) + 1
         # best bowling
@@ -18800,6 +18849,24 @@ async def save_match_to_history(match, winner_team: str):
     await asyncio.to_thread(_save_match_to_history_sync, match, winner_team)
 
 
+
+def compute_player_role(user_id: int) -> str:
+    """Compute player role (All-Rounder, Batsman, Bowler, Rookie) based on stats."""
+    p_stat = player_stats.get(user_id, {}).get("team", {})
+    runs = p_stat.get("runs", 0)
+    wickets = p_stat.get("wickets", 0)
+    balls = p_stat.get("balls", 0)
+    balls_bowled = p_stat.get("balls_bowled", 0)
+
+    if runs >= 50 and wickets >= 3:
+        return "All-Rounder 🏏⚾"
+    elif wickets >= 3 or balls_bowled > max(balls, 1):
+        return "Bowler ⚾"
+    elif runs > 0 or balls > 0:
+        return "Batsman 🏏"
+    return "Rookie 🌟"
+
+
 def build_team_stats_text(user_id: int, user_name: str) -> str:
     """Build the 👥 Team stats section text shown in /mystats (also used as the default view)."""
     SEP = "─────────────────"
@@ -18869,6 +18936,10 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
         fifer       = mem_team.get("five_wicket_hauls", fifer)
         times_not_out = mem_team.get("times_not_out", times_not_out)
         runs_conceded = mem_team.get("runs_conceded", 0)
+        d_bowled    = mem_team.get("dismissals_bowled", player_stats.get(user_id, {}).get("dismissals_bowled", 0))
+        d_lbw       = mem_team.get("dismissals_lbw", player_stats.get(user_id, {}).get("dismissals_lbw", 0))
+        d_caught    = mem_team.get("dismissals_caught", player_stats.get(user_id, {}).get("dismissals_caught", 0))
+        catches_taken = mem_team.get("catches_taken", player_stats.get(user_id, {}).get("catches_taken", 0))
     else:
         runs_conceded = 0
 
@@ -18975,6 +19046,13 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
             f"├ 💎 Best Figures ➜ {best_bowl}\n"
             f"├ 🎩 Hat-tricks   ➜ {hat_tricks}\n"
             f"├ 🔥 5-Wickets    ➜ {fifer}\n"
+            f"└{BAR}\n\n"
+            f"🧤 𝗙𝗜𝗘𝗟𝗗𝗜𝗡𝗚 & 𝗗𝗜𝗦𝗠𝗜𝗦𝗦𝗔𝗟𝗦\n"
+            f"┌{BAR}\n"
+            f"├ 🎯 Bowled Out   ➜ {d_bowled}\n"
+            f"├ ☝️ LBW Out      ➜ {d_lbw}\n"
+            f"├ 🧤 Caught Out   ➜ {d_caught}\n"
+            f"├ 🤲 Catches Taken➜ {catches_taken}\n"
             f"└{BAR}"
         )
 
@@ -19507,14 +19585,14 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nearby_line = "🆓 <b>Free nearby:</b> " + ", ".join(f"#{n}" for n in nearby_free) + "\n"
 
         keyboard_rows = [[
-            InlineKeyboardButton("🔁 Request Swap", callback_data=f"jswap_req_{holder_id}_{number}")
+            styled_button("🔁 Request Swap", callback_data=f"jswap_req_{holder_id}_{number}")
         ]]
         if nearby_free:
             keyboard_rows.append([
-                InlineKeyboardButton(f"🎽 Take #{n}", callback_data=f"jersey_take_{n}") for n in nearby_free[:3]
+                styled_button(f"🎽 Take #{n}", callback_data=f"jersey_take_{n}") for n in nearby_free[:3]
             ])
         keyboard_rows.append([
-            InlineKeyboardButton("🔔 Notify me when free", callback_data=f"jersey_notify_{number}")
+            styled_button("🔔 Notify me when free", callback_data=f"jersey_notify_{number}")
         ])
         keyboard = InlineKeyboardMarkup(keyboard_rows)
         await update.message.reply_text(
@@ -19697,8 +19775,8 @@ async def jersey_swap_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         requester_tag = f'<a href="tg://user?id={requester_id}">{html.escape(requester.first_name)}</a>'
         my_number_text = f"#{my_number}" if my_number is not None else "no jersey number yet"
         dm_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Accept Swap", callback_data=f"jswap_yes_{requester_id}_{number}"),
-            InlineKeyboardButton("❌ Decline", callback_data=f"jswap_no_{requester_id}_{number}")
+            styled_button("✅ Accept Swap", callback_data=f"jswap_yes_{requester_id}_{number}"),
+            styled_button("❌ Decline", callback_data=f"jswap_no_{requester_id}_{number}")
         ]])
         try:
             await context.bot.send_message(
@@ -19851,7 +19929,7 @@ async def rmjersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, I'm active — keep my jersey", callback_data=f"jkeep_{number}")
+        styled_button("✅ Yes, I'm active — keep my jersey", callback_data=f"jkeep_{number}")
     ]])
     try:
         await context.bot.send_message(
@@ -19960,11 +20038,11 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
         keyboard = [
             [
-                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
-                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
+                styled_button("👥 Team", callback_data=f"mystats_team_{user_id}"),
+                styled_button("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
             ],
             [
-                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
+                styled_button("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -20242,11 +20320,11 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = [
         [
-            InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
-            InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
+            styled_button("👥 Team", callback_data=f"mystats_team_{user_id}"),
+            styled_button("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
         ],
         [
-            InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
+            styled_button("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -20300,7 +20378,7 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = user_data.get(user_id, {}).get("first_name") or query.from_user.first_name
 
     # Standard back button → returns to the main menu (Team/Solo/Achievements), not straight to Team
-    back_button = InlineKeyboardButton("🔙 Back", callback_data=f"mystats_menu_{user_id}")
+    back_button = styled_button("🔙 Back", callback_data=f"mystats_menu_{user_id}")
     
     # ──────────────── SECTION SEPARATOR HELPER ────────────────
     SEP = "─────────────────"
@@ -20312,11 +20390,11 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "mystats_menu" in data:
         keyboard = [
             [
-                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
-                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
+                styled_button("👥 Team", callback_data=f"mystats_team_{user_id}"),
+                styled_button("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
             ],
             [
-                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
+                styled_button("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
             ]
         ]
         menu_text = f"📊 <b>{user_name}'s STATS</b>\n{SEP}\n👇 <i>Choose a category to view:</i>"
@@ -21020,7 +21098,7 @@ async def auction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ✅ Check if tournament approved
     if chat.id not in TOURNAMENT_APPROVED_GROUPS:
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_modes")]]
+        keyboard = [[styled_button("🔙 Back to Menu", callback_data="back_to_modes")]]
         
         try:
             await update.message.reply_animation(
@@ -21105,7 +21183,7 @@ async def auction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "─────────────────"
     )
     
-    keyboard = [[InlineKeyboardButton("🎤 I'll be Auctioneer", callback_data="become_auctioneer")]]
+    keyboard = [[styled_button("🎤 I'll be Auctioneer", callback_data="become_auctioneer")]]
     
     try:
         sent = await update.message.reply_animation(
@@ -21410,12 +21488,12 @@ async def aucplayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Base price options
     keyboard = [
         [
-            InlineKeyboardButton("💰 Base: 10", callback_data="bulk_base_10"),
-            InlineKeyboardButton("💰 Base: 20", callback_data="bulk_base_20")
+            styled_button("💰 Base: 10", callback_data="bulk_base_10"),
+            styled_button("💰 Base: 20", callback_data="bulk_base_20")
         ],
         [
-            InlineKeyboardButton("💰 Base: 30", callback_data="bulk_base_30"),
-            InlineKeyboardButton("💰 Base: 50", callback_data="bulk_base_50")
+            styled_button("💰 Base: 30", callback_data="bulk_base_30"),
+            styled_button("💰 Base: 50", callback_data="bulk_base_50")
         ]
     ]
     msg = f"📦 <b>BULK ADD → {len(added)} PLAYERS</b>\n"
@@ -21537,7 +21615,7 @@ async def notify_group_game_started(context: ContextTypes.DEFAULT_TYPE, group_id
     now = datetime.now()
     expired = []
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔕 Stop notifying me", callback_data=f"groupnotify_stop_{group_id}")
+        styled_button("🔕 Stop notifying me", callback_data=f"groupnotify_stop_{group_id}")
     ]])
 
     for uid_str, ts in list(subs.items()):
@@ -21762,8 +21840,8 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     names_display = ", ".join(f"<b>{html.escape(t[2])}</b>" for t in valid_targets)
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"🔵 {match.team_x.name}", callback_data=f"addpick_X_{chat.id}_{user.id}"),
-        InlineKeyboardButton(f"🔴 {match.team_y.name}", callback_data=f"addpick_Y_{chat.id}_{user.id}"),
+        styled_button(f"🔵 {match.team_x.name}", callback_data=f"addpick_X_{chat.id}_{user.id}"),
+        styled_button(f"🔴 {match.team_y.name}", callback_data=f"addpick_Y_{chat.id}_{user.id}"),
     ]])
 
     await update.message.reply_text(
@@ -21982,8 +22060,8 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔥 <b>Team Y:</b> " + (match.team_y.players[serial - 1].first_name if 0 < serial <= len(match.team_y.players) else "—"),
     ]
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🧊 Team X", callback_data=f"remove_player_X_{chat.id}_{serial}"),
-        InlineKeyboardButton("🔥 Team Y", callback_data=f"remove_player_Y_{chat.id}_{serial}"),
+        styled_button("🧊 Team X", callback_data=f"remove_player_X_{chat.id}_{serial}"),
+        styled_button("🔥 Team Y", callback_data=f"remove_player_Y_{chat.id}_{serial}"),
     ]])
     await update.message.reply_text(
         themed("➖ REMOVE PLAYER", preview_lines, "➖"),
@@ -22455,11 +22533,11 @@ def _auction_list_keyboard(chat_id: int, page_idx: int, total_pages: int) -> Inl
     """Prev / page indicator / Next keyboard for auction summary."""
     nav = []
     if page_idx > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"auclist_{chat_id}_{page_idx - 1}"))
-    nav.append(InlineKeyboardButton(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop"))
+        nav.append(styled_button("⬅️ Prev", callback_data=f"auclist_{chat_id}_{page_idx - 1}"))
+    nav.append(styled_button(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop"))
     if page_idx < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"auclist_{chat_id}_{page_idx + 1}"))
-    close = [InlineKeyboardButton("❌ Close", callback_data="auclist_close")]
+        nav.append(styled_button("Next ➡️", callback_data=f"auclist_{chat_id}_{page_idx + 1}"))
+    close = [styled_button("❌ Close", callback_data="auclist_close")]
     return InlineKeyboardMarkup([nav, close])
 
 
@@ -23096,11 +23174,11 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
             next_10 = amount + 10
             return InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}"),
-                    InlineKeyboardButton(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}"),
+                    styled_button(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}"),
+                    styled_button(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}"),
                 ],
                 [
-                    InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}"),
+                    styled_button(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}"),
                 ]
             ])
 
@@ -23195,8 +23273,8 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                     f"<i>Auctioneer: use /confirmsold or /rejectsold</i>"
                 )
                 kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ SOLD!", callback_data=f"auc_confirm_sold_{chat_id}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"auc_reject_sold_{chat_id}"),
+                    styled_button("✅ SOLD!", callback_data=f"auc_confirm_sold_{chat_id}"),
+                    styled_button("❌ Reject", callback_data=f"auc_reject_sold_{chat_id}"),
                 ]])
                 try:
                     conf_m = await context.bot.send_message(chat_id, confirm_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -23843,7 +23921,7 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     photo_bio = await generate_stats_image(target_id, name, img_data, avatar_bytes, mode)
 
     # ========== SEND ==========
-    keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data=f"stats_main_{target_id}")]]
+    keyboard = [[styled_button("🔙 Back to Menu", callback_data=f"stats_main_{target_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if photo_bio:
@@ -24144,7 +24222,7 @@ async def broadcastbtn_command(update: Update, context: ContextTypes.DEFAULT_TYP
             label, url = btn_text.rsplit(" - ", 1)
             label, url = label.strip(), url.strip()
             if label and url:
-                row.append(InlineKeyboardButton(label, url=url))
+                row.append(styled_button(label, url=url))
         if row:
             keyboard.append(row)
 
@@ -25231,9 +25309,9 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Instead call the full refresh path:
             text = get_team_join_message(match)
             keyboard = [
-                [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
-                 InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
-                [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")]
+                [styled_button("🧊 Join Team X", callback_data="join_team_x"),
+                 styled_button("🔥 Join Team Y", callback_data="join_team_y")],
+                [styled_button("🚪 Leave Team", callback_data="leave_team")]
             ]
             await refresh_game_message(context, chat.id, match, text, InlineKeyboardMarkup(keyboard), media_key="joining")
 
@@ -25249,15 +25327,15 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"╰━━━━━━━━╯"
             )
             keyboard = [
-                [InlineKeyboardButton("🧊 Heads (Team X)", callback_data="toss_heads"),
-                 InlineKeyboardButton("🔥 Tails (Team Y)", callback_data="toss_tails")]
+                [styled_button("🧊 Heads (Team X)", callback_data="toss_heads"),
+                 styled_button("🔥 Tails (Team Y)", callback_data="toss_tails")]
             ]
             await refresh_game_message(context, chat.id, match, toss_text, InlineKeyboardMarkup(keyboard), media_key="toss")
 
         elif phase in (GamePhase.SOLO_JOINING,):
             # Solo lobby refresh
             from_text = get_team_join_message(match) if hasattr(match, 'team_x') else "Solo lobby active."
-            keyboard = [[InlineKeyboardButton("🏏 Join Solo Match", callback_data="solo_join")]]
+            keyboard = [[styled_button("🏏 Join Solo Match", callback_data="solo_join")]]
             await refresh_game_message(context, chat.id, match, from_text, InlineKeyboardMarkup(keyboard), media_key="joining")
 
         else:
@@ -25718,8 +25796,8 @@ async def changecap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data[pending_key] = target
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"🔵 {match.team_x.name}", callback_data=f"changecappick_X_{chat.id}_{user.id}"),
-        InlineKeyboardButton(f"🔴 {match.team_y.name}", callback_data=f"changecappick_Y_{chat.id}_{user.id}"),
+        styled_button(f"🔵 {match.team_x.name}", callback_data=f"changecappick_X_{chat.id}_{user.id}"),
+        styled_button(f"🔴 {match.team_y.name}", callback_data=f"changecappick_Y_{chat.id}_{user.id}"),
     ]])
 
     await update.message.reply_text(
@@ -26428,7 +26506,7 @@ async def handle_group_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     try:
                         bot_username = context.bot.username
                         dm_btn = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("📩 Bowl in DM", url=f"https://t.me/{bot_username}")
+                            styled_button("📩 Bowl in DM", url=f"https://t.me/{bot_username}")
                         ]])
                         w = await context.bot.send_message(
                             chat_id,
@@ -26909,7 +26987,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         _tme_gid = _cid_str[3:] if _cid_str.startswith("100") else _cid_str
                         _game_url = f"https://t.me/c/{_tme_gid}/{match.main_message_id or 1}"
                         _solo_lock_markup = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🏟️ Watch in Group", url=_game_url)
+                            styled_button("🏟️ Watch in Group", url=_game_url)
                         ]])
                     except Exception:
                         pass
@@ -27088,7 +27166,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             _tme_gid = _cid_str[3:] if _cid_str.startswith("100") else _cid_str
                             _game_url = f"https://t.me/c/{_tme_gid}/{match.main_message_id or 1}"
                             _lock_markup = InlineKeyboardMarkup([[
-                                InlineKeyboardButton("🏟️ Watch in Group", url=_game_url)
+                                styled_button("🏟️ Watch in Group", url=_game_url)
                             ]])
                         except Exception:
                             _lock_markup = None
@@ -27385,22 +27463,22 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     keyboard = [
         [
-            InlineKeyboardButton(f"📺 DRS: {'ON ✅' if drs_on else 'OFF ❌'}", callback_data=f"gcs_drs_{group_id}"),
-            InlineKeyboardButton(f"🌀 Wide: {'ON ✅' if wide_on else 'OFF ❌'}", callback_data=f"gcs_wide_{group_id}"),
+            styled_button(f"📺 DRS: {'ON ✅' if drs_on else 'OFF ❌'}", callback_data=f"gcs_drs_{group_id}"),
+            styled_button(f"🌀 Wide: {'ON ✅' if wide_on else 'OFF ❌'}", callback_data=f"gcs_wide_{group_id}"),
         ],
         [
-            InlineKeyboardButton(f"🎲 Solo Wide: {'ON ✅' if solo_wide_on else 'OFF ❌'}", callback_data=f"gcs_solowide_{group_id}"),
+            styled_button(f"🎲 Solo Wide: {'ON ✅' if solo_wide_on else 'OFF ❌'}", callback_data=f"gcs_solowide_{group_id}"),
         ],
         [
-            InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
-            InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}"),
+            styled_button("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
+            styled_button("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}"),
         ],
         [
-            InlineKeyboardButton("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}"),
-            InlineKeyboardButton("⏱️ 2 Min", callback_data=f"gcs_lobby_120_{group_id}"),
-            InlineKeyboardButton("⏱️ 3 Min", callback_data=f"gcs_lobby_180_{group_id}"),
+            styled_button("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}"),
+            styled_button("⏱️ 2 Min", callback_data=f"gcs_lobby_120_{group_id}"),
+            styled_button("⏱️ 3 Min", callback_data=f"gcs_lobby_180_{group_id}"),
         ],
-        [InlineKeyboardButton("❌ Close", callback_data=f"gcs_close_{group_id}")]
+        [styled_button("❌ Close", callback_data=f"gcs_close_{group_id}")]
     ]
     
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -27485,26 +27563,26 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     keyboard = [
         [
-            InlineKeyboardButton(f"📺 DRS: {'ON' if drs_on else 'OFF'}", callback_data=f"gcs_drs_{group_id}"),
+            styled_button(f"📺 DRS: {'ON' if drs_on else 'OFF'}", callback_data=f"gcs_drs_{group_id}"),
         ],
         [
-            InlineKeyboardButton(f"🌀 Wide (Team): {'ON' if wide_on else 'OFF'}", callback_data=f"gcs_wide_{group_id}"),
+            styled_button(f"🌀 Wide (Team): {'ON' if wide_on else 'OFF'}", callback_data=f"gcs_wide_{group_id}"),
         ],
         [
-            InlineKeyboardButton(f"🎲 Wide (Solo): {'ON' if solo_wide_on else 'OFF'}", callback_data=f"gcs_solowide_{group_id}"),
+            styled_button(f"🎲 Wide (Solo): {'ON' if solo_wide_on else 'OFF'}", callback_data=f"gcs_solowide_{group_id}"),
         ],
         [
-            InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
-            InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}"),
+            styled_button("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
+            styled_button("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}"),
         ],
         [
-            InlineKeyboardButton("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}"),
-            InlineKeyboardButton("⏱️ 2 Min", callback_data=f"gcs_lobby_120_{group_id}"),
+            styled_button("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}"),
+            styled_button("⏱️ 2 Min", callback_data=f"gcs_lobby_120_{group_id}"),
         ],
         [
-            InlineKeyboardButton("⏱️ 3 Min", callback_data=f"gcs_lobby_180_{group_id}"),
+            styled_button("⏱️ 3 Min", callback_data=f"gcs_lobby_180_{group_id}"),
         ],
-        [InlineKeyboardButton("Close", callback_data=f"gcs_close_{group_id}")]
+        [styled_button("Close", callback_data=f"gcs_close_{group_id}")]
     ]
     
     try:
@@ -27683,8 +27761,8 @@ async def endauction_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     unsold_count = len(auction.unsold_players)
 
     confirm_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, End Auction", callback_data=f"confirm_endauction_{group_id}"),
-        InlineKeyboardButton("❌ Cancel", callback_data="cancel_endauction")
+        styled_button("✅ Yes, End Auction", callback_data=f"confirm_endauction_{group_id}"),
+        styled_button("❌ Cancel", callback_data="cancel_endauction")
     ]])
 
     await update.message.reply_text(
@@ -28050,8 +28128,8 @@ async def commentary_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         current_style = registered_groups.get(chat.id, {}).get("commentary_style", "english")
         
         keyboard = [
-            [InlineKeyboardButton("🇬🇧 English", callback_data=f"gcommentary_english_{chat.id}")],
-            [InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcommentary_hinglish_{chat.id}")]
+            [styled_button("🇬🇧 English", callback_data=f"gcommentary_english_{chat.id}")],
+            [styled_button("🇮🇳 Hinglish Special", callback_data=f"gcommentary_hinglish_{chat.id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -28360,7 +28438,7 @@ async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    keyboard = [[InlineKeyboardButton(f"🏆 {name}", callback_data=f"reg_group_{gid}")] for gid, name in valid_groups]
+    keyboard = [[styled_button(f"🏆 {name}", callback_data=f"reg_group_{gid}")] for gid, name in valid_groups]
     await update.message.reply_photo(
         photo=REGISTRATION_OPEN_PHOTO,
         caption=(
@@ -28479,8 +28557,8 @@ async def registrationclose_command(update: Update, context: ContextTypes.DEFAUL
 
             keyboard = []
             for gid, name in valid_regs:
-                keyboard.append([InlineKeyboardButton(f"🔒 Close: {name}", callback_data=f"closereg_{gid}")])
-            keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="closereg_cancel")])
+                keyboard.append([styled_button(f"🔒 Close: {name}", callback_data=f"closereg_{gid}")])
+            keyboard.append([styled_button("❌ Cancel", callback_data="closereg_cancel")])
 
             await update.message.reply_text(
                 "╭━━ 🔒 CLOSE REGISTRATION ━━━━━━━🔐\n"
@@ -28665,10 +28743,10 @@ async def reg_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     conn.close()
     
     keyboard = [
-        [InlineKeyboardButton("💰 10 🔷", callback_data=f"reg_price_{group_id}_10")],
-        [InlineKeyboardButton("💰 20 🔷", callback_data=f"reg_price_{group_id}_20")],
-        [InlineKeyboardButton("💰 30 🔷", callback_data=f"reg_price_{group_id}_30")],
-        [InlineKeyboardButton("💰 50 🔷", callback_data=f"reg_price_{group_id}_50")]
+        [styled_button("💰 10 🔷", callback_data=f"reg_price_{group_id}_10")],
+        [styled_button("💰 20 🔷", callback_data=f"reg_price_{group_id}_20")],
+        [styled_button("💰 30 🔷", callback_data=f"reg_price_{group_id}_30")],
+        [styled_button("💰 50 🔷", callback_data=f"reg_price_{group_id}_50")]
     ]
     # Message is a photo — must edit caption, not text
     try:
@@ -28808,10 +28886,10 @@ async def unregister_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     keyboard = [
-        [InlineKeyboardButton(f"❌ {name}", callback_data=f"unreg_confirm_{gid}")]
+        [styled_button(f"❌ {name}", callback_data=f"unreg_confirm_{gid}")]
         for gid, name, _ in rows
     ]
-    keyboard.append([InlineKeyboardButton("🚫 Cancel", callback_data="unreg_cancel")])
+    keyboard.append([styled_button("🚫 Cancel", callback_data="unreg_cancel")])
 
     await update.message.reply_text(
         "📋 <b>UNREGISTER FROM TOURNAMENT</b>\n"
@@ -28950,22 +29028,24 @@ async def tpower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🏏 Power granted to {target_name} for group `{group_id}`", parse_mode=ParseMode.MARKDOWN)
 
 def _reglist_price_dropdown_keyboard(group_id: int, price_groups: dict) -> InlineKeyboardMarkup:
-    """Dropdown menu with 50 30 20 10 base price options."""
+    """Dropdown menu with 50 30 20 10 base price options using styled colored buttons."""
     rows = []
     for price in [50, 30, 20, 10]:
         count = len(price_groups.get(price, []))
-        rows.append([InlineKeyboardButton(
+        rows.append([styled_button(
             f"Base Price {price} ({count})",
-            callback_data=f"reglist_price_{group_id}_{price}_0"
+            callback_data=f"reglist_price_{group_id}_{price}_0",
+            style="primary"
         )])
     other_prices = sorted([p for p in price_groups if p not in (50, 30, 20, 10)], reverse=True)
     for price in other_prices:
         count = len(price_groups[price])
-        rows.append([InlineKeyboardButton(
+        rows.append([styled_button(
             f"Base Price {price} ({count})",
-            callback_data=f"reglist_price_{group_id}_{price}_0"
+            callback_data=f"reglist_price_{group_id}_{price}_0",
+            style="primary"
         )])
-    rows.append([InlineKeyboardButton("Close", callback_data="reglist_close")])
+    rows.append([styled_button("❌ Close", callback_data="reglist_close", style="danger")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -29028,13 +29108,13 @@ def _build_reglist_table_page(players_for_price: list, price: int, group_name: s
 def _reglist_table_keyboard(group_id: int, price: int, page_idx: int, total_pages: int) -> InlineKeyboardMarkup:
     nav_row = []
     if page_idx > 0:
-        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reglist_price_{group_id}_{price}_{page_idx - 1}"))
-    nav_row.append(InlineKeyboardButton(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop"))
+        nav_row.append(styled_button("⬅️ Prev", callback_data=f"reglist_price_{group_id}_{price}_{page_idx - 1}"))
+    nav_row.append(styled_button(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop"))
     if page_idx < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"reglist_price_{group_id}_{price}_{page_idx + 1}"))
+        nav_row.append(styled_button("Next ➡️", callback_data=f"reglist_price_{group_id}_{price}_{page_idx + 1}"))
     back_row = [
-        InlineKeyboardButton("◀ Back", callback_data=f"reglist_back_{group_id}"),
-        InlineKeyboardButton("❌ Close", callback_data="reglist_close"),
+        styled_button("◀ Back", callback_data=f"reglist_back_{group_id}"),
+        styled_button("❌ Close", callback_data="reglist_close"),
     ]
     return InlineKeyboardMarkup(([nav_row] if nav_row else []) + [back_row])
 
@@ -29607,7 +29687,7 @@ async def scorecard_refresh_callback(update: Update, context: ContextTypes.DEFAU
     text += "\n👉 Tap Refresh for latest scores!"
 
     refresh_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh Scorecard", callback_data=f"scorecard_refresh_{group_id}")
+        styled_button("🔄 Refresh Scorecard", callback_data=f"scorecard_refresh_{group_id}")
     ]])
 
     # Telegram caption limit is 1024 chars; if longer, truncate with note
@@ -29696,10 +29776,10 @@ async def tourlb_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += "\n─────────────────"
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏃 Runs",    callback_data=f"tourlb_{gid}_runs"),
-         InlineKeyboardButton("⚾ Wickets", callback_data=f"tourlb_{gid}_wickets")],
-        [InlineKeyboardButton("🚀 Sixes",   callback_data=f"tourlb_{gid}_sixes"),
-         InlineKeyboardButton("4️⃣ Fours",   callback_data=f"tourlb_{gid}_fours")],
+        [styled_button("🏃 Runs",    callback_data=f"tourlb_{gid}_runs"),
+         styled_button("⚾ Wickets", callback_data=f"tourlb_{gid}_wickets")],
+        [styled_button("🚀 Sixes",   callback_data=f"tourlb_{gid}_sixes"),
+         styled_button("4️⃣ Fours",   callback_data=f"tourlb_{gid}_fours")],
     ])
     try:
         await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -29947,9 +30027,9 @@ async def fantasyshop_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             price_line = f"{t['name']} — <b>{t['price']:,}</b> pts{tag}{equip_tag}"
         lines.append(price_line)
         if t["key"] not in owned:
-            keyboard.append([InlineKeyboardButton(f"🛒 Buy {t['name']} ({disc_price:,})", callback_data=f"fbuytitle_{t['key']}")])
+            keyboard.append([styled_button(f"🛒 Buy {t['name']} ({disc_price:,})", callback_data=f"fbuytitle_{t['key']}")])
         elif equipped != t["key"]:
-            keyboard.append([InlineKeyboardButton(f"🎽 Equip {t['name']}", callback_data=f"fequiptitle_{t['key']}")])
+            keyboard.append([styled_button(f"🎽 Equip {t['name']}", callback_data=f"fequiptitle_{t['key']}")])
 
     msg = themed("🛍️ FANTASY TITLE SHOP", lines, "👑")
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
@@ -30009,6 +30089,70 @@ async def fantasy_equiptitle_callback(update: Update, context: ContextTypes.DEFA
     await query.answer(f"🎽 Equipped {title['name']}!", show_alert=True)
 
 
+
+# ═══════════════════════════════════════════════════════════════
+# CCC RATING & RANKING SYSTEM
+# ═══════════════════════════════════════════════════════════════
+CCC_MIN_MATCHES = 5
+
+def calculate_ccc_rating(runs: int, wickets: int, wins: int, sixes: int, fours: int, ducks: int, matches: int) -> int:
+    """Calculate CCC skill rating score."""
+    if matches < CCC_MIN_MATCHES:
+        return 0
+    base = 1000
+    points = int((runs * 1.5) + (wickets * 25) + (wins * 40) + (sixes * 4) + (fours * 2) - (ducks * 15))
+    return max(100, base + points)
+
+def get_ccc_rankings_with_trend(limit: int = 10) -> list:
+    """Fetch top players ordered by CCC rating."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            SELECT user_id, first_name, username,
+                   (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS mp,
+                   (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS mw,
+                   (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS tr,
+                   (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS tw,
+                   (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) AS ts,
+                   (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) AS tf,
+                   (COALESCE(total_ducks,0) + COALESCE(team_total_ducks,0)) AS td
+            FROM user_stats
+            WHERE (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) >= 5
+        """)
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error fetching CCC rankings: {e}")
+        rows = []
+
+    ranked = []
+    for uid, fname, uname, mp, mw, tr, tw, ts, tf, td in rows:
+        rating = calculate_ccc_rating(tr, tw, mw, ts, tf, td, mp)
+        ranked.append({
+            "user_id": uid,
+            "first_name": fname or "Player",
+            "username": uname,
+            "rating": rating
+        })
+
+    ranked.sort(key=lambda x: x["rating"], reverse=True)
+
+    result = []
+    for idx, p in enumerate(ranked[:limit], 1):
+        p["rank"] = idx
+        result.append(p)
+    return result
+
+def get_player_ccc_rank(user_id: int) -> dict:
+    """Get rank and rating for a specific player."""
+    rankings = get_ccc_rankings_with_trend(limit=500)
+    for p in rankings:
+        if p["user_id"] == user_id:
+            return {"rank": p["rank"], "rating": p["rating"]}
+    return None
+
+
 async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🏆 Show global leaderboard main menu"""
     group_id = update.effective_chat.id
@@ -30026,14 +30170,14 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "👇 <i>Choose a category to view rankings:</i>"
     )
     main_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏅 CCC Ranking", callback_data="lb_ccc_0")],
-        [InlineKeyboardButton("🏃 Top Runs", callback_data="lb_runs_0"),
-         InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0")],
-        [InlineKeyboardButton("🏆 Most Wins", callback_data="lb_wins_0"),
-         InlineKeyboardButton("🎯 Win Rate", callback_data="lb_winrate_0")],
-        [InlineKeyboardButton("4️⃣ Most Fours", callback_data="lb_fours_0"),
-         InlineKeyboardButton("🚀 Most Sixes", callback_data="lb_sixes_0")],
-        [InlineKeyboardButton("🌟 MOM Awards", callback_data="lb_mom_0")],
+        [styled_button("🏅 CCC Ranking", callback_data="lb_ccc_0", style="primary")],
+        [styled_button("🏃 Top Runs", callback_data="lb_runs_0", style="success"),
+         styled_button("⚾ Top Wickets", callback_data="lb_wickets_0", style="primary")],
+        [styled_button("🏆 Most Wins", callback_data="lb_wins_0", style="success"),
+         styled_button("🎯 Win Rate", callback_data="lb_winrate_0", style="primary")],
+        [styled_button("4️⃣ Most Fours", callback_data="lb_fours_0", style="success"),
+         styled_button("🚀 Most Sixes", callback_data="lb_sixes_0", style="primary")],
+        [styled_button("🌟 MOM Awards", callback_data="lb_mom_0", style="success")],
     ])
 
     await update.message.reply_text(main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
@@ -30157,14 +30301,14 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             "👇 <i>Choose a category to view rankings:</i>"
         )
         main_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏅 CCC Ranking", callback_data="lb_ccc_0")],
-            [InlineKeyboardButton("🏃 Top Runs", callback_data="lb_runs_0"),
-             InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0")],
-            [InlineKeyboardButton("🏆 Most Wins", callback_data="lb_wins_0"),
-             InlineKeyboardButton("🎯 Win Rate", callback_data="lb_winrate_0")],
-            [InlineKeyboardButton("4️⃣ Most Fours", callback_data="lb_fours_0"),
-             InlineKeyboardButton("🚀 Most Sixes", callback_data="lb_sixes_0")],
-            [InlineKeyboardButton("🌟 MOM Awards", callback_data="lb_mom_0")],
+            [styled_button("🏅 CCC Ranking", callback_data="lb_ccc_0")],
+            [styled_button("🏃 Top Runs", callback_data="lb_runs_0"),
+             styled_button("⚾ Top Wickets", callback_data="lb_wickets_0")],
+            [styled_button("🏆 Most Wins", callback_data="lb_wins_0"),
+             styled_button("🎯 Win Rate", callback_data="lb_winrate_0")],
+            [styled_button("4️⃣ Most Fours", callback_data="lb_fours_0"),
+             styled_button("🚀 Most Sixes", callback_data="lb_sixes_0")],
+            [styled_button("🌟 MOM Awards", callback_data="lb_mom_0")],
         ])
         try:
             await query.edit_message_caption(caption=main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
@@ -30211,7 +30355,7 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"<pre>{table}</pre>"
         )
 
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="lb_back")]])
+        kb = InlineKeyboardMarkup([[styled_button("🔙 Back", callback_data="lb_back")]])
         try:
             await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
         except Exception:
@@ -30302,14 +30446,14 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     bottom_row = []
     if offset > 0:
-        bottom_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"lb_{metric}_{max(0,offset-PAGE_SIZE)}"))
+        bottom_row.append(styled_button("◀️ Prev", callback_data=f"lb_{metric}_{max(0,offset-PAGE_SIZE)}", style="primary"))
     if offset + PAGE_SIZE < total:
-        bottom_row.append(InlineKeyboardButton("▶️ Next", callback_data=f"lb_{metric}_{offset+PAGE_SIZE}"))
+        bottom_row.append(styled_button("▶️ Next", callback_data=f"lb_{metric}_{offset+PAGE_SIZE}", style="primary"))
 
     kb_rows = []
     if bottom_row:
         kb_rows.append(bottom_row)
-    kb_rows.append([InlineKeyboardButton("🔙 Back", callback_data="lb_back")])
+    kb_rows.append([styled_button("🔙 Back", callback_data="lb_back", style="danger")])
     kb = InlineKeyboardMarkup(kb_rows)
 
     try:
@@ -31055,7 +31199,7 @@ async def scorecard_worm_callback(update: Update, context: ContextTypes.DEFAULT_
     else:
         nav_label = "⬅️ 1st Innings"
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(nav_label, callback_data=f"scorecard_worm_{group_id}_{other_inn}")
+        styled_button(nav_label, callback_data=f"scorecard_worm_{group_id}_{other_inn}")
     ]])
 
     try:
@@ -31726,12 +31870,12 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
         keyboard = [
-            [InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo"),
-             InlineKeyboardButton("🤖 AI Mode (DM)", callback_data="mode_ai")],
-            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team")],
-            [InlineKeyboardButton("📝 Registration", callback_data="tour_registration_mode"),
-             InlineKeyboardButton("🏦 Auction", callback_data="tour_auction_mode")],
-            [InlineKeyboardButton("🏆 Tournament Mode", callback_data="mode_tournament")]
+            [styled_button("⚔️ Solo Mode", callback_data="mode_solo"),
+             styled_button("🤖 AI Mode (DM)", callback_data="mode_ai")],
+            [styled_button("👥 Team Mode", callback_data="mode_team")],
+            [styled_button("📝 Registration", callback_data="tour_registration_mode"),
+             styled_button("🏦 Auction", callback_data="tour_auction_mode")],
+            [styled_button("🏆 Tournament Mode", callback_data="mode_tournament")]
         ]
 
         msg = f"🎮 <b>Choose a mode</b> — requested by {html.escape(user.first_name or 'Player')}"

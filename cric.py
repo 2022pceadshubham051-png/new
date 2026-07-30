@@ -29186,6 +29186,19 @@ async def reglist_back_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"reglist_back_callback edit error: {e}")
 
+
+async def reglist_close_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete the registeredlist message on Close button."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await query.message.delete()
+    except Exception:
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
 def _check_tournament_power_user_db(user_id: int, group_id: int) -> bool:
     conn_chk = sqlite3.connect(TOURNAMENT_DB_PATH)
     c_chk = conn_chk.cursor()

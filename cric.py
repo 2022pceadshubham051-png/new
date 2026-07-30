@@ -30010,7 +30010,7 @@ async def fantasy_equiptitle_callback(update: Update, context: ContextTypes.DEFA
 
 
 async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🏆 Show global leaderboard with tabs and pagination"""
+    """🏆 Show global leaderboard main menu"""
     group_id = update.effective_chat.id
     if update.effective_chat.type != "private":
         remaining = check_image_cooldown(group_id)
@@ -30018,8 +30018,209 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await send_cooldown_warning(update, remaining)
             return
 
-    metric = "runs"
-    offset = 0
+    main_text = (
+        "🏆 <b>CRICOVERSE GLOBAL LEADERBOARD</b>\n"
+        "─────────────────\n"
+        "Stats across <b>all groups</b> · All time\n"
+        "─────────────────\n\n"
+        "👇 <i>Choose a category to view rankings:</i>"
+    )
+    main_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏅 CCC Ranking", callback_data="lb_ccc_0")],
+        [InlineKeyboardButton("🏃 Top Runs", callback_data="lb_runs_0"),
+         InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0")],
+        [InlineKeyboardButton("🏆 Most Wins", callback_data="lb_wins_0"),
+         InlineKeyboardButton("🎯 Win Rate", callback_data="lb_winrate_0")],
+        [InlineKeyboardButton("4️⃣ Most Fours", callback_data="lb_fours_0"),
+         InlineKeyboardButton("🚀 Most Sixes", callback_data="lb_sixes_0")],
+        [InlineKeyboardButton("🌟 MOM Awards", callback_data="lb_mom_0")],
+    ])
+
+    await update.message.reply_text(main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
+
+
+def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
+    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    c = conn.cursor()
+
+    if metric == "runs":
+        c.execute("""
+            SELECT user_id, first_name, username,
+                   (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS tr,
+                   (COALESCE(total_balls_faced,0) + COALESCE(team_total_balls_faced,0)) AS tb
+            FROM user_stats
+            WHERE (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) > 0
+            ORDER BY tr DESC
+        """)
+        all_rows = c.fetchall()
+        title = "CRICOVERSE TOP RUN-GETTERS"
+        total = len(all_rows)
+        rows = all_rows[offset:offset+page_size]
+    elif metric == "wickets":
+        c.execute("""
+            SELECT user_id, first_name, username,
+                   (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS tw,
+                   (COALESCE(total_balls_bowled,0) + COALESCE(team_total_balls_bowled,0)) AS tbb,
+                   (COALESCE(total_runs_conceded,0) + COALESCE(team_total_runs_conceded,0)) AS trc
+            FROM user_stats
+            WHERE (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) > 0
+            ORDER BY tw DESC
+        """)
+        all_rows = c.fetchall()
+        title = "CRICOVERSE TOP WICKET-TAKERS"
+        total = len(all_rows)
+        rows = all_rows[offset:offset+page_size]
+    elif metric == "fours":
+        c.execute("""
+            SELECT user_id, first_name, username,
+                   (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) AS tf,
+                   (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS tr,
+                   (COALESCE(total_balls_faced,0) + COALESCE(team_total_balls_faced,0)) AS tb
+            FROM user_stats
+            WHERE (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) > 0
+            ORDER BY tf DESC
+        """)
+        all_rows = c.fetchall()
+        title = "CRICOVERSE MOST FOURS"
+        total = len(all_rows)
+        rows = all_rows[offset:offset+page_size]
+    elif metric == "sixes":
+        c.execute("""
+            SELECT user_id, first_name, username,
+                   (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) AS ts,
+                   (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS tr,
+                   (COALESCE(total_balls_faced,0) + COALESCE(team_total_balls_faced,0)) AS tb
+            FROM user_stats
+            WHERE (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) > 0
+            ORDER BY ts DESC
+        """)
+        all_rows = c.fetchall()
+        title = "CRICOVERSE MOST SIXES"
+        total = len(all_rows)
+        rows = all_rows[offset:offset+page_size]
+    elif metric == "wins":
+        c.execute("""
+            SELECT user_id, first_name, username,
+                   (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS tw,
+                   (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS tp
+            FROM user_stats
+            WHERE (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) > 0
+            ORDER BY tw DESC
+        """)
+        all_rows = c.fetchall()
+        title = "CRICOVERSE MOST MATCH WINS"
+        total = len(all_rows)
+        rows = all_rows[offset:offset+page_size]
+    elif metric == "winrate":
+        c.execute("""
+            SELECT user_id, first_name, username,
+                   (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS tw,
+                   (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS tp
+            FROM user_stats
+            WHERE (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) >= 5
+            ORDER BY CAST(tw AS REAL)/tp DESC
+        """)
+        all_rows = c.fetchall()
+        title = "CRICOVERSE BEST WIN RATE"
+        total = len(all_rows)
+        rows = all_rows[offset:offset+page_size]
+    elif metric == "mom":
+        c.execute("""
+            SELECT user_id, first_name, username, COALESCE(player_of_match_count,0) AS mom
+            FROM user_stats
+            WHERE COALESCE(player_of_match_count,0) > 0
+            ORDER BY mom DESC
+        """)
+        all_rows = c.fetchall()
+        title = "CRICOVERSE MOST MAN OF MATCH"
+        total = len(all_rows)
+        rows = all_rows[offset:offset+page_size]
+    else:
+        title, rows, total = "", [], 0
+
+    conn.close()
+    return title, rows, total
+
+
+async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle leaderboard tab buttons with pagination"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data.replace("lb_", "")
+
+    if data == "back":
+        main_text = (
+            "🏆 <b>CRICOVERSE GLOBAL LEADERBOARD</b>\n"
+            "─────────────────\n"
+            "Stats across <b>all groups</b> · All time\n"
+            "─────────────────\n\n"
+            "👇 <i>Choose a category to view rankings:</i>"
+        )
+        main_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏅 CCC Ranking", callback_data="lb_ccc_0")],
+            [InlineKeyboardButton("🏃 Top Runs", callback_data="lb_runs_0"),
+             InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0")],
+            [InlineKeyboardButton("🏆 Most Wins", callback_data="lb_wins_0"),
+             InlineKeyboardButton("🎯 Win Rate", callback_data="lb_winrate_0")],
+            [InlineKeyboardButton("4️⃣ Most Fours", callback_data="lb_fours_0"),
+             InlineKeyboardButton("🚀 Most Sixes", callback_data="lb_sixes_0")],
+            [InlineKeyboardButton("🌟 MOM Awards", callback_data="lb_mom_0")],
+        ])
+        try:
+            await query.edit_message_caption(caption=main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
+        except Exception:
+            try:
+                await query.edit_message_text(main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
+            except Exception:
+                await query.message.reply_text(main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
+        return
+
+    parts = data.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        metric = parts[0]
+        offset = int(parts[1])
+    else:
+        metric = data
+        offset = 0
+
+    # CCC RANKING
+    if metric == "ccc":
+        rows = await asyncio.to_thread(get_ccc_rankings_with_trend, 10)
+
+        def _pad(s, w):
+            s = html.escape(str(s))
+            return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+        def _rpad(s, w):
+            s = str(s)
+            return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
+
+        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('Rating', 8)}\n"
+        table = header + ("─" * 41) + "\n"
+        for row in rows:
+            name = (row.get("first_name") or "Player")[:12]
+            uname = f"@{row.get('username') or '-'}"[:12]
+            table += f"{_pad(row['rank'], 5)}{_pad(name, 14)}{_pad(uname, 14)}{_rpad(row['rating'], 8)}\n"
+        if not rows:
+            table += f"  No one's qualified yet — play {CCC_MIN_MATCHES}+ matches!\n"
+
+        text = (
+            "🏆 <b>CRICOVERSE CCC RANKING</b>\n"
+            "─────────────────\n"
+            f"Overall skill ranking · min {CCC_MIN_MATCHES} matches\n"
+            f"<pre>{table}</pre>"
+        )
+
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="lb_back")]])
+        try:
+            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception:
+            try:
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            except Exception:
+                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        return
+
     PAGE_SIZE = 10
     title, rows, total = await asyncio.to_thread(_lb_query, metric, offset, PAGE_SIZE)
 
@@ -30099,7 +30300,6 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         text += f"#{offset+1}–#{min(offset+PAGE_SIZE, total)} of {total} players\n"
     text += f"<pre>{table}</pre>"
 
-    # Only show Prev/Next navigation + Back (NO category tabs)
     bottom_row = []
     if offset > 0:
         bottom_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"lb_{metric}_{max(0,offset-PAGE_SIZE)}"))
@@ -30114,12 +30314,11 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    except:
+    except Exception:
         try:
             await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         except Exception:
             await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-
 
 
 # ═══════════════════════════════════════════════════════════════

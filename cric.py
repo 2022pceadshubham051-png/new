@@ -1597,9 +1597,8 @@ def load_data():
     """Load all data (Try SQL first, Fallback to JSON)"""
     global user_data, match_history, player_stats, achievements, registered_groups, banned_groups, fantasy_data
     
-    # Initialize DB if missing
-    if not os.path.exists(DB_FILE):
-        init_db()
+    # Initialize DB (also runs column migrations on existing DBs — safe to call every time)
+    init_db()
 
     data_loaded_from_sql = False
     

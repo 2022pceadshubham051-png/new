@@ -635,12 +635,12 @@ def styled_button(text: str, callback_data: Optional[str] = None, url: Optional[
     if icon_id:
         kwargs["icon_custom_emoji_id"] = icon_id
     try:
-        return InlineKeyboardButton(text, **kwargs, style="primary")
+        return InlineKeyboardButton(text, **kwargs)
     except TypeError:
         # Installed python-telegram-bot predates Bot API 9.4 support — pip install -U python-telegram-bot
         kwargs.pop("style", None)
         kwargs.pop("icon_custom_emoji_id", None)
-        return InlineKeyboardButton(text, **kwargs, style="primary")
+        return InlineKeyboardButton(text, **kwargs)
 
 
 
@@ -3104,10 +3104,10 @@ def _team_board_render(match: Match):
     """Builds the (text, keyboard) pair for the team joining board."""
     text = get_team_join_message(match)
     keyboard = [
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x", style="success"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y", style="success")],
-        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team", style="danger")],
-        [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now", style="success")]
+        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
+         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
+        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")],
+        [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now")]
     ]
     return text, keyboard
 
@@ -3228,16 +3228,16 @@ async def update_team_edit_message(context: ContextTypes.DEFAULT_TYPE, group_id:
         text += "👉 Click button below when done."
         
         # 'Done' button wapas Main Menu le jayega
-        keyboard = [[InlineKeyboardButton(f"✅ Done with Team {match.editing_team}", callback_data="edit_back", style="success")]]
+        keyboard = [[InlineKeyboardButton(f"✅ Done with Team {match.editing_team}", callback_data="edit_back")]]
         
     else:
         # --- MAIN MENU (Team Select Karo) ---
         text += "👇 <b>Select a team to edit:</b>"
         keyboard = [
             # Note: Buttons ab 'edit_team_x' use kar rahe hain (no _mode)
-            [InlineKeyboardButton("✏️ Edit Team X", callback_data="edit_team_x", style="primary"), 
-             InlineKeyboardButton("✏️ Edit Team Y", callback_data="edit_team_y", style="primary")],
-            [InlineKeyboardButton("✅ Finalize & Start", callback_data="team_edit_done", style="success")]
+            [InlineKeyboardButton("✏️ Edit Team X", callback_data="edit_team_x"), 
+             InlineKeyboardButton("✏️ Edit Team Y", callback_data="edit_team_y")],
+            [InlineKeyboardButton("✅ Finalize & Start", callback_data="team_edit_done")]
         ]
 
     await refresh_game_message(context, group_id, match, text, InlineKeyboardMarkup(keyboard), media_key="squads")
@@ -3373,8 +3373,8 @@ def _build_solo_scorecard(match):
 
     group_id = getattr(match, "group_id", None) or getattr(match, "chat_id", None)
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"soloscore_refresh_{group_id}", style="primary"),
-        InlineKeyboardButton("◀ Back", callback_data=f"soloscore_back_{group_id}", style="primary"),
+        InlineKeyboardButton("🔄 Refresh", callback_data=f"soloscore_refresh_{group_id}"),
+        InlineKeyboardButton("◀ Back", callback_data=f"soloscore_back_{group_id}"),
     ]])
     return text, kb
 
@@ -3412,20 +3412,19 @@ async def soloscore_back_callback(update: Update, context: ContextTypes.DEFAULT_
         return
 
     sorted_players = sorted(match.solo_players, key=lambda x: x.runs, reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
     msg = "🏆 <b>SOLO BATTLE LEADERBOARD</b>\n─────────────────\n\n"
     for i, p in enumerate(sorted_players, 1):
-        rank = medals[i-1] if i <= 3 else f"<b>{i}.</b>"
+        rank = f"<b>{i}.</b>"
         status = ""
-        if p.is_out: status = " ❌"
-        elif (i-1) == match.current_solo_bat_idx: status = " 🏏"
-        elif (i-1) == match.current_solo_bowl_idx: status = " ⚾"
+        if p.is_out: status = " (out)"
+        elif (i-1) == match.current_solo_bat_idx: status = " (batting)"
+        elif (i-1) == match.current_solo_bowl_idx: status = " (bowling)"
         sr = round((p.runs / max(p.balls_faced, 1)) * 100, 1)
         msg += f"{rank} <b>{html.escape(p.first_name)}</b>{status}\n"
-        msg += f"   📊 <b>{p.runs}</b> runs ({p.balls_faced} balls)  SR: {sr}\n\n"
+        msg += f"   {p.runs} runs ({p.balls_faced} balls)  SR: {sr}\n\n"
     msg += "─────────────────"
 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Table", callback_data=f"soloscore_refresh_{group_id}", style="primary")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Table", callback_data=f"soloscore_refresh_{group_id}")]])
     try:
         await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e:
@@ -3486,90 +3485,11 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as nsc_e:
             logger.error(f"New-style scorecard error: {nsc_e}")
 
-    first_team = match.batting_first if match.batting_first else match.team_x
-    second_team = match.team_y if first_team == match.team_x else match.team_x
-    
-    def _pad(s, w):
-        """Pad/truncate a string to exactly `w` display chars (left-aligned)."""
-        s = str(s)
-        if len(s) > w:
-            return s[: max(w - 1, 1)] + "…"
-        return s + (" " * (w - len(s)))
-
-    def _rpad(s, w):
-        """Right-align within width w."""
-        s = str(s)
-        if len(s) > w:
-            return s[: max(w - 1, 1)] + "…"
-        return (" " * (w - len(s))) + s
-
-    def _bat_table(bat_team):
-        """Batting card as one aligned monospace table (goes inside a <pre> block)."""
-        header = f"{_pad('Batter', 15)}{_rpad('R', 4)}{_rpad('B', 4)}{_rpad('4s', 4)}{_rpad('6s', 4)}{_rpad('SR', 7)}\n"
-        rows = ""
-        batters = [p for p in bat_team.players if p.balls_faced > 0 or p.is_out]
-        for p in batters:
-            sr = round(p.runs / p.balls_faced * 100, 1) if p.balls_faced > 0 else 0.0
-            cap = "©" if p.user_id == bat_team.captain_id else ""
-            status = "" if p.is_out else "*"
-            name = f"{p.first_name[:12]}{cap}{status}"
-            rows += (
-                f"{_pad(name, 15)}{_rpad(p.runs, 4)}{_rpad(p.balls_faced, 4)}"
-                f"{_rpad(p.boundaries, 4)}{_rpad(p.sixes, 4)}{_rpad(sr, 7)}\n"
-            )
-        if not batters:
-            rows = "  Not started yet\n"
-        return header + ("─" * 38) + "\n" + rows
-
-    def _bowl_table(bowl_team):
-        """Bowling card as one aligned monospace table (goes inside a <pre> block)."""
-        header = f"{_pad('Bowler', 15)}{_rpad('O', 6)}{_rpad('R', 4)}{_rpad('W', 4)}{_rpad('Eco', 7)}\n"
-        rows = ""
-        bowlers = [p for p in bowl_team.players if p.balls_bowled > 0]
-        for p in bowlers:
-            ov = f"{p.balls_bowled//6}.{p.balls_bowled%6}"
-            eco = round(p.runs_conceded / (p.balls_bowled / 6), 2) if p.balls_bowled > 0 else 0
-            name = p.first_name[:14]
-            rows += f"{_pad(name, 15)}{_rpad(ov, 6)}{_rpad(p.runs_conceded, 4)}{_rpad(p.wickets, 4)}{_rpad(eco, 7)}\n"
-        if not bowlers:
-            rows = "  No bowlers yet\n"
-        return header + ("─" * 36) + "\n" + rows
-
-    def _innings_block(bat_team, bowl_team, label, inn_num):
-        rr = round(bat_team.score / (bat_team.balls / 6), 2) if bat_team.balls > 0 else 0
-        extras = bat_team.extras if hasattr(bat_team, 'extras') else 0
-        block = (
-            f"🏏 <b>{inn_num} INNINGS → {html.escape(bat_team.name)}</b>\n"
-            f"📊 <b>{bat_team.score}/{bat_team.wickets}</b>  ({format_overs(bat_team.balls)} ov)  "
-            f"RR: <b>{rr}</b>  ·  Extras: {extras}\n"
-            f"<pre>{_bat_table(bat_team)}</pre>"
-            f"<pre>{_bowl_table(bowl_team)}</pre>"
-        )
-        return block
-    
-    # ── Worm chart photo, then the professional emoji rich table ──
-    has_data = (
-        len(getattr(match, 'team_x_over_runs', [])) > 0 or
-        len(getattr(match, 'team_y_over_runs', [])) > 0 or
-        getattr(match, 'current_over_runs', 0) > 0
-    )
-    if has_data:
-        try:
-            worm_bio = await asyncio.to_thread(generate_worm_graph, match)
-            if worm_bio:
-                await update.message.reply_photo(
-                    photo=worm_bio,
-                    caption=f"📈 <b>SCORE WORM</b>  •  {match.total_overs} Overs",
-                    parse_mode=ParseMode.HTML,
-                )
-                if update.effective_chat.type != "private":
-                    set_image_cooldown(group_id)
-        except Exception as worm_sc_err:
-            logger.error(f"Worm graph in scorecard cmd error: {worm_sc_err}")
-    # NOTE: send_new_scorecard was being called twice — once right after the
-    # cooldown/use-count check above, and again here — which is why /scorecard
-    # sent the card two times. The earlier call already sends it, so this
-    # duplicate call has been removed.
+    # NOTE: /scorecard now sends exactly ONE message — the new-style table
+    # scorecard above. It used to also auto-send a worm-graph photo here,
+    # which is why the card visually appeared "twice". The worm graph is
+    # still available on demand via its own refresh/worm button
+    # (scorecard_worm_callback) instead of being force-sent every time.
 
 async def cleanup_inactive_matches(context: ContextTypes.DEFAULT_TYPE):
     """Auto-end matches inactive for > 10 minutes"""
@@ -3976,7 +3896,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _tme_gid = _cid_str[3:] if _cid_str.startswith("100") else _cid_str
                 _game_url = f"https://t.me/c/{_tme_gid}/{match.main_message_id or 1}"
                 _go_group_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🏟️ Go to Game", url=_game_url, style="success")
+                    InlineKeyboardButton("🏟️ Go to Game", url=_game_url)
                 ]])
             except Exception:
                 _go_group_markup = None
@@ -4246,7 +4166,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add to Group button
         bot_username = (await context.bot.get_me()).username
         keyboard = [
-            [InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_username}?startgroup=true", style="success")]
+            [InlineKeyboardButton("➕ Add to Group", url=f"https://t.me/{bot_username}?startgroup=true")]
         ]
         
         await update.message.reply_photo(
@@ -4603,13 +4523,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Interactive Help Menu"""
     
     keyboard = [
-        [InlineKeyboardButton("👥 Team Mode", callback_data="help_team", style="primary"),
-         InlineKeyboardButton("⚔️ Solo Mode", callback_data="help_solo", style="primary")],
-        [InlineKeyboardButton("🏆 Tournament", callback_data="help_tournament", style="primary"),
-         InlineKeyboardButton("💰 Fantasy", callback_data="help_fantasy", style="primary")],
-        [InlineKeyboardButton("🛠 Admin", callback_data="help_admin", style="primary"),
-         InlineKeyboardButton("📚 How to Play", callback_data="help_tutorial", style="success")],
-        [InlineKeyboardButton("❌ Close", callback_data="help_close", style="danger")]
+        [InlineKeyboardButton("👥 Team Mode", callback_data="help_team"),
+         InlineKeyboardButton("⚔️ Solo Mode", callback_data="help_solo")],
+        [InlineKeyboardButton("🏆 Tournament", callback_data="help_tournament"),
+         InlineKeyboardButton("💰 Fantasy", callback_data="help_fantasy")],
+        [InlineKeyboardButton("🛠 Admin", callback_data="help_admin"),
+         InlineKeyboardButton("📚 How to Play", callback_data="help_tutorial")],
+        [InlineKeyboardButton("❌ Close", callback_data="help_close")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -4643,38 +4563,38 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "help_main":
         text = get_help_main_text()
         keyboard = [
-            [InlineKeyboardButton("👥 Team Mode", callback_data="help_team", style="primary"),
-             InlineKeyboardButton("⚔️ Solo Mode", callback_data="help_solo", style="primary")],
-            [InlineKeyboardButton("🏆 Tournament", callback_data="help_tournament", style="primary"),
-             InlineKeyboardButton("💰 Fantasy", callback_data="help_fantasy", style="primary")],
-            [InlineKeyboardButton("🛠 Admin", callback_data="help_admin", style="primary"),
-             InlineKeyboardButton("📚 How to Play", callback_data="help_tutorial", style="success")],
-            [InlineKeyboardButton("❌ Close", callback_data="help_close", style="danger")]
+            [InlineKeyboardButton("👥 Team Mode", callback_data="help_team"),
+             InlineKeyboardButton("⚔️ Solo Mode", callback_data="help_solo")],
+            [InlineKeyboardButton("🏆 Tournament", callback_data="help_tournament"),
+             InlineKeyboardButton("💰 Fantasy", callback_data="help_fantasy")],
+            [InlineKeyboardButton("🛠 Admin", callback_data="help_admin"),
+             InlineKeyboardButton("📚 How to Play", callback_data="help_tutorial")],
+            [InlineKeyboardButton("❌ Close", callback_data="help_close")]
         ]
     
     elif data == "help_team":
         text = get_help_team_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
         
     elif data == "help_solo":
         text = get_help_solo_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
     
     elif data == "help_tournament":
         text = get_help_tournament_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
 
     elif data == "help_fantasy":
         text = get_help_fantasy_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
 
     elif data == "help_admin":
         text = get_help_admin_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
         
     elif data == "help_tutorial":
         text = get_help_tutorial_text()
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="help_main")]]
     
     # Update the Caption (Image remains same)
     try:
@@ -4736,12 +4656,12 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         # Step 6: Prepare UI
         keyboard = [
-            [InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo", style="primary"),
-             InlineKeyboardButton("🤖 AI Mode (DM)", callback_data="mode_ai", style="primary")],
-            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team", style="primary")],
-            [InlineKeyboardButton("📝 Registration", callback_data="tour_registration_mode", style="primary"),
-             InlineKeyboardButton("🏦 Auction", callback_data="tour_auction_mode", style="primary")],
-            [InlineKeyboardButton("🏆 Tournament Mode", callback_data="mode_tournament", style="primary")]
+            [InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo"),
+             InlineKeyboardButton("🤖 AI Mode (DM)", callback_data="mode_ai")],
+            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team")],
+            [InlineKeyboardButton("📝 Registration", callback_data="tour_registration_mode"),
+             InlineKeyboardButton("🏦 Auction", callback_data="tour_auction_mode")],
+            [InlineKeyboardButton("🏆 Tournament Mode", callback_data="mode_tournament")]
         ]
         
         requester_tag = f'<a href="tg://user?id={user.id}">{html.escape(user.first_name)}</a>'
@@ -4834,12 +4754,12 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
 
         # Show tournament 5-button menu
         keyboard = [
-            [InlineKeyboardButton("🏏 Start Match", callback_data="tour_start_match", style="success")],
-            [InlineKeyboardButton("📊 Points Table", callback_data="tour_points_table", style="primary"),
-             InlineKeyboardButton("📋 Fixtures", callback_data="tour_fixtures", style="primary")],
-            [InlineKeyboardButton("✏️ Edit Team", callback_data="tour_edit_team", style="primary"),
-             InlineKeyboardButton("🔙 Back", callback_data="back_to_modes", style="primary")],
-            [InlineKeyboardButton("🛑 End Tour", callback_data="tour_end_confirm", style="danger")]
+            [InlineKeyboardButton("🏏 Start Match", callback_data="tour_start_match")],
+            [InlineKeyboardButton("📊 Points Table", callback_data="tour_points_table"),
+             InlineKeyboardButton("📋 Fixtures", callback_data="tour_fixtures")],
+            [InlineKeyboardButton("✏️ Edit Team", callback_data="tour_edit_team"),
+             InlineKeyboardButton("🔙 Back", callback_data="back_to_modes")],
+            [InlineKeyboardButton("🛑 End Tour", callback_data="tour_end_confirm")]
         ]
 
         caption = (
@@ -4964,7 +4884,7 @@ async def auction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "╰━━━━━━━━"
         )
         
-        keyboard = [[InlineKeyboardButton("🎤 Be Auctioneer", callback_data="become_auctioneer", style="success")]]
+        keyboard = [[InlineKeyboardButton("🎤 Be Auctioneer", callback_data="become_auctioneer")]]
         
         # ✅ FIX: Use edit_caption
         await query.message.edit_caption(
@@ -4992,9 +4912,9 @@ async def auction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "back_to_modes":
         keyboard = [
-            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team", style="primary"),
-            InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo", style="primary")],
-            [InlineKeyboardButton("🏆 Tournament", callback_data="mode_tournament", style="primary")]
+            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team"),
+            InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo")],
+            [InlineKeyboardButton("🏆 Tournament", callback_data="mode_tournament")]
         ]
         
         # ✅ FIX: Use edit_caption
@@ -5023,8 +4943,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
 
         if query.data == "tour_end_confirm":
             keyboard = [[
-                InlineKeyboardButton("✅ Yes, End Tour", callback_data="tour_end_yes", style="danger"),
-                InlineKeyboardButton("❌ Cancel", callback_data="tour_end_no", style="danger")
+                InlineKeyboardButton("✅ Yes, End Tour", callback_data="tour_end_yes"),
+                InlineKeyboardButton("❌ Cancel", callback_data="tour_end_no")
             ]]
             text = (
                 "🛑 <b>END TOURNAMENT?</b>\n"
@@ -5120,7 +5040,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         text += f"<pre>{table}</pre>"
         text += "📌 <i>Win=2pts  Tie=1pt  Loss=0pts</i>"
 
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
         rm = InlineKeyboardMarkup(keyboard)
         try:
             if img_bio:
@@ -5166,49 +5086,45 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             return f"Match {idx}"
 
         # Split into Upcoming Matches and Knockout Schedule (Match | Winner | Status)
-        upcoming = [(i, f) for i, f in enumerate(page_fixes, fix_offset + 1) if not f.get("result")]
+        # Split into Today's Matches, Upcoming Matches, and Knockout Schedule
+        today = [(i, f) for i, f in enumerate(page_fixes, fix_offset + 1) if f.get("is_today") or f.get("status") == "live"]
+        upcoming = [(i, f) for i, f in enumerate(page_fixes, fix_offset + 1) if not f.get("result") and not (f.get("is_today") or f.get("status") == "live")]
         knockout = [(i, f) for i, f in enumerate(page_fixes, fix_offset + 1)]
+
+        def _fmt_fx_table(section_title, items):
+            hdr = f"{_fx_pad('Match', 22)}{_fx_pad('Winner', 14)}{_fx_pad('Status', 10)}\n"
+            tbl = hdr + ("─" * 46) + "\n"
+            for i, fix in items:
+                t1, t2 = fix.get("team1", "?"), fix.get("team2", "?")
+                res = fix.get("result") or "-"
+                status = "Done" if fix.get("result") else ("Live" if fix.get("status") == "live" else "Pending")
+                tbl += f"{_fx_pad(f'{t1} vs {t2}', 22)}{_fx_pad(res, 14)}{_fx_pad(status, 10)}\n"
+            if not items:
+                tbl += "  No matches\n"
+            return f"<b>{section_title}</b>\n<pre>{tbl}</pre>\n"
 
         text = f"📋 <b>TOURNAMENT FIXTURES</b>\n"
         text += f"─────────────────\n"
-        text += f"{total_completed}/{total_fixes} completed  •  {total_remaining} remaining\n\n"
-
-        text += "<b>Upcoming Matches</b>\n"
-        if upcoming:
-            up_header = f"{_fx_pad('Match', 24)}{_fx_pad('Round', 12)}\n"
-            up_table = up_header + ("─" * 36) + "\n"
-            for i, fix in upcoming:
-                t1, t2 = fix.get("team1", "?"), fix.get("team2", "?")
-                up_table += f"{_fx_pad(f'{t1} vs {t2}', 24)}{_fx_pad(_round_label(fix, i), 12)}\n"
-            text += f"<pre>{up_table}</pre>"
-        else:
-            text += "<i>No upcoming matches on this page.</i>\n"
-
-        text += "\n<b>Knockout Schedule</b>\n"
-        ko_header = f"{_fx_pad('Match', 24)}{_fx_pad('Winner', 14)}{_fx_pad('Status', 10)}\n"
-        ko_table = ko_header + ("─" * 48) + "\n"
-        for i, fix in knockout:
-            t1, t2 = fix.get("team1", "?"), fix.get("team2", "?")
-            res = fix.get("result")
-            status = "Done" if res else "Pending"
-            ko_table += f"{_fx_pad(f'{t1} vs {t2}', 24)}{_fx_pad(res or '-', 14)}{_fx_pad(status, 10)}\n"
-        text += f"<pre>{ko_table}</pre>"
+        text += f"{total_completed}/{total_fixes} completed  ·  {total_remaining} remaining\n\n"
+        text += _fmt_fx_table("Today's Matches", today)
+        text += _fmt_fx_table("Upcoming Matches", upcoming)
+        text += _fmt_fx_table("Knockout Schedule", knockout)
 
         # Navigation buttons
         nav_row = []
         if fix_offset > 0:
-            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"tour_fixtures_{max(0, fix_offset - FIX_PAGE)}", style="primary"))
+            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"tour_fixtures_{max(0, fix_offset - FIX_PAGE)}"))
         if fix_offset + FIX_PAGE < total_fixes:
-            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"tour_fixtures_{fix_offset + FIX_PAGE}", style="primary"))
+            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"tour_fixtures_{fix_offset + FIX_PAGE}"))
 
         page_info = f"📄 {fix_offset//FIX_PAGE + 1}/{(total_fixes + FIX_PAGE - 1)//FIX_PAGE}"
         if nav_row:
-            nav_row.insert(len(nav_row)//2, InlineKeyboardButton(page_info, callback_data="noop", style="primary"))
+            nav_row.insert(len(nav_row)//2, InlineKeyboardButton(page_info, callback_data="noop"))
 
         keyboard = []
         if nav_row:
             keyboard.append(nav_row)
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="mode_tournament", style="primary")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")])
         rm = InlineKeyboardMarkup(keyboard)
 
         try:
@@ -5245,7 +5161,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
                 "• Send <code>done</code> when finished\n\n"
                 "─────────────────"
             )
-            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament", style="primary")]]
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
             try:
                 await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
             except:
@@ -5271,8 +5187,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             "─────────────────"
         )
         
-        keyboard = [[InlineKeyboardButton("✅ Done", callback_data="tour_teams_done", style="success"),
-                     InlineKeyboardButton("🔙 Back", callback_data="mode_tournament", style="primary")]]
+        keyboard = [[InlineKeyboardButton("✅ Done", callback_data="tour_teams_done"),
+                     InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
         try:
             photo = MEDIA_ASSETS.get("tournament_teams")
             await context.bot.send_photo(
@@ -5373,8 +5289,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"─────────────────"
         )
         keyboard = [
-            [InlineKeyboardButton("🎙 Become Host", callback_data=f"tour_host_{mid}", style="success")],
-            [InlineKeyboardButton("🔙 Back", callback_data="mode_tournament", style="primary")]
+            [InlineKeyboardButton("🎙 Become Host", callback_data=f"tour_host_{mid}")],
+            [InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]
         ]
         try:
             photo = MEDIA_ASSETS.get("tournament_match")
@@ -5409,10 +5325,10 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"🔢 Select number of overs (1–20):"
         )
         keyboard = [
-            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}", style="primary") for o in range(1, 6)],
-            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}", style="primary") for o in range(6, 11)],
-            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}", style="primary") for o in range(11, 16)],
-            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}", style="primary") for o in range(16, 21)],
+            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(1, 6)],
+            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(6, 11)],
+            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(11, 16)],
+            [InlineKeyboardButton(f"{o}", callback_data=f"tour_overs_{mid}_{o}") for o in range(16, 21)],
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -5444,7 +5360,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"🔵 Host: Select <b>Team X</b>:"
         )
         keyboard = [
-            [InlineKeyboardButton(tn, callback_data=f"tour_teamx_{mid}_{tn}", style="primary")] for tn in all_teams
+            [InlineKeyboardButton(tn, callback_data=f"tour_teamx_{mid}_{tn}")] for tn in all_teams
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -5472,7 +5388,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"🔴 Now select <b>Team Y</b>:"
         )
         keyboard = [
-            [InlineKeyboardButton(tn, callback_data=f"tour_teamy_{mid}_{tn}", style="primary")] for tn in all_teams
+            [InlineKeyboardButton(tn, callback_data=f"tour_teamy_{mid}_{tn}")] for tn in all_teams
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
@@ -5555,7 +5471,7 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             f"Use <code>/startregistration</code> here to open registration.\n"
             f"─────────────────"
         )
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]]
         await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     elif query.data == "tour_auction_mode":
@@ -5564,8 +5480,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             await query.message.reply_text(text, reply_markup=notice_markup, parse_mode=ParseMode.HTML)
             return
         keyboard = [
-            [InlineKeyboardButton("🎯 Start Auction", callback_data="start_auction", style="success")],
-            [InlineKeyboardButton("🔙 Back", callback_data="mode_tournament", style="primary")]
+            [InlineKeyboardButton("🎯 Start Auction", callback_data="start_auction")],
+            [InlineKeyboardButton("🔙 Back", callback_data="mode_tournament")]
         ]
         try:
             await query.message.edit_caption(
@@ -6051,14 +5967,14 @@ def _mres_squad(group_id: int, team1: str, team2: str) -> List[Tuple[int, str, s
 def _mres_overs_keyboard(mid) -> InlineKeyboardMarkup:
     rows = []
     for start in range(1, 21, 5):
-        rows.append([InlineKeyboardButton(str(o), callback_data=f"mres_overs_{o}", style="primary") for o in range(start, min(start + 5, 21))])
+        rows.append([InlineKeyboardButton(str(o), callback_data=f"mres_overs_{o}") for o in range(start, min(start + 5, 21))])
     return InlineKeyboardMarkup(rows)
 
 
 def _mres_wkts_keyboard() -> InlineKeyboardMarkup:
     rows = []
     for start in range(0, 20, 5):
-        rows.append([InlineKeyboardButton(str(w), callback_data=f"mres_wktmargin_{w}", style="primary") for w in range(start, min(start + 5, 20))])
+        rows.append([InlineKeyboardButton(str(w), callback_data=f"mres_wktmargin_{w}") for w in range(start, min(start + 5, 20))])
     return InlineKeyboardMarkup(rows)
 
 
@@ -6078,9 +5994,9 @@ def _mres_stats_prompt_text(session: Dict) -> str:
 
 def _mres_stats_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏭ Skip (didn't play)", callback_data="mres_playerskip", style="success")],
-        [InlineKeyboardButton("✅ Finish & Save now", callback_data="mres_playerdone", style="success")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel", style="danger")],
+        [InlineKeyboardButton("⏭ Skip (didn't play)", callback_data="mres_playerskip")],
+        [InlineKeyboardButton("✅ Finish & Save now", callback_data="mres_playerdone")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")],
     ])
 
 
@@ -6210,8 +6126,8 @@ async def addresult_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "squad": [], "idx": 0, "stats": {}, "stage": "team_x",
     }
 
-    kb = [[InlineKeyboardButton(tn, callback_data=f"mres_tx_{tn}", style="primary")] for tn in all_teams]
-    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel", style="danger")])
+    kb = [[InlineKeyboardButton(tn, callback_data=f"mres_tx_{tn}")] for tn in all_teams]
+    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")])
     await update.message.reply_text(
         "🏆 <b>Manual Result Entry</b>\n─────────────────\n🔵 Select <b>Team X</b>:",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML,
@@ -6245,8 +6161,8 @@ async def mres_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tx = data[len("mres_tx_"):]
         session["team1"] = tx
         all_teams = [t for t in tournament_teams.get(group_id, {}).keys() if t != tx]
-        kb = [[InlineKeyboardButton(tn, callback_data=f"mres_ty_{tn}", style="primary")] for tn in all_teams]
-        kb.append([InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel", style="danger")])
+        kb = [[InlineKeyboardButton(tn, callback_data=f"mres_ty_{tn}")] for tn in all_teams]
+        kb.append([InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")])
         await query.edit_message_text(
             f"✅ Team X = <b>{html.escape(tx)}</b>\n─────────────────\n🔴 Select <b>Team Y</b>:",
             reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML,
@@ -6275,10 +6191,10 @@ async def mres_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["stage"] = "winner"
         t1, t2 = session["team1"], session["team2"]
         kb = [
-            [InlineKeyboardButton(t1, callback_data="mres_win_t1", style="success")],
-            [InlineKeyboardButton(t2, callback_data="mres_win_t2", style="success")],
-            [InlineKeyboardButton("🤝 Tie", callback_data="mres_win_tie", style="success")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel", style="danger")],
+            [InlineKeyboardButton(t1, callback_data="mres_win_t1")],
+            [InlineKeyboardButton(t2, callback_data="mres_win_t2")],
+            [InlineKeyboardButton("🤝 Tie", callback_data="mres_win_tie")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="mres_cancel")],
         ]
         await query.edit_message_text(
             f"✅ <b>{overs} overs</b>\n─────────────────\n⚔️ <b>{t1}</b> vs <b>{t2}</b>\n\n🏆 Who won?",
@@ -6299,9 +6215,9 @@ async def mres_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _mres_advance_to_stats(query, context, group_id, edit=True)
             return
         kb = [
-            [InlineKeyboardButton("🏃 By Runs", callback_data="mres_margintype_runs", style="primary")],
-            [InlineKeyboardButton("🎯 By Wickets", callback_data="mres_margintype_wkts", style="primary")],
-            [InlineKeyboardButton("⏭ Skip margin", callback_data="mres_margintype_skip", style="primary")],
+            [InlineKeyboardButton("🏃 By Runs", callback_data="mres_margintype_runs")],
+            [InlineKeyboardButton("🎯 By Wickets", callback_data="mres_margintype_wkts")],
+            [InlineKeyboardButton("⏭ Skip margin", callback_data="mres_margintype_skip")],
         ]
         await query.edit_message_text(
             f"✅ Result: <b>{session['winner']} won</b>\n\n📏 Winning margin?",
@@ -6560,10 +6476,10 @@ async def tourlb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     metric = "runs"
     text = _tourlb_text(group_id, metric)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏃 Runs",    callback_data=f"tourlb_{group_id}_runs", style="primary"),
-         InlineKeyboardButton("⚾ Wickets", callback_data=f"tourlb_{group_id}_wickets", style="primary")],
-        [InlineKeyboardButton("🚀 Sixes",   callback_data=f"tourlb_{group_id}_sixes", style="primary"),
-         InlineKeyboardButton("4️⃣ Fours",   callback_data=f"tourlb_{group_id}_fours", style="primary")],
+        [InlineKeyboardButton("🏃 Runs",    callback_data=f"tourlb_{group_id}_runs"),
+         InlineKeyboardButton("⚾ Wickets", callback_data=f"tourlb_{group_id}_wickets")],
+        [InlineKeyboardButton("🚀 Sixes",   callback_data=f"tourlb_{group_id}_sixes"),
+         InlineKeyboardButton("4️⃣ Fours",   callback_data=f"tourlb_{group_id}_fours")],
     ])
 
     # Try generate image
@@ -6621,13 +6537,13 @@ def _solo_board_render(match):
     
     # Buttons
     keyboard = [
-        [styled_button("✅ Join Battle", callback_data="solo_join", style="success"),
-         styled_button("🚪 Leave", callback_data="solo_leave", style="danger")]
+        [styled_button("✅ Join Battle", callback_data="solo_join"),
+         styled_button("🚪 Leave", callback_data="solo_leave")]
     ]
     
     # Show START button if enough players
     if count >= 2:
-        keyboard.append([styled_button("🚀 START MATCH", callback_data="solo_start_game", style="primary")])
+        keyboard.append([styled_button("🚀 START MATCH", callback_data="solo_start_game")])
 
     return msg, keyboard
 
@@ -6697,10 +6613,10 @@ async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user)
     
     # Buttons
     keyboard = [
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x", style="success"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y", style="success")],
-        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team", style="danger")],
-        [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now", style="success")]
+        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
+         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
+        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")],
+        [InlineKeyboardButton("🚀 Start Now (Host)", callback_data="team_start_now")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -6837,8 +6753,8 @@ async def team_start_now_callback(update: Update, context: ContextTypes.DEFAULT_
 
     # Ask for explicit Yes/No confirmation before force-starting
     confirm_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, Force Start", callback_data="team_start_confirm_yes", style="success"),
-         InlineKeyboardButton("❌ No, Cancel", callback_data="team_start_confirm_no", style="danger")]
+        [InlineKeyboardButton("✅ Yes, Force Start", callback_data="team_start_confirm_yes"),
+         InlineKeyboardButton("❌ No, Cancel", callback_data="team_start_confirm_no")]
     ])
     try:
         await context.bot.send_message(
@@ -6965,7 +6881,7 @@ async def end_team_join_phase(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     match.host_id = None
     match.host_name = None
 
-    keyboard = [[InlineKeyboardButton("🙋‍♂️ I Want to be Host", callback_data="become_host", style="success")]]
+    keyboard = [[InlineKeyboardButton("🙋‍♂️ I Want to be Host", callback_data="become_host")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     host_text = f"🚨 <b>REGISTRATION CLOSED</b> 🚨\n"
@@ -7122,9 +7038,9 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Refresh Game Board
     text = get_team_join_message(match)
     keyboard = [
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x", style="success"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y", style="success")],
-        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team", style="danger")]
+        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
+         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
+        [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -7163,7 +7079,7 @@ async def host_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     # Loop from 1 to 20 (inclusive)
     for i in range(1, 21):
         # Add button to current row
-        row.append(InlineKeyboardButton(f"{i}", callback_data=f"overs_{i}", style="primary"))
+        row.append(InlineKeyboardButton(f"{i}", callback_data=f"overs_{i}"))
         
         # If row has 5 buttons, add it to keyboard and start new row
         if len(row) == 5:
@@ -7228,7 +7144,7 @@ async def open_fantasy_squad_window(context: ContextTypes.DEFAULT_TYPE, group_id
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([styled_button("📋 My Squad", callback_data=f"fmysquad_{group_id}", style="success", emoji_key="trophy")])
+    keyboard.append([styled_button("📋 My Squad", callback_data=f"fmysquad_{group_id}", emoji_key="trophy")])
 
     try:
         fantasy_photo = MEDIA_ASSETS.get("fantasy") or MEDIA_ASSETS.get("squads")
@@ -7335,8 +7251,8 @@ async def captain_selection_callback(update: Update, context: ContextTypes.DEFAU
         cap_y_name = captain_y.first_name if captain_y else "Not Selected"
         
         keyboard = [
-            [styled_button("Become Captain - Team X", callback_data="captain_team_x", style="primary", emoji_key="captain")],
-            [styled_button("Become Captain - Team Y", callback_data="captain_team_y", style="danger", emoji_key="captain")]
+            [styled_button("Become Captain - Team X", callback_data="captain_team_x", emoji_key="captain")],
+            [styled_button("Become Captain - Team Y", callback_data="captain_team_y", emoji_key="captain")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -7365,9 +7281,9 @@ async def start_team_edit_phase(query, context: ContextTypes.DEFAULT_TYPE, match
     cap_y_name = captain_y.first_name if captain_y else "Not Selected"
     
     keyboard = [
-        [InlineKeyboardButton("Edit Team X", callback_data="edit_team_x", style="primary")],
-        [InlineKeyboardButton("Edit Team Y", callback_data="edit_team_y", style="primary")],
-        [InlineKeyboardButton("✅ Done - Proceed", callback_data="team_edit_done", style="success")]
+        [InlineKeyboardButton("Edit Team X", callback_data="edit_team_x")],
+        [InlineKeyboardButton("Edit Team Y", callback_data="edit_team_y")],
+        [InlineKeyboardButton("✅ Done - Proceed", callback_data="team_edit_done")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -7452,15 +7368,15 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if match.game_mode == "TEAM":
         keyboard = [
             [
-                InlineKeyboardButton("🧊 Team X", callback_data=f"midjoin_x_{user.id}", style="primary"),
-                InlineKeyboardButton("🔥 Team Y", callback_data=f"midjoin_y_{user.id}", style="primary")
+                InlineKeyboardButton("🧊 Team X", callback_data=f"midjoin_x_{user.id}"),
+                InlineKeyboardButton("🔥 Team Y", callback_data=f"midjoin_y_{user.id}")
             ],
-            [InlineKeyboardButton("❌ Reject", callback_data=f"midjoin_reject_{user.id}", style="danger")]
+            [InlineKeyboardButton("❌ Reject", callback_data=f"midjoin_reject_{user.id}")]
         ]
     else:
         keyboard = [
-            [InlineKeyboardButton("✅ Accept", callback_data=f"midjoin_solo_{user.id}", style="success")],
-            [InlineKeyboardButton("❌ Reject", callback_data=f"midjoin_reject_{user.id}", style="danger")]
+            [InlineKeyboardButton("✅ Accept", callback_data=f"midjoin_solo_{user.id}")],
+            [InlineKeyboardButton("❌ Reject", callback_data=f"midjoin_reject_{user.id}")]
         ]
 
     msg = (
@@ -7900,8 +7816,8 @@ async def team_edit_done_callback(update: Update, context: ContextTypes.DEFAULT_
     cap_y_name = captain_y.first_name if captain_y else "Not Selected"
     
     keyboard = [
-        [InlineKeyboardButton("Become Captain - Team X", callback_data="captain_team_x", style="success")],
-        [InlineKeyboardButton("Become Captain - Team Y", callback_data="captain_team_y", style="success")]
+        [InlineKeyboardButton("Become Captain - Team X", callback_data="captain_team_x")],
+        [InlineKeyboardButton("Become Captain - Team Y", callback_data="captain_team_y")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -7962,8 +7878,8 @@ async def start_toss(query, context: ContextTypes.DEFAULT_TYPE, match: Match):
     cap_x_name = captain_x.first_name if captain_x else "Team X Captain"
     
     keyboard = [
-        [styled_button("🪙 Heads", callback_data="toss_heads", style="primary")],
-        [styled_button("🪙 Tails", callback_data="toss_tails", style="danger")]
+        [styled_button("🪙 Heads", callback_data="toss_heads")],
+        [styled_button("🪙 Tails", callback_data="toss_tails")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -8016,8 +7932,8 @@ async def toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Ask winner to choose bat or bowl
     keyboard = [
-        [styled_button("🏏 Bat First", callback_data="toss_decision_bat", style="success")],
-        [styled_button("⚾ Bowl First", callback_data="toss_decision_bowl", style="primary")]
+        [styled_button("🏏 Bat First", callback_data="toss_decision_bat")],
+        [styled_button("⚾ Bowl First", callback_data="toss_decision_bowl")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -8554,7 +8470,7 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match.players_cmd_uses = uses + 1
     text = await _build_players_text(match)
     refresh_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"players_refresh_{group_id}", style="primary")
+        InlineKeyboardButton("🔄 Refresh", callback_data=f"players_refresh_{group_id}")
     ]])
 
     try:
@@ -8598,7 +8514,7 @@ async def players_refresh_callback(update: Update, context: ContextTypes.DEFAULT
 
     text = await _build_players_text(match)
     refresh_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"players_refresh_{group_id}", style="primary")
+        InlineKeyboardButton("🔄 Refresh", callback_data=f"players_refresh_{group_id}")
     ]])
     try:
         if query.message.photo:
@@ -8749,7 +8665,7 @@ async def request_bowler_selection(context: ContextTypes.DEFAULT_TYPE, chat_id: 
         _group_url = f"https://t.me/{context.bot.username}"
     
     bowler_select_markup = InlineKeyboardMarkup([[
-        styled_button("🏟️ Go to Group", url=_group_url, style="primary")
+        styled_button("🏟️ Go to Group", url=_group_url)
     ]])
     
     # Send message to group
@@ -9045,8 +8961,8 @@ async def declare_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_text = themed("🏳️ INNINGS DECLARATION", declare_lines, "🏳️")
 
     keyboard = InlineKeyboardMarkup([[
-        styled_button("✅ Accept Declaration", callback_data=f"declare_accept_{chat.id}", style="success"),
-        styled_button("❌ Deny", callback_data=f"declare_deny_{chat.id}", style="danger"),
+        styled_button("✅ Accept Declaration", callback_data=f"declare_accept_{chat.id}"),
+        styled_button("❌ Deny", callback_data=f"declare_deny_{chat.id}"),
     ]])
 
     sent = await context.bot.send_message(chat.id, msg_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
@@ -9188,8 +9104,8 @@ async def retirehurt_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg_text = themed("🤕 RETIRE HURT REQUEST", rh_lines, "🤕")
 
     keyboard = InlineKeyboardMarkup([[
-        styled_button("✅ Accept", callback_data=f"retirehurt_accept_{chat.id}", style="success"),
-        styled_button("❌ Deny", callback_data=f"retirehurt_deny_{chat.id}", style="danger"),
+        styled_button("✅ Accept", callback_data=f"retirehurt_accept_{chat.id}"),
+        styled_button("❌ Deny", callback_data=f"retirehurt_deny_{chat.id}"),
     ]])
 
     sent = await context.bot.send_message(chat.id, msg_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
@@ -9420,7 +9336,7 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
     bot_username = context.bot.username
     # deep link: t.me/botname?start=bowl_{group_id} → opens DM directly
     dm_deep_url = f"https://t.me/{bot_username}"
-    keyboard = [[InlineKeyboardButton("⚾ Deliver Bowl", url=dm_deep_url, style="primary")]]
+    keyboard = [[InlineKeyboardButton("⚾ Deliver Bowl", url=dm_deep_url)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # GIF
@@ -9462,7 +9378,7 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
         game_msg_id = match.main_message_id or 1
         game_url = f"https://t.me/c/{tme_gid}/{game_msg_id}"
         dm_bowl_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏟️ Go to Game", url=game_url, style="success")
+            InlineKeyboardButton("🏟️ Go to Game", url=game_url)
         ]])
     except Exception:
         dm_bowl_markup = None
@@ -11003,8 +10919,8 @@ async def offer_drs_to_captain(context: ContextTypes.DEFAULT_TYPE, group_id: int
     
     # ⌨️ INLINE KEYBOARD (Updated Emojis + Bot API 9.4 colors)
     keyboard = [
-        [styled_button("🖥️ DRS Review", callback_data="drs_take", style="primary")],
-        [styled_button("❌ Don't Want", callback_data="drs_reject", style="danger")]
+        [styled_button("🖥️ DRS Review", callback_data="drs_take")],
+        [styled_button("❌ Don't Want", callback_data="drs_reject")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -11939,10 +11855,10 @@ async def addauctionplayer_command(update: Update, context: ContextTypes.DEFAULT
     
     # Base price selection
     keyboard = [
-        [InlineKeyboardButton("💰 10", callback_data=f"midauc_base_10_{target_user.id}", style="primary"),
-         InlineKeyboardButton("💰 20", callback_data=f"midauc_base_20_{target_user.id}", style="primary")],
-        [InlineKeyboardButton("💰 30", callback_data=f"midauc_base_30_{target_user.id}", style="primary"),
-         InlineKeyboardButton("💰 50", callback_data=f"midauc_base_50_{target_user.id}", style="primary")]
+        [InlineKeyboardButton("💰 10", callback_data=f"midauc_base_10_{target_user.id}"),
+         InlineKeyboardButton("💰 20", callback_data=f"midauc_base_20_{target_user.id}")],
+        [InlineKeyboardButton("💰 30", callback_data=f"midauc_base_30_{target_user.id}"),
+         InlineKeyboardButton("💰 50", callback_data=f"midauc_base_50_{target_user.id}")]
     ]
     
     target_tag = get_user_tag(target_user)
@@ -12199,8 +12115,8 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         sold_count = len(auction.sold_players)
         unsold_count = len(auction.unsold_players)
         confirm_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Yes, Conclude Auction", callback_data=f"confirm_endauction_{chat_id}", style="success"),
-            InlineKeyboardButton("❌ Keep Going", callback_data="cancel_endauction", style="danger")
+            InlineKeyboardButton("✅ Yes, Conclude Auction", callback_data=f"confirm_endauction_{chat_id}"),
+            InlineKeyboardButton("❌ Keep Going", callback_data="cancel_endauction")
         ]])
         try:
             await context.bot.send_message(
@@ -12320,11 +12236,11 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
     base = player["base_price"]
     quick_kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(f"⚡ +3  ({base+3})", callback_data=f"quickbid_{chat_id}_{base+3}", style="primary"),
-            InlineKeyboardButton(f"⚡ +5  ({base+5})", callback_data=f"quickbid_{chat_id}_{base+5}", style="primary"),
+            InlineKeyboardButton(f"⚡ +3  ({base+3})", callback_data=f"quickbid_{chat_id}_{base+3}"),
+            InlineKeyboardButton(f"⚡ +5  ({base+5})", callback_data=f"quickbid_{chat_id}_{base+5}"),
         ],
         [
-            InlineKeyboardButton(f"⚡ +10 ({base+10})", callback_data=f"quickbid_{chat_id}_{base+10}", style="primary"),
+            InlineKeyboardButton(f"⚡ +10 ({base+10})", callback_data=f"quickbid_{chat_id}_{base+10}"),
         ]
     ])
 
@@ -12404,25 +12320,24 @@ async def soloscore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "🏆 <b>SOLO BATTLE LEADERBOARD</b> 🏆\n"
     msg += "─────────────────\n\n"
     
-    medals = ["🥇", "🥈", "🥉"]
     
     for i, p in enumerate(sorted_players, 1):
-        rank = medals[i-1] if i <= 3 else f"<b>{i}.</b>"
+        rank = f"<b>{i}.</b>"
         
         # Status
         status = ""
         if p.is_out: 
-            status = " ❌"
+            status = " (out)"
         elif i-1 == match.current_solo_bat_idx: 
-            status = " 🏏"
+            status = " (batting)"
         elif i-1 == match.current_solo_bowl_idx: 
-            status = " ⚾"
+            status = " (bowling)"
         
         # Stats
         sr = round((p.runs / max(p.balls_faced, 1)) * 100, 1)
         
         msg += f"{rank} <b>{p.first_name}</b>{status}\n"
-        msg += f"   📊 <b>{p.runs}</b> runs ({p.balls_faced} balls)\n"
+        msg += f"   {p.runs} runs ({p.balls_faced} balls)\n"
         msg += f"   ⚡ SR: {sr} | 🎯 Wickets: {p.wickets}\n\n"
     
     msg += "─────────────────\n"
@@ -12503,7 +12418,7 @@ async def trigger_solo_ball(context, chat_id, match):
     # ✅ FIX: Use deep link ?start=bowl_{chat_id} — bare URL triggers /start welcome message
     bot_username = context.bot.username
     deliver_url = f"https://t.me/{bot_username}"
-    keyboard = [[InlineKeyboardButton("📩 Deliver Bowl", url=deliver_url, style="primary")]]
+    keyboard = [[InlineKeyboardButton("📩 Deliver Bowl", url=deliver_url)]]
     
     ball_gif = "https://t.me/kyanaamrkhe/6"
     try:
@@ -12517,7 +12432,7 @@ async def trigger_solo_ball(context, chat_id, match):
         _tme_gid = _cid_str[3:] if _cid_str.startswith("100") else _cid_str
         _game_url = f"https://t.me/c/{_tme_gid}/{match.main_message_id or 1}"
         _dm_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏟️ Watch in Group", url=_game_url, style="primary")
+            InlineKeyboardButton("🏟️ Watch in Group", url=_game_url)
         ]])
     except Exception:
         _dm_markup = None
@@ -12809,8 +12724,8 @@ async def solo_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # 3. Ask for explicit Yes/No confirmation before force-starting
         await query.answer()
         confirm_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Yes, Force Start", callback_data="solo_start_confirm_yes", style="success"),
-             InlineKeyboardButton("❌ No, Cancel", callback_data="solo_start_confirm_no", style="danger")]
+            [InlineKeyboardButton("✅ Yes, Force Start", callback_data="solo_start_confirm_yes"),
+             InlineKeyboardButton("❌ No, Cancel", callback_data="solo_start_confirm_no")]
         ])
         try:
             await context.bot.send_message(
@@ -13030,7 +12945,6 @@ async def end_solo_game_logic(context, chat_id, match):
     
     msg += "📊 <b>FINAL LEADERBOARD</b>\n"
     msg += "─────────────────\n"
-    medals = ["🥇", "🥈", "🥉"]
     
     for i, p in enumerate(sorted_players):
         rank_icon = medals[i] if i < 3 else f"<b>{i+1}.</b>"
@@ -13094,8 +13008,8 @@ async def endsolo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show confirmation buttons
     keyboard = InlineKeyboardMarkup([
         [
-            styled_button("✅ Yes, End Solo", callback_data=f"confirm_endsolo_{chat_id}", style="danger"),
-            styled_button("❌ Cancel", callback_data="cancel_endsolo", style="primary")
+            styled_button("✅ Yes, End Solo", callback_data=f"confirm_endsolo_{chat_id}"),
+            styled_button("❌ Cancel", callback_data="cancel_endsolo")
         ]
     ])
     
@@ -13188,9 +13102,9 @@ async def aistart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Step 1: Ask what the user wants to do — full match, or just bat / just bowl
     keyboard = [
-        [InlineKeyboardButton("🏏 Batting Only", callback_data="ai_type_bat", style="primary")],
-        [InlineKeyboardButton("⚾ Bowling Only", callback_data="ai_type_bowl", style="primary")],
-        [InlineKeyboardButton("🎮 Full AI Match", callback_data="ai_type_full", style="success")]
+        [InlineKeyboardButton("🏏 Batting Only", callback_data="ai_type_bat")],
+        [InlineKeyboardButton("⚾ Bowling Only", callback_data="ai_type_bowl")],
+        [InlineKeyboardButton("🎮 Full AI Match", callback_data="ai_type_full")]
     ]
 
     caption = (
@@ -13228,10 +13142,10 @@ async def ai_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Select difficulty (carry match_type forward in the callback_data)
     keyboard = [
-        [InlineKeyboardButton("😊 Easy", callback_data=f"ai_diff_easy_{match_type}", style="primary")],
-        [InlineKeyboardButton("😐 Medium", callback_data=f"ai_diff_medium_{match_type}", style="primary")],
-        [InlineKeyboardButton("😈 Hard", callback_data=f"ai_diff_hard_{match_type}", style="primary")],
-        [InlineKeyboardButton("👹 God Level", callback_data=f"ai_diff_god_{match_type}", style="primary")]
+        [InlineKeyboardButton("😊 Easy", callback_data=f"ai_diff_easy_{match_type}")],
+        [InlineKeyboardButton("😐 Medium", callback_data=f"ai_diff_medium_{match_type}")],
+        [InlineKeyboardButton("😈 Hard", callback_data=f"ai_diff_hard_{match_type}")],
+        [InlineKeyboardButton("👹 God Level", callback_data=f"ai_diff_god_{match_type}")]
     ]
 
     type_label = {"bat": "🏏 Batting Only", "bowl": "⚾ Bowling Only", "full": "🎮 Full AI Match"}.get(match_type, "AI Match")
@@ -13277,11 +13191,11 @@ async def ai_difficulty_callback(update: Update, context: ContextTypes.DEFAULT_T
     
     # Select overs
     keyboard = [
-        [InlineKeyboardButton("1 Over", callback_data=f"ai_over_1_{difficulty}_{match_type}", style="primary"),
-         InlineKeyboardButton("2 Overs", callback_data=f"ai_over_2_{difficulty}_{match_type}", style="primary")],
-        [InlineKeyboardButton("3 Overs", callback_data=f"ai_over_3_{difficulty}_{match_type}", style="primary"),
-         InlineKeyboardButton("4 Overs", callback_data=f"ai_over_4_{difficulty}_{match_type}", style="primary")],
-        [InlineKeyboardButton("5 Overs", callback_data=f"ai_over_5_{difficulty}_{match_type}", style="primary")]
+        [InlineKeyboardButton("1 Over", callback_data=f"ai_over_1_{difficulty}_{match_type}"),
+         InlineKeyboardButton("2 Overs", callback_data=f"ai_over_2_{difficulty}_{match_type}")],
+        [InlineKeyboardButton("3 Overs", callback_data=f"ai_over_3_{difficulty}_{match_type}"),
+         InlineKeyboardButton("4 Overs", callback_data=f"ai_over_4_{difficulty}_{match_type}")],
+        [InlineKeyboardButton("5 Overs", callback_data=f"ai_over_5_{difficulty}_{match_type}")]
     ]
     
     diff_emoji = {"easy": "😊", "medium": "😐", "hard": "😈", "god": "👹"}
@@ -13397,8 +13311,8 @@ async def ai_over_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Ask user to call toss
     keyboard = [
-        [InlineKeyboardButton("🪙 Heads", callback_data="ai_toss_heads", style="success"),
-         InlineKeyboardButton("🪙 Tails", callback_data="ai_toss_tails", style="success")]
+        [InlineKeyboardButton("🪙 Heads", callback_data="ai_toss_heads"),
+         InlineKeyboardButton("🪙 Tails", callback_data="ai_toss_tails")]
     ]
     
     try:
@@ -13436,8 +13350,8 @@ async def ai_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_call == toss_result:
         # User won toss - let them choose
         keyboard = [
-            [InlineKeyboardButton("🏏 Bat First", callback_data="ai_choice_bat", style="primary"),
-             InlineKeyboardButton("⚾ Bowl First", callback_data="ai_choice_bowl", style="primary")]
+            [InlineKeyboardButton("🏏 Bat First", callback_data="ai_choice_bat"),
+             InlineKeyboardButton("⚾ Bowl First", callback_data="ai_choice_bowl")]
         ]
         
         try:
@@ -14676,7 +14590,6 @@ async def finalize_fantasy_results(context: ContextTypes.DEFAULT_TYPE, group_id:
     save_data()
     results.sort(key=lambda r: r[2], reverse=True)
 
-    medals = ["🥇", "🥈", "🥉"]
     lines = []
     for i, (oid, name, pts) in enumerate(results[:10]):
         medal = medals[i] if i < 3 else f"{i+1}."
@@ -14931,7 +14844,7 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
                 share_markup = InlineKeyboardMarkup([[
                     InlineKeyboardButton(
                         "📤 Share Result",
-                        url=f"https://t.me/share/url?url=https%3A%2F%2Ft.me%2FCricoVerseBot&text={encoded_text}", style="primary"
+                        url=f"https://t.me/share/url?url=https%3A%2F%2Ft.me%2FCricoVerseBot&text={encoded_text}"
                     )
                 ]])
             except Exception:
@@ -15231,16 +15144,16 @@ def build_new_scorecard(match: "Match", group_id: int):
 
     def _innings(bat_team, bowl_team, letter, is_second_innings=False):
         crr = round(bat_team.score / (bat_team.balls / 6), 2) if getattr(bat_team, "balls", 0) > 0 else 0.0
-        block = f"🏏 <b>{_nsc_team_label(bat_team, letter)} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</b>\n"
-        block += f"CRR: {crr}"
         target = getattr(match, "target", 0)
         total_overs = getattr(match, "total_overs", 0)
+        rr_text = ""
         if is_second_innings and target:
             balls_left = max((total_overs * 6) - bat_team.balls, 0)
             runs_needed = target - bat_team.score
             rr = round(runs_needed / (balls_left / 6), 2) if balls_left > 0 and runs_needed > 0 else 0.0
-            block += f"  |  RR: {rr}"
-        block += "\nBatting\n"
+            rr_text = f" | RR: {rr}"
+        block = f"🏏 <b>{_nsc_team_label(bat_team, letter)} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</b>\n"
+        block += f"Batting - CRR: {crr}{rr_text}\n"
         block += f"<pre>{_nsc_batting_table(bat_team)}</pre>"
         block += "Bowling\n"
         block += f"<pre>{_nsc_bowling_table(bowl_team)}</pre>"
@@ -15369,14 +15282,17 @@ async def _tg_send_rich_message(chat_id: int, html_content: str) -> bool:
 
 
 async def send_new_scorecard(target_message, group_id: int, match: "Match"):
-    """Send the professional new-style scorecard as a fresh message (used
-    by /scorecard and at game end). Tries a real native <table> via the
-    new sendRichMessage API first; falls back to the <pre> monospace
-    version if the rich message isn't supported/accepted."""
-    html_content = build_new_scorecard_html(match, group_id)
-    ok = await _tg_send_rich_message(group_id, html_content)
-    if ok:
-        return
+    """Tries native Telegram sendRichMessage with <table bordered striped> first.
+    If supported by Bot API 10.1+, sends native RichBlockTable.
+    If unsupported/error, falls back to <pre> code-block grid table as ONE message."""
+    try:
+        html_content = build_new_scorecard_html(match, group_id)
+        ok = await _tg_send_rich_message(group_id, html_content)
+        if ok:
+            return
+    except Exception as e:
+        logger.warning(f"Rich message attempt error: {e}")
+
     text, _ = build_new_scorecard(match, group_id)
     if len(text) > 4096:
         await target_message.reply_text(text[:4090] + "…", parse_mode=ParseMode.HTML)
@@ -15485,8 +15401,8 @@ async def send_final_scorecard(context: ContextTypes.DEFAULT_TYPE, group_id: int
     # ── Rematch button (moved here from the removed old victory message) ──
     rematch_data = f"rematch_{group_id}_{match.total_overs}_{match.game_mode or 'TEAM'}"
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("➡️ 2nd Innings", callback_data=f"scorecard_worm_{group_id}_2", style="primary"),
-        InlineKeyboardButton("🔁 Rematch!", callback_data=rematch_data, style="primary")
+        InlineKeyboardButton("➡️ 2nd Innings", callback_data=f"scorecard_worm_{group_id}_2"),
+        InlineKeyboardButton("🔁 Rematch!", callback_data=rematch_data)
     ]])
 
     # Bug 4 Fix: Use worm graph as the OFFICIAL MATCH SCORECARD image instead of static photo
@@ -16100,7 +16016,6 @@ def generate_solo_top3_image(sorted_players) -> Optional[BytesIO]:
             draw.rounded_rectangle([px1, py1, px2, py2], radius=40*SC, fill=C_PANEL, outline=color, width=4*SC)
 
             # Medal Emoji / Rank Number
-            medals = ["🥇", "🥈", "🥉"]
             _draw_text_centered_glow(draw, medals[rank_idx], cx, py1 - 70*SC, _get_font(True, 100*SC), color)
 
             # Player Stats (Using first_name to avoid attribute errors)
@@ -18068,9 +17983,9 @@ async def rematch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"⏳ <i>Lobby opens now → tap to join!</i>"
 
     join_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x", style="success"),
-         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y", style="success")],
-        [InlineKeyboardButton("🚪 Leave", callback_data="leave_team", style="danger")]
+        [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
+         InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
+        [InlineKeyboardButton("🚪 Leave", callback_data="leave_team")]
     ])
 
     try:
@@ -19592,14 +19507,14 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nearby_line = "🆓 <b>Free nearby:</b> " + ", ".join(f"#{n}" for n in nearby_free) + "\n"
 
         keyboard_rows = [[
-            InlineKeyboardButton("🔁 Request Swap", callback_data=f"jswap_req_{holder_id}_{number}", style="primary")
+            InlineKeyboardButton("🔁 Request Swap", callback_data=f"jswap_req_{holder_id}_{number}")
         ]]
         if nearby_free:
             keyboard_rows.append([
-                InlineKeyboardButton(f"🎽 Take #{n}", callback_data=f"jersey_take_{n}", style="primary") for n in nearby_free[:3]
+                InlineKeyboardButton(f"🎽 Take #{n}", callback_data=f"jersey_take_{n}") for n in nearby_free[:3]
             ])
         keyboard_rows.append([
-            InlineKeyboardButton("🔔 Notify me when free", callback_data=f"jersey_notify_{number}", style="primary")
+            InlineKeyboardButton("🔔 Notify me when free", callback_data=f"jersey_notify_{number}")
         ])
         keyboard = InlineKeyboardMarkup(keyboard_rows)
         await update.message.reply_text(
@@ -19782,8 +19697,8 @@ async def jersey_swap_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         requester_tag = f'<a href="tg://user?id={requester_id}">{html.escape(requester.first_name)}</a>'
         my_number_text = f"#{my_number}" if my_number is not None else "no jersey number yet"
         dm_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Accept Swap", callback_data=f"jswap_yes_{requester_id}_{number}", style="success"),
-            InlineKeyboardButton("❌ Decline", callback_data=f"jswap_no_{requester_id}_{number}", style="danger")
+            InlineKeyboardButton("✅ Accept Swap", callback_data=f"jswap_yes_{requester_id}_{number}"),
+            InlineKeyboardButton("❌ Decline", callback_data=f"jswap_no_{requester_id}_{number}")
         ]])
         try:
             await context.bot.send_message(
@@ -19936,7 +19851,7 @@ async def rmjersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, I'm active — keep my jersey", callback_data=f"jkeep_{number}", style="success")
+        InlineKeyboardButton("✅ Yes, I'm active — keep my jersey", callback_data=f"jkeep_{number}")
     ]])
     try:
         await context.bot.send_message(
@@ -20045,11 +19960,11 @@ async def mystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
         keyboard = [
             [
-                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}", style="primary"),
-                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}", style="primary")
+                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
+                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
             ],
             [
-                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}", style="primary")
+                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -20327,11 +20242,11 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = [
         [
-            InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}", style="primary"),
-            InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}", style="primary")
+            InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
+            InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
         ],
         [
-            InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}", style="primary")
+            InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -20385,7 +20300,7 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = user_data.get(user_id, {}).get("first_name") or query.from_user.first_name
 
     # Standard back button → returns to the main menu (Team/Solo/Achievements), not straight to Team
-    back_button = InlineKeyboardButton("🔙 Back", callback_data=f"mystats_menu_{user_id}", style="primary")
+    back_button = InlineKeyboardButton("🔙 Back", callback_data=f"mystats_menu_{user_id}")
     
     # ──────────────── SECTION SEPARATOR HELPER ────────────────
     SEP = "─────────────────"
@@ -20397,11 +20312,11 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "mystats_menu" in data:
         keyboard = [
             [
-                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}", style="primary"),
-                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}", style="primary")
+                InlineKeyboardButton("👥 Team", callback_data=f"mystats_team_{user_id}"),
+                InlineKeyboardButton("⚔️ Solo", callback_data=f"mystats_solo_{user_id}")
             ],
             [
-                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}", style="primary")
+                InlineKeyboardButton("🏆 Achievements", callback_data=f"mystats_achievements_{user_id}")
             ]
         ]
         menu_text = f"📊 <b>{user_name}'s STATS</b>\n{SEP}\n👇 <i>Choose a category to view:</i>"
@@ -21105,7 +21020,7 @@ async def auction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ✅ Check if tournament approved
     if chat.id not in TOURNAMENT_APPROVED_GROUPS:
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_modes", style="primary")]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_modes")]]
         
         try:
             await update.message.reply_animation(
@@ -21190,7 +21105,7 @@ async def auction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "─────────────────"
     )
     
-    keyboard = [[InlineKeyboardButton("🎤 I'll be Auctioneer", callback_data="become_auctioneer", style="success")]]
+    keyboard = [[InlineKeyboardButton("🎤 I'll be Auctioneer", callback_data="become_auctioneer")]]
     
     try:
         sent = await update.message.reply_animation(
@@ -21495,12 +21410,12 @@ async def aucplayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Base price options
     keyboard = [
         [
-            InlineKeyboardButton("💰 Base: 10", callback_data="bulk_base_10", style="primary"),
-            InlineKeyboardButton("💰 Base: 20", callback_data="bulk_base_20", style="primary")
+            InlineKeyboardButton("💰 Base: 10", callback_data="bulk_base_10"),
+            InlineKeyboardButton("💰 Base: 20", callback_data="bulk_base_20")
         ],
         [
-            InlineKeyboardButton("💰 Base: 30", callback_data="bulk_base_30", style="primary"),
-            InlineKeyboardButton("💰 Base: 50", callback_data="bulk_base_50", style="primary")
+            InlineKeyboardButton("💰 Base: 30", callback_data="bulk_base_30"),
+            InlineKeyboardButton("💰 Base: 50", callback_data="bulk_base_50")
         ]
     ]
     msg = f"📦 <b>BULK ADD → {len(added)} PLAYERS</b>\n"
@@ -21622,7 +21537,7 @@ async def notify_group_game_started(context: ContextTypes.DEFAULT_TYPE, group_id
     now = datetime.now()
     expired = []
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔕 Stop notifying me", callback_data=f"groupnotify_stop_{group_id}", style="danger")
+        InlineKeyboardButton("🔕 Stop notifying me", callback_data=f"groupnotify_stop_{group_id}")
     ]])
 
     for uid_str, ts in list(subs.items()):
@@ -21847,8 +21762,8 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     names_display = ", ".join(f"<b>{html.escape(t[2])}</b>" for t in valid_targets)
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"🔵 {match.team_x.name}", callback_data=f"addpick_X_{chat.id}_{user.id}", style="primary"),
-        InlineKeyboardButton(f"🔴 {match.team_y.name}", callback_data=f"addpick_Y_{chat.id}_{user.id}", style="primary"),
+        InlineKeyboardButton(f"🔵 {match.team_x.name}", callback_data=f"addpick_X_{chat.id}_{user.id}"),
+        InlineKeyboardButton(f"🔴 {match.team_y.name}", callback_data=f"addpick_Y_{chat.id}_{user.id}"),
     ]])
 
     await update.message.reply_text(
@@ -22067,8 +21982,8 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔥 <b>Team Y:</b> " + (match.team_y.players[serial - 1].first_name if 0 < serial <= len(match.team_y.players) else "—"),
     ]
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🧊 Team X", callback_data=f"remove_player_X_{chat.id}_{serial}", style="danger"),
-        InlineKeyboardButton("🔥 Team Y", callback_data=f"remove_player_Y_{chat.id}_{serial}", style="danger"),
+        InlineKeyboardButton("🧊 Team X", callback_data=f"remove_player_X_{chat.id}_{serial}"),
+        InlineKeyboardButton("🔥 Team Y", callback_data=f"remove_player_Y_{chat.id}_{serial}"),
     ]])
     await update.message.reply_text(
         themed("➖ REMOVE PLAYER", preview_lines, "➖"),
@@ -22471,13 +22386,13 @@ def _build_auction_summary_pages(auction: "Auction") -> list:
     )
 
     # ── Auction Summary table: Player | Role | Sold To | Price ──
-    sold_header = f"{_auc_pad('Player', 14)}{_auc_pad('Role', 12)}{_auc_pad('Sold To', 12)}{_auc_rpad('Price', 7)}\n"
+    sold_header = f"{_auc_pad('Player', 16)}{_auc_pad('Sold To', 16)}{_auc_rpad('Price', 8)}\n"
     sold_table = sold_header + ("─" * 45) + "\n"
     for sp in sold_players:
         p_name = sp.get('player_name', 'Unknown')
         p_id = sp.get('player_id')
         role = compute_player_role(p_id) if p_id else "Unranked"
-        sold_table += f"{_auc_pad(p_name, 14)}{_auc_pad(role, 12)}{_auc_pad(sp.get('team', '?'), 12)}{_auc_rpad(sp.get('price', 0), 7)}\n"
+        sold_table += f"{_auc_pad(p_name, 16)}{_auc_pad(sp.get('team', '?'), 16)}{_auc_rpad(sp.get('price', 0), 8)}\n"
     if not sold_players:
         sold_table += "  No players sold yet\n"
 
@@ -22490,14 +22405,14 @@ def _build_auction_summary_pages(auction: "Auction") -> list:
             purse_table += f"{_auc_pad(tname, 16)}{_auc_rpad(tobj.purse_remaining, 10)}{_auc_rpad(len(tobj.players), 9)}\n"
 
     # ── Unsold Players table: Player | Role | Base Price ──
-    unsold_header = f"{_auc_pad('Player', 16)}{_auc_pad('Role', 12)}{_auc_rpad('Base Price', 10)}\n"
+    unsold_header = f"{_auc_pad('Player', 20)}{_auc_rpad('Base Price', 12)}\n"
     unsold_table = unsold_header + ("─" * 38) + "\n"
     for up in unsold_players:
         u_name = up.get('player_name', 'Unknown') if isinstance(up, dict) else str(up)
         u_id = up.get('player_id') if isinstance(up, dict) else None
         base = up.get('base_price', 0) if isinstance(up, dict) else 0
         role = compute_player_role(u_id) if u_id else "Unranked"
-        unsold_table += f"{_auc_pad(u_name, 16)}{_auc_pad(role, 12)}{_auc_rpad(base, 10)}\n"
+        unsold_table += f"{_auc_pad(u_name, 20)}{_auc_rpad(base, 12)}\n"
     if not unsold_players:
         unsold_table += "  No unsold players\n"
 
@@ -22540,11 +22455,11 @@ def _auction_list_keyboard(chat_id: int, page_idx: int, total_pages: int) -> Inl
     """Prev / page indicator / Next keyboard for auction summary."""
     nav = []
     if page_idx > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"auclist_{chat_id}_{page_idx - 1}", style="primary"))
-    nav.append(InlineKeyboardButton(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop", style="primary"))
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"auclist_{chat_id}_{page_idx - 1}"))
+    nav.append(InlineKeyboardButton(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop"))
     if page_idx < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"auclist_{chat_id}_{page_idx + 1}", style="primary"))
-    close = [InlineKeyboardButton("❌ Close", callback_data="auclist_close", style="danger")]
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"auclist_{chat_id}_{page_idx + 1}"))
+    close = [InlineKeyboardButton("❌ Close", callback_data="auclist_close")]
     return InlineKeyboardMarkup([nav, close])
 
 
@@ -23181,11 +23096,11 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
             next_10 = amount + 10
             return InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}", style="primary"),
-                    InlineKeyboardButton(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}", style="primary"),
+                    InlineKeyboardButton(f"⚡ +3  ({next_3})", callback_data=f"quickbid_{chat_id}_{next_3}"),
+                    InlineKeyboardButton(f"⚡ +5  ({next_5})", callback_data=f"quickbid_{chat_id}_{next_5}"),
                 ],
                 [
-                    InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}", style="primary"),
+                    InlineKeyboardButton(f"⚡ +10 ({next_10})", callback_data=f"quickbid_{chat_id}_{next_10}"),
                 ]
             ])
 
@@ -23280,8 +23195,8 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                     f"<i>Auctioneer: use /confirmsold or /rejectsold</i>"
                 )
                 kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ SOLD!", callback_data=f"auc_confirm_sold_{chat_id}", style="success"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"auc_reject_sold_{chat_id}", style="danger"),
+                    InlineKeyboardButton("✅ SOLD!", callback_data=f"auc_confirm_sold_{chat_id}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"auc_reject_sold_{chat_id}"),
                 ]])
                 try:
                     conf_m = await context.bot.send_message(chat_id, confirm_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -23928,7 +23843,7 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     photo_bio = await generate_stats_image(target_id, name, img_data, avatar_bytes, mode)
 
     # ========== SEND ==========
-    keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data=f"stats_main_{target_id}", style="primary")]]
+    keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data=f"stats_main_{target_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if photo_bio:
@@ -25316,9 +25231,9 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Instead call the full refresh path:
             text = get_team_join_message(match)
             keyboard = [
-                [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x", style="success"),
-                 InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y", style="success")],
-                [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team", style="danger")]
+                [InlineKeyboardButton("🧊 Join Team X", callback_data="join_team_x"),
+                 InlineKeyboardButton("🔥 Join Team Y", callback_data="join_team_y")],
+                [InlineKeyboardButton("🚪 Leave Team", callback_data="leave_team")]
             ]
             await refresh_game_message(context, chat.id, match, text, InlineKeyboardMarkup(keyboard), media_key="joining")
 
@@ -25334,15 +25249,15 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"╰━━━━━━━━╯"
             )
             keyboard = [
-                [InlineKeyboardButton("🧊 Heads (Team X)", callback_data="toss_heads", style="success"),
-                 InlineKeyboardButton("🔥 Tails (Team Y)", callback_data="toss_tails", style="success")]
+                [InlineKeyboardButton("🧊 Heads (Team X)", callback_data="toss_heads"),
+                 InlineKeyboardButton("🔥 Tails (Team Y)", callback_data="toss_tails")]
             ]
             await refresh_game_message(context, chat.id, match, toss_text, InlineKeyboardMarkup(keyboard), media_key="toss")
 
         elif phase in (GamePhase.SOLO_JOINING,):
             # Solo lobby refresh
             from_text = get_team_join_message(match) if hasattr(match, 'team_x') else "Solo lobby active."
-            keyboard = [[InlineKeyboardButton("🏏 Join Solo Match", callback_data="solo_join", style="success")]]
+            keyboard = [[InlineKeyboardButton("🏏 Join Solo Match", callback_data="solo_join")]]
             await refresh_game_message(context, chat.id, match, from_text, InlineKeyboardMarkup(keyboard), media_key="joining")
 
         else:
@@ -25390,8 +25305,8 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Solo mode ──
     if getattr(match, 'game_mode', None) == "SOLO" or match.phase in [GamePhase.SOLO_JOINING, GamePhase.SOLO_MATCH]:
         keyboard = InlineKeyboardMarkup([[
-            styled_button("✅ Yes, End Solo", callback_data=f"confirm_endsolo_{group_id}", style="danger"),
-            styled_button("❌ Cancel", callback_data="cancel_endsolo", style="primary")
+            styled_button("✅ Yes, End Solo", callback_data=f"confirm_endsolo_{group_id}"),
+            styled_button("❌ Cancel", callback_data="cancel_endsolo")
         ]])
         await update.message.reply_text(
             "⚠️ Are you sure you want to end this solo match?\n\n"
@@ -25402,8 +25317,8 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Team / Tournament mode ──
     keyboard = InlineKeyboardMarkup([[
-        styled_button("✅ Yes, End Match", callback_data="confirm_endmatch", style="danger"),
-        styled_button("❌ Cancel", callback_data="cancel_endmatch", style="primary")
+        styled_button("✅ Yes, End Match", callback_data="confirm_endmatch"),
+        styled_button("❌ Cancel", callback_data="cancel_endmatch")
     ]])
     await update.message.reply_text(
         "⚠️ Are you sure you want to end this match?\n\n"
@@ -25803,8 +25718,8 @@ async def changecap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data[pending_key] = target
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"🔵 {match.team_x.name}", callback_data=f"changecappick_X_{chat.id}_{user.id}", style="primary"),
-        InlineKeyboardButton(f"🔴 {match.team_y.name}", callback_data=f"changecappick_Y_{chat.id}_{user.id}", style="primary"),
+        InlineKeyboardButton(f"🔵 {match.team_x.name}", callback_data=f"changecappick_X_{chat.id}_{user.id}"),
+        InlineKeyboardButton(f"🔴 {match.team_y.name}", callback_data=f"changecappick_Y_{chat.id}_{user.id}"),
     ]])
 
     await update.message.reply_text(
@@ -26513,7 +26428,7 @@ async def handle_group_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     try:
                         bot_username = context.bot.username
                         dm_btn = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("📩 Bowl in DM", url=f"https://t.me/{bot_username}", style="primary")
+                            InlineKeyboardButton("📩 Bowl in DM", url=f"https://t.me/{bot_username}")
                         ]])
                         w = await context.bot.send_message(
                             chat_id,
@@ -26994,7 +26909,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         _tme_gid = _cid_str[3:] if _cid_str.startswith("100") else _cid_str
                         _game_url = f"https://t.me/c/{_tme_gid}/{match.main_message_id or 1}"
                         _solo_lock_markup = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🏟️ Watch in Group", url=_game_url, style="primary")
+                            InlineKeyboardButton("🏟️ Watch in Group", url=_game_url)
                         ]])
                     except Exception:
                         pass
@@ -27173,7 +27088,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             _tme_gid = _cid_str[3:] if _cid_str.startswith("100") else _cid_str
                             _game_url = f"https://t.me/c/{_tme_gid}/{match.main_message_id or 1}"
                             _lock_markup = InlineKeyboardMarkup([[
-                                InlineKeyboardButton("🏟️ Watch in Group", url=_game_url, style="primary")
+                                InlineKeyboardButton("🏟️ Watch in Group", url=_game_url)
                             ]])
                         except Exception:
                             _lock_markup = None
@@ -27470,22 +27385,22 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     keyboard = [
         [
-            InlineKeyboardButton(f"📺 DRS: {'ON ✅' if drs_on else 'OFF ❌'}", callback_data=f"gcs_drs_{group_id}", style="primary"),
-            InlineKeyboardButton(f"🌀 Wide: {'ON ✅' if wide_on else 'OFF ❌'}", callback_data=f"gcs_wide_{group_id}", style="primary"),
+            InlineKeyboardButton(f"📺 DRS: {'ON ✅' if drs_on else 'OFF ❌'}", callback_data=f"gcs_drs_{group_id}"),
+            InlineKeyboardButton(f"🌀 Wide: {'ON ✅' if wide_on else 'OFF ❌'}", callback_data=f"gcs_wide_{group_id}"),
         ],
         [
-            InlineKeyboardButton(f"🎲 Solo Wide: {'ON ✅' if solo_wide_on else 'OFF ❌'}", callback_data=f"gcs_solowide_{group_id}", style="primary"),
+            InlineKeyboardButton(f"🎲 Solo Wide: {'ON ✅' if solo_wide_on else 'OFF ❌'}", callback_data=f"gcs_solowide_{group_id}"),
         ],
         [
-            InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}", style="primary"),
-            InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}", style="primary"),
+            InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
+            InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}"),
         ],
         [
-            InlineKeyboardButton("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}", style="primary"),
-            InlineKeyboardButton("⏱️ 2 Min", callback_data=f"gcs_lobby_120_{group_id}", style="primary"),
-            InlineKeyboardButton("⏱️ 3 Min", callback_data=f"gcs_lobby_180_{group_id}", style="primary"),
+            InlineKeyboardButton("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}"),
+            InlineKeyboardButton("⏱️ 2 Min", callback_data=f"gcs_lobby_120_{group_id}"),
+            InlineKeyboardButton("⏱️ 3 Min", callback_data=f"gcs_lobby_180_{group_id}"),
         ],
-        [InlineKeyboardButton("❌ Close", callback_data=f"gcs_close_{group_id}", style="danger")]
+        [InlineKeyboardButton("❌ Close", callback_data=f"gcs_close_{group_id}")]
     ]
     
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -27570,26 +27485,26 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     keyboard = [
         [
-            InlineKeyboardButton(f"📺 DRS: {'ON' if drs_on else 'OFF'}", callback_data=f"gcs_drs_{group_id}", style="primary"),
+            InlineKeyboardButton(f"📺 DRS: {'ON' if drs_on else 'OFF'}", callback_data=f"gcs_drs_{group_id}"),
         ],
         [
-            InlineKeyboardButton(f"🌀 Wide (Team): {'ON' if wide_on else 'OFF'}", callback_data=f"gcs_wide_{group_id}", style="primary"),
+            InlineKeyboardButton(f"🌀 Wide (Team): {'ON' if wide_on else 'OFF'}", callback_data=f"gcs_wide_{group_id}"),
         ],
         [
-            InlineKeyboardButton(f"🎲 Wide (Solo): {'ON' if solo_wide_on else 'OFF'}", callback_data=f"gcs_solowide_{group_id}", style="primary"),
+            InlineKeyboardButton(f"🎲 Wide (Solo): {'ON' if solo_wide_on else 'OFF'}", callback_data=f"gcs_solowide_{group_id}"),
         ],
         [
-            InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}", style="primary"),
-            InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}", style="primary"),
+            InlineKeyboardButton("🎙️ English", callback_data=f"gcs_comm_english_{group_id}"),
+            InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcs_comm_hinglish_{group_id}"),
         ],
         [
-            InlineKeyboardButton("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}", style="primary"),
-            InlineKeyboardButton("⏱️ 2 Min", callback_data=f"gcs_lobby_120_{group_id}", style="primary"),
+            InlineKeyboardButton("⏱️ Lobby: 1 Min", callback_data=f"gcs_lobby_60_{group_id}"),
+            InlineKeyboardButton("⏱️ 2 Min", callback_data=f"gcs_lobby_120_{group_id}"),
         ],
         [
-            InlineKeyboardButton("⏱️ 3 Min", callback_data=f"gcs_lobby_180_{group_id}", style="primary"),
+            InlineKeyboardButton("⏱️ 3 Min", callback_data=f"gcs_lobby_180_{group_id}"),
         ],
-        [InlineKeyboardButton("Close", callback_data=f"gcs_close_{group_id}", style="danger")]
+        [InlineKeyboardButton("Close", callback_data=f"gcs_close_{group_id}")]
     ]
     
     try:
@@ -27768,8 +27683,8 @@ async def endauction_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     unsold_count = len(auction.unsold_players)
 
     confirm_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, End Auction", callback_data=f"confirm_endauction_{group_id}", style="danger"),
-        InlineKeyboardButton("❌ Cancel", callback_data="cancel_endauction", style="danger")
+        InlineKeyboardButton("✅ Yes, End Auction", callback_data=f"confirm_endauction_{group_id}"),
+        InlineKeyboardButton("❌ Cancel", callback_data="cancel_endauction")
     ]])
 
     await update.message.reply_text(
@@ -28135,8 +28050,8 @@ async def commentary_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         current_style = registered_groups.get(chat.id, {}).get("commentary_style", "english")
         
         keyboard = [
-            [InlineKeyboardButton("🇬🇧 English", callback_data=f"gcommentary_english_{chat.id}", style="primary")],
-            [InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcommentary_hinglish_{chat.id}", style="primary")]
+            [InlineKeyboardButton("🇬🇧 English", callback_data=f"gcommentary_english_{chat.id}")],
+            [InlineKeyboardButton("🇮🇳 Hinglish Special", callback_data=f"gcommentary_hinglish_{chat.id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -28445,7 +28360,7 @@ async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    keyboard = [[InlineKeyboardButton(f"🏆 {name}", callback_data=f"reg_group_{gid}", style="primary")] for gid, name in valid_groups]
+    keyboard = [[InlineKeyboardButton(f"🏆 {name}", callback_data=f"reg_group_{gid}")] for gid, name in valid_groups]
     await update.message.reply_photo(
         photo=REGISTRATION_OPEN_PHOTO,
         caption=(
@@ -28564,8 +28479,8 @@ async def registrationclose_command(update: Update, context: ContextTypes.DEFAUL
 
             keyboard = []
             for gid, name in valid_regs:
-                keyboard.append([InlineKeyboardButton(f"🔒 Close: {name}", callback_data=f"closereg_{gid}", style="danger")])
-            keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="closereg_cancel", style="danger")])
+                keyboard.append([InlineKeyboardButton(f"🔒 Close: {name}", callback_data=f"closereg_{gid}")])
+            keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="closereg_cancel")])
 
             await update.message.reply_text(
                 "╭━━ 🔒 CLOSE REGISTRATION ━━━━━━━🔐\n"
@@ -28750,10 +28665,10 @@ async def reg_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     conn.close()
     
     keyboard = [
-        [InlineKeyboardButton("💰 10 🔷", callback_data=f"reg_price_{group_id}_10", style="primary")],
-        [InlineKeyboardButton("💰 20 🔷", callback_data=f"reg_price_{group_id}_20", style="primary")],
-        [InlineKeyboardButton("💰 30 🔷", callback_data=f"reg_price_{group_id}_30", style="primary")],
-        [InlineKeyboardButton("💰 50 🔷", callback_data=f"reg_price_{group_id}_50", style="primary")]
+        [InlineKeyboardButton("💰 10 🔷", callback_data=f"reg_price_{group_id}_10")],
+        [InlineKeyboardButton("💰 20 🔷", callback_data=f"reg_price_{group_id}_20")],
+        [InlineKeyboardButton("💰 30 🔷", callback_data=f"reg_price_{group_id}_30")],
+        [InlineKeyboardButton("💰 50 🔷", callback_data=f"reg_price_{group_id}_50")]
     ]
     # Message is a photo — must edit caption, not text
     try:
@@ -28893,10 +28808,10 @@ async def unregister_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     keyboard = [
-        [InlineKeyboardButton(f"❌ {name}", callback_data=f"unreg_confirm_{gid}", style="success")]
+        [InlineKeyboardButton(f"❌ {name}", callback_data=f"unreg_confirm_{gid}")]
         for gid, name, _ in rows
     ]
-    keyboard.append([InlineKeyboardButton("🚫 Cancel", callback_data="unreg_cancel", style="danger")])
+    keyboard.append([InlineKeyboardButton("🚫 Cancel", callback_data="unreg_cancel")])
 
     await update.message.reply_text(
         "📋 <b>UNREGISTER FROM TOURNAMENT</b>\n"
@@ -29035,33 +28950,28 @@ async def tpower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🏏 Power granted to {target_name} for group `{group_id}`", parse_mode=ParseMode.MARKDOWN)
 
 def _reglist_price_dropdown_keyboard(group_id: int, price_groups: dict) -> InlineKeyboardMarkup:
-    """Dropdown of base-price buttons (50/30/20/10) — only prices that actually
-    have registered players are shown, each labeled with its player count."""
+    """Dropdown menu with 50 30 20 10 base price options."""
     rows = []
     for price in [50, 30, 20, 10]:
         count = len(price_groups.get(price, []))
-        if count > 0:
-            rows.append([InlineKeyboardButton(
-                f"💰 {price} 🔷  ({count})",
-                callback_data=f"reglist_price_{group_id}_{price}_0",
-                style="primary"
-            )])
-    # Any other/custom base prices used, shown after the standard four
+        rows.append([InlineKeyboardButton(
+            f"Base Price {price} ({count})",
+            callback_data=f"reglist_price_{group_id}_{price}_0"
+        )])
     other_prices = sorted([p for p in price_groups if p not in (50, 30, 20, 10)], reverse=True)
     for price in other_prices:
         count = len(price_groups[price])
         rows.append([InlineKeyboardButton(
-            f"💰 {price} 🔷  ({count})",
-            callback_data=f"reglist_price_{group_id}_{price}_0",
-            style="primary"
+            f"Base Price {price} ({count})",
+            callback_data=f"reglist_price_{group_id}_{price}_0"
         )])
-    rows.append([InlineKeyboardButton("❌ Close", callback_data="reglist_close", style="danger")])
+    rows.append([InlineKeyboardButton("Close", callback_data="reglist_close")])
     return InlineKeyboardMarkup(rows)
 
 
 def _reglist_dropdown_text(group_name: str, total: int) -> str:
     return (
-        f"📋 <b>REGISTERED PLAYERS</b>\n"
+        f"📋 <b>TOURNAMENT REGISTRATION</b>\n"
         f"🏆 <b>{html.escape(str(group_name))}</b>\n"
         f"👥 Total: <b>{total}</b> players\n"
         f"─────────────────\n\n"
@@ -29106,7 +29016,7 @@ def _build_reglist_table_page(players_for_price: list, price: int, group_name: s
         table += "  No players in this category\n"
 
     text = (
-        f"📋 <b>REGISTERED PLAYERS</b>\n"
+        f"📋 <b>TOURNAMENT REGISTRATION</b>\n"
         f"🏆 <b>{html.escape(str(group_name))}</b>  ·  💰 Base Price: <b>{price} 🔷</b>\n"
         f"─────────────────\n"
         f"<pre>{table}</pre>"
@@ -29118,13 +29028,13 @@ def _build_reglist_table_page(players_for_price: list, price: int, group_name: s
 def _reglist_table_keyboard(group_id: int, price: int, page_idx: int, total_pages: int) -> InlineKeyboardMarkup:
     nav_row = []
     if page_idx > 0:
-        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reglist_price_{group_id}_{price}_{page_idx - 1}", style="primary"))
-    nav_row.append(InlineKeyboardButton(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop", style="primary"))
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"reglist_price_{group_id}_{price}_{page_idx - 1}"))
+    nav_row.append(InlineKeyboardButton(f"📄 {page_idx + 1}/{total_pages}", callback_data="noop"))
     if page_idx < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"reglist_price_{group_id}_{price}_{page_idx + 1}", style="primary"))
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"reglist_price_{group_id}_{price}_{page_idx + 1}"))
     back_row = [
-        InlineKeyboardButton("◀ Back", callback_data=f"reglist_back_{group_id}", style="primary"),
-        InlineKeyboardButton("❌ Close", callback_data="reglist_close", style="danger"),
+        InlineKeyboardButton("◀ Back", callback_data=f"reglist_back_{group_id}"),
+        InlineKeyboardButton("❌ Close", callback_data="reglist_close"),
     ]
     return InlineKeyboardMarkup(([nav_row] if nav_row else []) + [back_row])
 
@@ -29284,7 +29194,7 @@ async def registeredlist_command(update: Update, context: ContextTypes.DEFAULT_T
             except Exception:
                 pass
         await update.message.reply_text(
-            f"📋 <b>REGISTERED PLAYERS</b>\n"
+            f"📋 <b>TOURNAMENT REGISTRATION</b>\n"
             f"🏆 <b>{html.escape(str(group_name))}</b>\n"
             f"─────────────────\n"
             f"❌ No players registered yet.{reg_status}",
@@ -29697,7 +29607,7 @@ async def scorecard_refresh_callback(update: Update, context: ContextTypes.DEFAU
     text += "\n👉 Tap Refresh for latest scores!"
 
     refresh_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh Scorecard", callback_data=f"scorecard_refresh_{group_id}", style="primary")
+        InlineKeyboardButton("🔄 Refresh Scorecard", callback_data=f"scorecard_refresh_{group_id}")
     ]])
 
     # Telegram caption limit is 1024 chars; if longer, truncate with note
@@ -29786,10 +29696,10 @@ async def tourlb_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += "\n─────────────────"
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏃 Runs",    callback_data=f"tourlb_{gid}_runs", style="primary"),
-         InlineKeyboardButton("⚾ Wickets", callback_data=f"tourlb_{gid}_wickets", style="primary")],
-        [InlineKeyboardButton("🚀 Sixes",   callback_data=f"tourlb_{gid}_sixes", style="primary"),
-         InlineKeyboardButton("4️⃣ Fours",   callback_data=f"tourlb_{gid}_fours", style="primary")],
+        [InlineKeyboardButton("🏃 Runs",    callback_data=f"tourlb_{gid}_runs"),
+         InlineKeyboardButton("⚾ Wickets", callback_data=f"tourlb_{gid}_wickets")],
+        [InlineKeyboardButton("🚀 Sixes",   callback_data=f"tourlb_{gid}_sixes"),
+         InlineKeyboardButton("4️⃣ Fours",   callback_data=f"tourlb_{gid}_fours")],
     ])
     try:
         await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -29899,11 +29809,12 @@ async def mysquad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s = html.escape(str(s))
         return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
 
-    header = f"{_pad('S.No', 5)}{_pad('Player', 14)}{_pad('Role', 12)}\n"
+    header = f"{_pad('Rank', 5)}{_pad('Player', 14)}{_pad('Role', 12)}{_rpad('Points', 8)}\n"
     table = header + ("─" * 31) + "\n"
     for i, p in enumerate(picked, 1):
         role = compute_player_role(p.user_id)
-        table += f"{_pad(i, 5)}{_pad(p.first_name, 14)}{_pad(role, 12)}\n"
+        pts = squad.get("match_points", 0)
+        table += f"{_pad(i, 5)}{_pad(p.first_name, 14)}{_pad(role, 12)}{_rpad(pts, 8)}\n"
 
     msg = "🏆 <b>YOUR FANTASY DREAM XI</b>\n─────────────────\n"
     msg += f"<pre>{table}</pre>"
@@ -30036,9 +29947,9 @@ async def fantasyshop_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             price_line = f"{t['name']} — <b>{t['price']:,}</b> pts{tag}{equip_tag}"
         lines.append(price_line)
         if t["key"] not in owned:
-            keyboard.append([InlineKeyboardButton(f"🛒 Buy {t['name']} ({disc_price:,})", callback_data=f"fbuytitle_{t['key']}", style="success")])
+            keyboard.append([InlineKeyboardButton(f"🛒 Buy {t['name']} ({disc_price:,})", callback_data=f"fbuytitle_{t['key']}")])
         elif equipped != t["key"]:
-            keyboard.append([InlineKeyboardButton(f"🎽 Equip {t['name']}", callback_data=f"fequiptitle_{t['key']}", style="primary")])
+            keyboard.append([InlineKeyboardButton(f"🎽 Equip {t['name']}", callback_data=f"fequiptitle_{t['key']}")])
 
     msg = themed("🛍️ FANTASY TITLE SHOP", lines, "👑")
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
@@ -30112,433 +30023,6 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     PAGE_SIZE = 10
     title, rows, total = await asyncio.to_thread(_lb_query, metric, offset, PAGE_SIZE)
 
-    text  = "🏆 <b>CRICOVERSE GLOBAL LEADERBOARD</b>\n"
-    text += "─────────────────\n"
-    text += "🌍 Stats across <b>all groups</b> · All time\n"
-    text += "─────────────────\n"
-    text += "👇 <i>Choose a category to view rankings:</i>"
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏅 CCC Ranking",  callback_data="lb_ccc_0", style="primary")],
-        [InlineKeyboardButton("🏃 Top Runs",    callback_data="lb_runs_0", style="primary"),
-         InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0", style="primary")],
-        [InlineKeyboardButton("🏆 Most Wins",   callback_data="lb_wins_0", style="primary"),
-         InlineKeyboardButton("🎯 Win Rate",    callback_data="lb_winrate_0", style="success")],
-        [InlineKeyboardButton("4️⃣ Most Fours", callback_data="lb_fours_0", style="primary"),
-         InlineKeyboardButton("🚀 Most Sixes",  callback_data="lb_sixes_0", style="primary")],
-        [InlineKeyboardButton("🌟 MOM Awards",  callback_data="lb_mom_0", style="primary")],
-    ])
-
-    lb_photo = MEDIA_ASSETS.get("botstats")
-    try:
-        await update.message.reply_photo(photo=lb_photo, caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        if update.effective_chat.type != "private":
-            set_image_cooldown(group_id)
-    except:
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-
-
-def ensure_ccc_rank_table():
-    """Create the CCC Ranking snapshot table if it doesn't exist yet (idempotent)."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS ccc_rank_snapshot (
-        user_id INTEGER PRIMARY KEY,
-        rank INTEGER,
-        rating REAL,
-        snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    conn.commit()
-    conn.close()
-
-
-CCC_MIN_MATCHES = 5  # Minimum combined matches needed to appear on the CCC Ranking
-
-
-def _compute_ccc_ranking_rows():
-    """
-    🏅 CCC RANKING — CricoVerse's overall player rating, ICC-style.
-    Combines batting, bowling, wins and match-winning impact into a single rating,
-    averaged per match so grinders don't automatically outrank sharper performers.
-    Returns a strictly-ordered list (no ties) of dicts, richest performer first:
-    [{user_id, first_name, matches, wins, rating, rank}, ...]
-    """
-    ensure_ccc_rank_table()
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        SELECT user_id, first_name,
-            (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS matches,
-            (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS wins,
-            (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS runs,
-            (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS wickets,
-            (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) AS sixes,
-            (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) AS fours,
-            (COALESCE(total_hundreds,0) + COALESCE(team_total_hundreds,0)) AS hundreds,
-            (COALESCE(total_fifties,0) + COALESCE(team_total_fifties,0)) AS fifties,
-            (COALESCE(total_ducks,0) + COALESCE(team_total_ducks,0)) AS ducks,
-            COALESCE(player_of_match_count,0) AS mom
-        FROM user_stats
-    """)
-    all_rows = c.fetchall()
-    conn.close()
-
-    # First pass: gather raw points-per-match for every qualified player so we can
-    # compute a league-average baseline. A *pure* per-match average (old formula)
-    # rewards a handful of lucky matches over sustained volume, since one bad game
-    # drags a small sample down just as hard as a big one — so grinders who keep
-    # playing (and inevitably rack up a few average/bad games too) end up looking
-    # worse than someone who played the bare minimum and got lucky. We fix this
-    # two ways:
-    #   1. Bayesian smoothing — shrink each player's average toward the league
-    #      baseline by a fixed number of "phantom" matches (K). This tames small
-    #      sample swings without capping anyone's ceiling once they have real volume.
-    #   2. Explicit experience bonus — a small flat bonus per matches played
-    #      (capped) so consistent grinders get real credit for volume rather than
-    #      being purely at the mercy of an average.
-    prelim = []
-    for (user_id, first_name, matches, wins, runs, wickets, sixes, fours,
-         hundreds, fifties, ducks, mom) in all_rows:
-        if matches < CCC_MIN_MATCHES:
-            continue
-
-        win_rate = (wins / matches) * 100 if matches else 0
-
-        # Weighted point system (total career points, not yet normalized)
-        points = (
-            runs * 1.0 +
-            wickets * 20 +
-            wins * 15 +
-            sixes * 2 +
-            fours * 1 +
-            hundreds * 50 +
-            fifties * 20 +
-            mom * 25 +
-            win_rate * matches * 0.5 -
-            ducks * 5
-        )
-
-        prelim.append({
-            "user_id": user_id,
-            "first_name": first_name or "Player",
-            "matches": matches,
-            "wins": wins,
-            "points": points,
-        })
-
-    if not prelim:
-        return []
-
-    # League baseline = average points-per-match across all qualified players
-    baseline = sum(p["points"] / p["matches"] for p in prelim) / len(prelim)
-
-    K = 15          # regularization strength (in "phantom" matches) — bigger K = more shrinkage for low-volume players
-    EXP_BONUS_PER_MATCH = 0.25   # flat reward per real match played, rewarding volume/experience
-    EXP_BONUS_CAP_MATCHES = 300  # bonus stops growing past this many matches
-
-    scored = []
-    for p in prelim:
-        matches = p["matches"]
-        points = p["points"]
-
-        # Bayesian-smoothed average: pulls low-sample players toward the baseline
-        # instead of letting a handful of great matches rocket them to the top,
-        # while barely affecting players who already have a lot of matches.
-        smoothed_avg = (points + K * baseline) / (matches + K)
-
-        experience_bonus = min(matches, EXP_BONUS_CAP_MATCHES) * EXP_BONUS_PER_MATCH
-
-        rating = round(smoothed_avg + experience_bonus, 2)
-
-        scored.append({
-            "user_id": p["user_id"],
-            "first_name": p["first_name"],
-            "matches": matches,
-            "wins": p["wins"],
-            "rating": rating,
-        })
-
-    # Strict deterministic order → guarantees no two players ever share a rank
-    scored.sort(key=lambda r: (-r["rating"], -r["matches"], r["user_id"]))
-    for i, row in enumerate(scored):
-        row["rank"] = i + 1
-
-    return scored
-
-
-PLAYER_ROLE_MIN_MATCHES = 3  # below this, not enough data → shown as "Unranked"
-
-
-def compute_player_role(user_id: int) -> str:
-    """Auto-detect a player's role from their career stats (batting vs bowling
-    output, combining Team + Solo numbers, plus stumpings for keeper detection).
-    Returns one of: 'Wicket-Keeper', 'Batter', 'Bowler', 'All-Rounder', or
-    'Unranked' (not enough matches yet)."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        SELECT
-            (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS matches,
-            (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS runs,
-            (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS wickets,
-            (COALESCE(total_balls_bowled,0) + COALESCE(team_total_balls_bowled,0)) AS balls_bowled,
-            COALESCE(team_total_stumpings,0) AS stumpings,
-            COALESCE(team_total_catches,0) AS catches
-        FROM user_stats WHERE user_id = ?
-    """, (user_id,))
-    row = c.fetchone()
-    conn.close()
-
-    if not row:
-        return "Unranked"
-    matches, runs, wickets, balls_bowled, stumpings, catches = row
-    if matches < PLAYER_ROLE_MIN_MATCHES:
-        return "Unranked"
-
-    # 🧤 Stumpings can only realistically come from wicket-keeping in this
-    # simulation, so any real stumping tally is treated as a strong signal.
-    if stumpings > 0:
-        return "Wicket-Keeper"
-
-    # Batting output vs bowling output, both normalised per match so a player
-    # who's played a lot doesn't automatically look "better" at everything.
-    bat_points = (runs / max(matches, 1))
-    bowl_points = (wickets * 20) / max(matches, 1)
-
-    if bat_points < 3 and bowl_points < 3:
-        return "Unranked"
-
-    ratio = bat_points / max(bowl_points, 0.01)
-    if ratio > 2.2:
-        return "Batter"
-    elif ratio < 0.45:
-        return "Bowler"
-    else:
-        return "All-Rounder"
-
-
-def get_ccc_rankings_with_trend(limit: Optional[int] = None):
-    """
-    Returns the CCC ranking rows (optionally truncated to `limit`), each tagged with a
-    'trend' field showing movement since the last time the ranking was checked:
-    '🆕' new entry, '🔼N' climbed N spots, '🔽N' dropped N spots, '➖' unchanged.
-    Also refreshes the snapshot table used for the next trend comparison.
-    """
-    rows = _compute_ccc_ranking_rows()
-
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT user_id, rank FROM ccc_rank_snapshot")
-    old_ranks = {uid: r for uid, r in c.fetchall()}
-
-    for row in rows:
-        old_rank = old_ranks.get(row["user_id"])
-        if old_rank is None:
-            row["trend"] = "🆕"
-        elif old_rank > row["rank"]:
-            row["trend"] = f"🔼{old_rank - row['rank']}"
-        elif old_rank < row["rank"]:
-            row["trend"] = f"🔽{row['rank'] - old_rank}"
-        else:
-            row["trend"] = "➖"
-
-        c.execute(
-            "INSERT INTO ccc_rank_snapshot (user_id, rank, rating, snapshot_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank, rating=excluded.rating, snapshot_at=excluded.snapshot_at",
-            (row["user_id"], row["rank"], row["rating"], datetime.now())
-        )
-
-    conn.commit()
-    conn.close()
-
-    return rows[:limit] if limit else rows
-
-
-def get_player_ccc_rank(user_id: int):
-    """Returns this player's single CCC ranking row (with trend), or None if not yet ranked."""
-    rows = get_ccc_rankings_with_trend()
-    for row in rows:
-        if row["user_id"] == user_id:
-            return row
-    return None
-
-
-def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
-    """Fetch leaderboard data for a metric with pagination"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    rows = []
-    title = ""
-
-    if metric == "runs":
-        c.execute("""
-            SELECT user_id, first_name, username,
-                   (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS tr,
-                   (COALESCE(total_balls_faced,0) + COALESCE(team_total_balls_faced,0)) AS tb
-            FROM user_stats
-            WHERE (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) > 0
-            ORDER BY tr DESC
-        """)
-        all_rows = c.fetchall()
-        title = "TOP RUN SCORERS → ALL TIME"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
-    elif metric == "wickets":
-        c.execute("""
-            SELECT user_id, first_name, username,
-                   (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS tw
-            FROM user_stats
-            WHERE (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) > 0
-            ORDER BY tw DESC
-        """)
-        all_rows = c.fetchall()
-        title = "TOP WICKET TAKERS → ALL TIME"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
-    elif metric == "fours":
-        c.execute("""
-            SELECT user_id, first_name, username,
-                   (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) AS tf
-            FROM user_stats
-            WHERE (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) > 0
-            ORDER BY tf DESC
-        """)
-        all_rows = c.fetchall()
-        title = "MOST FOURS HIT"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
-    elif metric == "wins":
-        c.execute("""
-            SELECT user_id, first_name, username,
-                   (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS tw,
-                   (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS tp
-            FROM user_stats
-            WHERE (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) > 0
-            ORDER BY tw DESC
-        """)
-        all_rows = c.fetchall()
-        title = "MOST MATCH WINS"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
-    elif metric == "winrate":
-        c.execute("""
-            SELECT user_id, first_name, username,
-                   (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS tw,
-                   (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS tp
-            FROM user_stats
-            WHERE (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) >= 5
-            ORDER BY CAST(tw AS REAL)/tp DESC
-        """)
-        all_rows = c.fetchall()
-        title = "BEST WIN RATE (min 5 matches)"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
-    elif metric == "sixes":
-        c.execute("""
-            SELECT user_id, first_name, username,
-                   (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) AS ts
-            FROM user_stats
-            WHERE (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) > 0
-            ORDER BY ts DESC
-        """)
-        all_rows = c.fetchall()
-        title = "MOST SIXES HIT"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
-    elif metric == "mom":
-        c.execute("""
-            SELECT user_id, first_name, username, COALESCE(player_of_match_count,0) AS mom
-            FROM user_stats
-            WHERE COALESCE(player_of_match_count,0) > 0
-            ORDER BY mom DESC
-        """)
-        all_rows = c.fetchall()
-        title = "MOST MAN OF MATCH AWARDS"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
-    else:
-        total = 0
-
-    conn.close()
-    return title, rows, total
-
-
-async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle leaderboard tab buttons with pagination - show only Back after selection"""
-    query = update.callback_query
-    await query.answer()
-    data = query.data.replace("lb_", "")
-
-    # Back button → restore main leaderboard menu
-    if data == "back":
-        main_text  = "🏆 <b>CRICOVERSE GLOBAL LEADERBOARD</b>\n"
-        main_text += "─────────────────\n"
-        main_text += "🌍 Stats across <b>all groups</b> · All time\n"
-        main_text += "─────────────────\n"
-        main_text += "👇 <i>Choose a category to view rankings:</i>"
-        main_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏅 CCC Ranking",  callback_data="lb_ccc_0", style="primary")],
-            [InlineKeyboardButton("🏃 Top Runs",    callback_data="lb_runs_0", style="primary"),
-             InlineKeyboardButton("⚾ Top Wickets", callback_data="lb_wickets_0", style="primary")],
-            [InlineKeyboardButton("🏆 Most Wins",   callback_data="lb_wins_0", style="primary"),
-             InlineKeyboardButton("🎯 Win Rate",    callback_data="lb_winrate_0", style="success")],
-            [InlineKeyboardButton("4️⃣ Most Fours", callback_data="lb_fours_0", style="primary"),
-             InlineKeyboardButton("🚀 Most Sixes",  callback_data="lb_sixes_0", style="primary")],
-            [InlineKeyboardButton("🌟 MOM Awards",  callback_data="lb_mom_0", style="primary")],
-        ])
-        try:
-            await query.edit_message_caption(caption=main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
-        except:
-            await query.edit_message_text(main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
-        return
-
-    parts = data.rsplit("_", 1)
-    if len(parts) == 2 and parts[1].isdigit():
-        metric = parts[0]
-        offset = int(parts[1])
-    else:
-        metric = data
-        offset = 0
-
-    # 🏅 CCC RANKING → always top 10 only, no pagination
-    if metric == "ccc":
-        rows = await asyncio.to_thread(get_ccc_rankings_with_trend, 10)
-
-        def _pad(s, w):
-            s = html.escape(str(s))
-            return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
-
-        def _rpad(s, w):
-            s = str(s)
-            return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
-
-        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('Rating', 8)}\n"
-        table = header + ("─" * 41) + "\n"
-        for row in rows:
-            name = (row.get("first_name") or "Player")[:12]
-            uname = f"@{row.get('username') or '-'}"[:12]
-            table += f"{_pad(row['rank'], 5)}{_pad(name, 14)}{_pad(uname, 14)}{_rpad(row['rating'], 8)}\n"
-        if not rows:
-            table += f"  No one's qualified yet — play {CCC_MIN_MATCHES}+ matches!\n"
-
-        text  = "🏅 <b>CCC RANKING</b> · CricoVerse Career Rating\n"
-        text += "─────────────────\n"
-        text += f"Overall skill ranking · min {CCC_MIN_MATCHES} matches\n"
-        text += f"<pre>{table}</pre>"
-
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="lb_back", style="primary")]])
-        try:
-            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        except:
-            try:
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-            except Exception:
-                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        return
-
-    PAGE_SIZE = 10
-    title, rows, total = await asyncio.to_thread(_lb_query, metric, offset, PAGE_SIZE)
-
     def _pad(s, w):
         s = html.escape(str(s))
         return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
@@ -30552,6 +30036,7 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     table = ""
     if metric == "runs":
+        title = "CRICOVERSE TOP RUN-GETTERS"
         header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('Runs', 6)}{_rpad('SR', 7)}\n"
         table += header + ("─" * 43) + "\n"
         for i, (uid, name, uname, tr, tb) in enumerate(rows):
@@ -30559,30 +30044,38 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             sr = round((tr / tb) * 100, 1) if tb else 0.0
             table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(tr, 6)}{_rpad(sr, 7)}\n"
     elif metric == "wickets":
-        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('Wkts', 6)}\n"
-        table += header + ("─" * 39) + "\n"
-        for i, (uid, name, uname, tw) in enumerate(rows):
+        title = "CRICOVERSE TOP WICKET-TAKERS"
+        header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('Wkts', 6)}{_rpad('Eco', 7)}\n"
+        table += header + ("─" * 43) + "\n"
+        for i, (uid, name, uname, tw, tbb, trc) in enumerate(rows):
             rank = offset + i + 1
-            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 14)}{_pad(_uname(uname), 14)}{_rpad(tw, 6)}\n"
+            eco = round(trc / (tbb / 6), 2) if tbb else 0.0
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(tw, 6)}{_rpad(eco, 7)}\n"
     elif metric == "fours":
-        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('4s', 6)}\n"
-        table += header + ("─" * 39) + "\n"
-        for i, (uid, name, uname, tf) in enumerate(rows):
+        title = "CRICOVERSE MOST FOURS"
+        header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('4s', 5)}{_rpad('SR', 7)}\n"
+        table += header + ("─" * 42) + "\n"
+        for i, (uid, name, uname, tf, tr, tb) in enumerate(rows):
             rank = offset + i + 1
-            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 14)}{_pad(_uname(uname), 14)}{_rpad(tf, 6)}\n"
+            sr = round((tr / tb) * 100, 1) if tb else 0.0
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(tf, 5)}{_rpad(sr, 7)}\n"
     elif metric == "sixes":
-        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('6s', 6)}\n"
-        table += header + ("─" * 39) + "\n"
-        for i, (uid, name, uname, ts) in enumerate(rows):
+        title = "CRICOVERSE MOST SIXES"
+        header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('6s', 5)}{_rpad('SR', 7)}\n"
+        table += header + ("─" * 42) + "\n"
+        for i, (uid, name, uname, ts, tr, tb) in enumerate(rows):
             rank = offset + i + 1
-            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 14)}{_pad(_uname(uname), 14)}{_rpad(ts, 6)}\n"
+            sr = round((tr / tb) * 100, 1) if tb else 0.0
+            table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(ts, 5)}{_rpad(sr, 7)}\n"
     elif metric == "wins":
+        title = "CRICOVERSE MOST MATCH WINS"
         header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('Wins', 6)}{_rpad('Played', 8)}\n"
         table += header + ("─" * 44) + "\n"
         for i, (uid, name, uname, tw, tp) in enumerate(rows):
             rank = offset + i + 1
             table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(tw, 6)}{_rpad(tp, 8)}\n"
     elif metric == "winrate":
+        title = "CRICOVERSE BEST WIN RATE"
         header = f"{_pad('Rank', 5)}{_pad('Name', 13)}{_pad('Username', 12)}{_rpad('Win%', 7)}\n"
         table += header + ("─" * 37) + "\n"
         for i, (uid, name, uname, tw, tp) in enumerate(rows):
@@ -30590,6 +30083,7 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             wr = round(tw / max(tp, 1) * 100, 1)
             table += f"{_pad(rank, 5)}{_pad(name or 'Player', 13)}{_pad(_uname(uname), 12)}{_rpad(wr, 7)}\n"
     elif metric == "mom":
+        title = "CRICOVERSE MOST MAN OF MATCH"
         header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('MOM', 6)}\n"
         table += header + ("─" * 39) + "\n"
         for i, (uid, name, uname, mom) in enumerate(rows):
@@ -30608,14 +30102,14 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # Only show Prev/Next navigation + Back (NO category tabs)
     bottom_row = []
     if offset > 0:
-        bottom_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"lb_{metric}_{max(0,offset-PAGE_SIZE)}", style="primary"))
+        bottom_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"lb_{metric}_{max(0,offset-PAGE_SIZE)}"))
     if offset + PAGE_SIZE < total:
-        bottom_row.append(InlineKeyboardButton("▶️ Next", callback_data=f"lb_{metric}_{offset+PAGE_SIZE}", style="primary"))
+        bottom_row.append(InlineKeyboardButton("▶️ Next", callback_data=f"lb_{metric}_{offset+PAGE_SIZE}"))
 
     kb_rows = []
     if bottom_row:
         kb_rows.append(bottom_row)
-    kb_rows.append([InlineKeyboardButton("🔙 Back", callback_data="lb_back", style="primary")])
+    kb_rows.append([InlineKeyboardButton("🔙 Back", callback_data="lb_back")])
     kb = InlineKeyboardMarkup(kb_rows)
 
     try:
@@ -31145,8 +30639,8 @@ async def qbowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ✅ FIX 2: Show confirmation button
     keyboard = InlineKeyboardMarkup([
         [
-            styled_button(f"✅ Confirm → {player.first_name}", callback_data=f"qbowl_confirm_{chat.id}_{player.user_id}_{serial}", style="success"),
-            styled_button("❌ Cancel", callback_data=f"qbowl_cancel_{chat.id}", style="danger")
+            styled_button(f"✅ Confirm → {player.first_name}", callback_data=f"qbowl_confirm_{chat.id}_{player.user_id}_{serial}"),
+            styled_button("❌ Cancel", callback_data=f"qbowl_cancel_{chat.id}")
         ]
     ])
     await update.message.reply_text(
@@ -31362,7 +30856,7 @@ async def scorecard_worm_callback(update: Update, context: ContextTypes.DEFAULT_
     else:
         nav_label = "⬅️ 1st Innings"
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(nav_label, callback_data=f"scorecard_worm_{group_id}_{other_inn}", style="primary")
+        InlineKeyboardButton(nav_label, callback_data=f"scorecard_worm_{group_id}_{other_inn}")
     ]])
 
     try:
@@ -32033,12 +31527,12 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
         keyboard = [
-            [InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo", style="primary"),
-             InlineKeyboardButton("🤖 AI Mode (DM)", callback_data="mode_ai", style="primary")],
-            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team", style="primary")],
-            [InlineKeyboardButton("📝 Registration", callback_data="tour_registration_mode", style="primary"),
-             InlineKeyboardButton("🏦 Auction", callback_data="tour_auction_mode", style="primary")],
-            [InlineKeyboardButton("🏆 Tournament Mode", callback_data="mode_tournament", style="primary")]
+            [InlineKeyboardButton("⚔️ Solo Mode", callback_data="mode_solo"),
+             InlineKeyboardButton("🤖 AI Mode (DM)", callback_data="mode_ai")],
+            [InlineKeyboardButton("👥 Team Mode", callback_data="mode_team")],
+            [InlineKeyboardButton("📝 Registration", callback_data="tour_registration_mode"),
+             InlineKeyboardButton("🏦 Auction", callback_data="tour_auction_mode")],
+            [InlineKeyboardButton("🏆 Tournament Mode", callback_data="mode_tournament")]
         ]
 
         msg = f"🎮 <b>Choose a mode</b> — requested by {html.escape(user.first_name or 'Player')}"
@@ -32355,6 +31849,8 @@ def main():
     # 🏆 Fantasy Dream III
     application.add_handler(CommandHandler("mysquad", mysquad_command))
     application.add_handler(CommandHandler("fantasylb", fantasylb_command))
+    application.add_handler(CommandHandler("fantasy_stats", fantasylb_command))
+    application.add_handler(CommandHandler("fantasystats", fantasylb_command))
     application.add_handler(CommandHandler("fantasyshop", fantasyshop_command))
     application.add_handler(CommandHandler("fantasydiscount", fantasydiscount_command))
 

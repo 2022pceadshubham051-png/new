@@ -18158,7 +18158,10 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
 
         _ccc_row = get_player_ccc_rank(user_id)
         if _ccc_row:
-            ccc_line = f"├👑 𝗖𝗖𝗖     ➜ #{_ccc_row['rank']} ⭐ {_ccc_row['rating']}\n"
+            _ccc_cat = _ccc_row.get('category', 'Batsman')
+            _ccc_cat_emoji = '🏏' if _ccc_cat == 'Batsman' else '⚾' if _ccc_cat == 'Bowler' else '🏏⚾'
+            _ccc_cat_rank = _ccc_row.get('cat_rank', _ccc_row['rank'])
+            ccc_line = f"├👑 𝗖𝗖𝗖     ➜ {_ccc_cat} {_ccc_cat_emoji} | #{_ccc_cat_rank} ⭐ {_ccc_row['rating']}\n"
         else:
             ccc_line = f"├👑 𝗖𝗖𝗖     ➜ Unranked\n"
 
@@ -19351,7 +19354,11 @@ def _render_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Opti
             ccc_row = get_player_ccc_rank(user_id)
         except Exception:
             ccc_row = None
-        rank_str = f"#{ccc_row['rank']}" if ccc_row else "Unranked"
+        if ccc_row:
+            _cat_short = {"Batsman": "BAT", "Bowler": "BOWL", "All-Rounder": "AR"}.get(ccc_row.get("category", "Batsman"), "BAT")
+            rank_str = f"#{ccc_row.get('cat_rank', ccc_row['rank'])} ({_cat_short})"
+        else:
+            rank_str = "Unranked"
         _center_text(CARD_X + 370, 675, rank_str, f_rank, stroke=3)
 
         # 5. Matches / Runs / Wickets values, centered in the stats section box
@@ -29418,6 +29425,23 @@ async def fantasy_equiptitle_callback(update: Update, context: ContextTypes.DEFA
 # ═══════════════════════════════════════════════════════════════
 CCC_MIN_MATCHES = 5
 
+def classify_player_category(runs: int, wickets: int, matches: int, balls_faced: int, balls_bowled: int) -> str:
+    """Classify a player as Batsman, Bowler, or All-Rounder based on per-match stats."""
+    if matches < CCC_MIN_MATCHES:
+        return "Batsman"  # default for unqualified
+    runs_per_match = runs / max(matches, 1)
+    wickets_per_match = wickets / max(matches, 1)
+    # Thresholds
+    BAT_THRESHOLD = 8    # avg 8+ runs/match = batting contributor
+    BOWL_THRESHOLD = 0.5  # avg 0.5+ wickets/match = bowling contributor
+    is_bat = runs_per_match >= BAT_THRESHOLD
+    is_bowl = wickets_per_match >= BOWL_THRESHOLD
+    if is_bat and is_bowl:
+        return "All-Rounder"
+    elif is_bowl and not is_bat:
+        return "Bowler"
+    return "Batsman"
+
 def sync_legacy_player_stats_to_ccc():
     """🔧 FIX: 'purane stats' (old solo/team stats stored only in the
     JSON-backed player_stats dict, from before per-match SQL sync existed
@@ -29484,8 +29508,13 @@ def ensure_ccc_rank_table():
         user_id INTEGER PRIMARY KEY,
         rank INTEGER,
         rating REAL,
+        category TEXT DEFAULT 'Batsman',
         snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
+    try:
+        c.execute("ALTER TABLE ccc_rank_snapshot ADD COLUMN category TEXT DEFAULT 'Batsman'")
+    except Exception:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -29512,7 +29541,9 @@ def _compute_ccc_ranking_rows():
             (COALESCE(total_hundreds,0) + COALESCE(team_total_hundreds,0)) AS hundreds,
             (COALESCE(total_fifties,0) + COALESCE(team_total_fifties,0)) AS fifties,
             (COALESCE(total_ducks,0) + COALESCE(team_total_ducks,0)) AS ducks,
-            COALESCE(player_of_match_count,0) AS mom
+            COALESCE(player_of_match_count,0) AS mom,
+            (COALESCE(total_balls_faced,0) + COALESCE(team_total_balls_faced,0)) AS balls_faced,
+            (COALESCE(total_balls_bowled,0) + COALESCE(team_total_balls_bowled,0)) AS balls_bowled
         FROM user_stats
     """)
     all_rows = c.fetchall()
@@ -29533,7 +29564,7 @@ def _compute_ccc_ranking_rows():
     #      being purely at the mercy of an average.
     prelim = []
     for (user_id, first_name, matches, wins, runs, wickets, sixes, fours,
-         hundreds, fifties, ducks, mom) in all_rows:
+         hundreds, fifties, ducks, mom, balls_faced, balls_bowled) in all_rows:
         if matches < CCC_MIN_MATCHES:
             continue
 
@@ -29559,6 +29590,7 @@ def _compute_ccc_ranking_rows():
             "matches": matches,
             "wins": wins,
             "points": points,
+            "category": classify_player_category(runs, wickets, matches, balls_faced, balls_bowled),
         })
 
     if not prelim:
@@ -29591,6 +29623,7 @@ def _compute_ccc_ranking_rows():
             "matches": matches,
             "wins": p["wins"],
             "rating": rating,
+            "category": p["category"],
         })
 
     # Strict deterministic order → guarantees no two players ever share a rank
@@ -29643,9 +29676,9 @@ def get_ccc_rankings_with_trend(limit: Optional[int] = None):
             row["trend"] = "➖"
 
         c.execute(
-            "INSERT INTO ccc_rank_snapshot (user_id, rank, rating, snapshot_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank, rating=excluded.rating, snapshot_at=excluded.snapshot_at",
-            (row["user_id"], row["rank"], row["rating"], now)
+            "INSERT INTO ccc_rank_snapshot (user_id, rank, rating, category, snapshot_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank, rating=excluded.rating, category=excluded.category, snapshot_at=excluded.snapshot_at",
+            (row["user_id"], row["rank"], row["rating"], row.get("category", "Batsman"), now)
         )
 
     conn.commit()
@@ -29655,12 +29688,116 @@ def get_ccc_rankings_with_trend(limit: Optional[int] = None):
 
 
 def get_player_ccc_rank(user_id: int):
-    """Returns this player's single CCC ranking row (with trend), or None if not yet ranked."""
+    """Returns this player's CCC ranking row with category-specific rank and trend, or None."""
     rows = get_ccc_rankings_with_trend()
+    # Find player's category first
+    player_row = None
     for row in rows:
         if row["user_id"] == user_id:
-            return row
-    return None
+            player_row = row
+            break
+    if not player_row:
+        return None
+    # Compute rank within their category
+    category = player_row.get("category", "Batsman")
+    cat_rank = 1
+    for row in rows:
+        if row["category"] == category and row["rating"] > player_row["rating"]:
+            cat_rank += 1
+    player_row["cat_rank"] = cat_rank
+    return player_row
+
+
+def get_ccc_rankings_by_category(category: str, limit: int = 10):
+    """Returns CCC rankings filtered to a specific category, re-ranked within that category."""
+    all_rows = get_ccc_rankings_with_trend()
+    filtered = [r for r in all_rows if r.get("category") == category]
+    # Re-rank within category
+    for i, row in enumerate(filtered):
+        row["cat_rank"] = i + 1
+    return filtered[:limit] if limit else filtered
+
+
+def _build_ccc_rich_html() -> str:
+    """Build sendRichMessage HTML for CCC rankings with expandable <h3> dropdowns."""
+    rows = get_ccc_rankings_with_trend()
+    batsmen = [r for r in rows if r.get("category") == "Batsman"][:10]
+    bowlers = [r for r in rows if r.get("category") == "Bowler"][:10]
+    allrounders = [r for r in rows if r.get("category") == "All-Rounder"][:10]
+
+    def _cat_table(players):
+        if not players:
+            return "<p><i>No qualified players yet</i></p>"
+        trs = ""
+        for i, p in enumerate(players):
+            name = html.escape((p.get("first_name") or "Player")[:16])
+            trs += (
+                f"<tr><td align='center'>{i+1}</td>"
+                f"<td>{name}</td>"
+                f"<td align='right'>{p['rating']}</td>"
+                f"<td align='right'>{p['matches']}</td>"
+                f"<td align='center'>{p.get('trend', '🆕')}</td></tr>"
+            )
+        return (
+            "<table bordered striped>"
+            "<tr><th>#️⃣</th><th>🧢 Name</th><th>⭐ Rating</th><th>🎮 Matches</th><th>📈 Trend</th></tr>"
+            f"{trs}</table>"
+        )
+
+    return (
+        f"<h3>🏅 CCC RANKING — CricoVerse Career Rating</h3>"
+        f"<p>Players auto-classified by stats · min {CCC_MIN_MATCHES} matches</p>"
+        f"<h3>🏏 Top 10 Batsmen</h3>"
+        f"{_cat_table(batsmen)}"
+        f"<h3>⚾ Top 10 Bowlers</h3>"
+        f"{_cat_table(bowlers)}"
+        f"<h3>🏏⚾ Top 10 All-Rounders</h3>"
+        f"{_cat_table(allrounders)}"
+        f"<footer>🏅 CRICOVERSE CCC RANKING 🎮</footer>"
+    )
+
+
+def _build_ccc_fallback_text() -> str:
+    """Fallback HTML text for CCC when sendRichMessage is not supported."""
+    rows = get_ccc_rankings_with_trend()
+    batsmen = [r for r in rows if r.get("category") == "Batsman"][:10]
+    bowlers = [r for r in rows if r.get("category") == "Bowler"][:10]
+    allrounders = [r for r in rows if r.get("category") == "All-Rounder"][:10]
+
+    def _section(title, emoji, players):
+        text = f"\n{emoji} <b>{title}</b>\n─────────────────\n"
+        if not players:
+            text += f"<i>No qualified players yet → play {CCC_MIN_MATCHES}+ matches!</i>\n"
+            return text
+        for i, p in enumerate(players):
+            name = html.escape((p.get('first_name') or 'Player')[:16])
+            text += (
+                f"{i+1}. <b>{name}</b> · "
+                f"⭐ {p['rating']} · {p['matches']}M · {p.get('trend', '🆕')}\n"
+            )
+        return text
+
+    text = "🏅 <b>CCC RANKING</b> · CricoVerse Career Rating\n"
+    text += "═══════════════════\n"
+    text += f"Players auto-classified by stats · min {CCC_MIN_MATCHES} matches\n"
+    text += _section("Top 10 Batsmen", "🏏", batsmen)
+    text += _section("Top 10 Bowlers", "⚾", bowlers)
+    text += _section("Top 10 All-Rounders", "🏏⚾", allrounders)
+    text += "\n─────────────────\n🏅 CRICOVERSE CCC RANKING 🎮"
+    return text
+
+
+async def ccc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🏅 /ccc — CCC Career Rating Rankings by category (expandable native tables)"""
+    chat_id = update.effective_chat.id
+
+    html_content = await asyncio.to_thread(_build_ccc_rich_html)
+    ok = await _tg_send_rich_message(chat_id, html_content)
+
+    if not ok:
+        fallback = await asyncio.to_thread(_build_ccc_fallback_text)
+        await update.message.reply_text(fallback, parse_mode=ParseMode.HTML)
+
 
 
 async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -29677,10 +29814,10 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "─────────────────\n"
         "Stats across <b>all groups</b> · All time\n"
         "─────────────────\n\n"
-        "👇 <i>Choose a category to view rankings:</i>"
+        "👇 <i>Choose a category to view rankings:</i>\n"
+        "\n💡 <i>Use /ccc for CCC Career Rankings!</i>"
     )
     main_kb = InlineKeyboardMarkup([
-        [styled_button("🏅 CCC Ranking", callback_data="lb_ccc_0", style="primary")],
         [styled_button("🏃 Top Runs", callback_data="lb_runs_0", style="success"),
          styled_button("⚾ Top Wickets", callback_data="lb_wickets_0", style="primary")],
         [styled_button("🏆 Most Wins", callback_data="lb_wins_0", style="success"),
@@ -29690,7 +29827,16 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         [styled_button("🌟 MOM Awards", callback_data="lb_mom_0", style="success")],
     ])
 
-    await update.message.reply_text(main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
+    lb_photo = MEDIA_ASSETS.get("botstats")
+    if lb_photo:
+        await update.message.reply_photo(
+            photo=lb_photo,
+            caption=main_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_kb
+        )
+    else:
+        await update.message.reply_text(main_text, parse_mode=ParseMode.HTML, reply_markup=main_kb)
 
 
 def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
@@ -29848,10 +29994,10 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             "─────────────────\n"
             "Stats across <b>all groups</b> · All time\n"
             "─────────────────\n\n"
-            "👇 <i>Choose a category to view rankings:</i>"
+            "👇 <i>Choose a category to view rankings:</i>\n"
+            "\n💡 <i>Use /ccc for CCC Career Rankings!</i>"
         )
         main_kb = InlineKeyboardMarkup([
-            [styled_button("🏅 CCC Ranking", callback_data="lb_ccc_0")],
             [styled_button("🏃 Top Runs", callback_data="lb_runs_0"),
              styled_button("⚾ Top Wickets", callback_data="lb_wickets_0")],
             [styled_button("🏆 Most Wins", callback_data="lb_wins_0"),
@@ -29877,40 +30023,8 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         metric = data
         offset = 0
 
-    # 🏅 CCC RANKING → always top 10 only, no pagination
-    if metric == "ccc":
-        rows = await asyncio.to_thread(get_ccc_rankings_with_trend, 10)
-        medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
-        lines = []
-        for i, row in enumerate(rows):
-            medal = medals[i] if i < 10 else f"<b>#{row['rank']}</b>"
-            name = html.escape(row["first_name"] or "Player")
-            name = name if len(name) <= 16 else name[:15] + "…"
-            jnum = jersey_number_prefix(row["user_id"])
-            lines.append(
-                f'{medal} <a href="tg://user?id={row["user_id"]}">{jnum}{name}</a>\n'
-                f'     <code>⭐ {row["rating"]:>7} · {row["matches"]}M</code>  {row["trend"]}'
-            )
+    # Removed CCC RANKING here
 
-        text  = "🏅 <b>CCC RANKING</b> · CricoVerse Career Rating\n"
-        text += "─────────────────\n"
-        text += f"🌍 Overall skill ranking · min {CCC_MIN_MATCHES} matches\n"
-        text += "─────────────────\n\n"
-        if lines:
-            text += "\n".join(lines)
-        else:
-            text += f"<i>No one's qualified yet → play {CCC_MIN_MATCHES}+ matches! 🏏</i>"
-        text += "\n\n─────────────────"
-
-        kb = InlineKeyboardMarkup([[styled_button("🔙 Back", callback_data="lb_back", style="primary")]])
-        try:
-            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        except Exception:
-            try:
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-            except Exception:
-                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        return
 
     PAGE_SIZE = 10
     title, rows, total = await asyncio.to_thread(_lb_query, metric, offset, PAGE_SIZE)
@@ -30003,7 +30117,7 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     kb_rows.append([styled_button("🔙 Back", callback_data="lb_back", style="danger")])
     kb = InlineKeyboardMarkup(kb_rows)
 
-    photo_bio = await asyncio.to_thread(generate_leaderboard_image, title, rows, metric, offset) if rows else None
+    photo_bio = None  # Image generation removed — using default MEDIA_ASSETS photo
     await _send_lb_view(query, text, kb, photo_bio)
 
 
@@ -31598,6 +31712,7 @@ async def setup_public_bot_commands(application: Application):
         BotCommand("players", "Current squads and player status"),
         BotCommand("momentum", "Momentum dashboard image"),
         BotCommand("lb", "Global leaderboard"),
+        BotCommand("ccc", "CCC Career Rankings by category"),
         BotCommand("fantasylb", "Fantasy Dream III leaderboard"),
         BotCommand("gcsettings", "Group settings for admins"),
         BotCommand("endmatch", "End the current match"),
@@ -31606,6 +31721,41 @@ async def setup_public_bot_commands(application: Application):
         await application.bot.set_my_commands(commands)
     except Exception as e:
         logger.warning(f"Could not set public bot commands: {e}")
+
+
+async def ccc_weekly_dm_job(context: ContextTypes.DEFAULT_TYPE):
+    """🏅 Weekly CCC Ranking DM — sends CCC rankings to all players via DM.
+    Uses sendRichMessage for native expandable tables, with fallback to HTML text."""
+    try:
+        html_content = _build_ccc_rich_html()
+        fallback = _build_ccc_fallback_text()
+    except Exception as e:
+        logger.error(f"CCC weekly DM build error: {e}")
+        return
+
+    sent = 0
+    failed = 0
+    for uid in list(user_data.keys()):
+        try:
+            uid_int = int(uid)
+        except (ValueError, TypeError):
+            continue
+        try:
+            ok = await _tg_send_rich_message(uid_int, html_content)
+            if not ok:
+                await context.bot.send_message(
+                    chat_id=uid_int,
+                    text=fallback,
+                    parse_mode=ParseMode.HTML
+                )
+            sent += 1
+        except (Forbidden, TelegramError):
+            failed += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.5)  # Rate limiting
+
+    logger.info(f"🏅 CCC Weekly DM: sent={sent}, failed={failed}")
 
 
 def main():
@@ -31702,6 +31852,20 @@ def main():
             jersey_owner_check_job, interval=3600, first=240
         )
 
+        # 🏅 Weekly CCC Ranking DM (every 7 days at 4 AM IST = 22:30 UTC prev day)
+        # Calculate first run to align with 4:00 AM IST
+        _now_utc = datetime.utcnow()
+        _target_ist_hour = 4  # 4 AM IST = 22:30 UTC previous day
+        _ist_offset = timedelta(hours=5, minutes=30)
+        _now_ist = _now_utc + _ist_offset
+        _next_4am_ist = _now_ist.replace(hour=_target_ist_hour, minute=0, second=0, microsecond=0)
+        if _next_4am_ist <= _now_ist:
+            _next_4am_ist += timedelta(days=1)
+        _first_run_secs = (_next_4am_ist - _now_ist).total_seconds()
+        application.job_queue.run_repeating(
+            ccc_weekly_dm_job, interval=604800, first=_first_run_secs
+        )
+
     # ================== BASIC COMMANDS ==================
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -31737,6 +31901,7 @@ def main():
     application.add_handler(CommandHandler("momentum", momentum_command))
     application.add_handler(CommandHandler("leaderboard", leaderboard_command))
     application.add_handler(CommandHandler("lb", leaderboard_command))
+    application.add_handler(CommandHandler("ccc", ccc_command))
 
     # 🏆 Fantasy Dream III
     application.add_handler(CommandHandler("mysquad", mysquad_command))

@@ -15269,11 +15269,10 @@ def build_new_scorecard_html(match: "Match", group_id: int, result: Optional[dic
     return out
 
 
-_RICH_MESSAGE_SUPPORTED = False  # Global cache to prevent 15-second HTTP delays
+_RICH_MESSAGE_SUPPORTED = True  # Enabled for Telegram Bot API 10.1+ native rich tables & dropdowns
 
 async def _tg_send_rich_message(chat_id: int, html_content: str) -> bool:
-    """Ultra-fast check call to Bot API 10.1's sendRichMessage with 0.5s timeout and memory caching
-    so network calls never delay scorecard or bot responses."""
+    """Call Bot API 10.1's sendRichMessage for native tables and expandable dropdown sections."""
     global _RICH_MESSAGE_SUPPORTED
     if _RICH_MESSAGE_SUPPORTED is False:
         return False
@@ -15284,16 +15283,16 @@ async def _tg_send_rich_message(chat_id: int, html_content: str) -> bool:
             resp = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendRichMessage",
                 json={"chat_id": chat_id, "rich_message": {"html": html_content}},
-                timeout=0.5,
+                timeout=5.0,
             )
             data = resp.json()
             if not data.get("ok"):
-                _RICH_MESSAGE_SUPPORTED = False
+                logger.warning(f"sendRichMessage API error: {data}")
                 return False
             _RICH_MESSAGE_SUPPORTED = True
             return True
-        except Exception:
-            _RICH_MESSAGE_SUPPORTED = False
+        except Exception as e:
+            logger.warning(f"sendRichMessage request exception: {e}")
             return False
 
     return await asyncio.to_thread(_do_request)
@@ -19522,9 +19521,10 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
         avatar_bytes = await fetch_user_avatar_bytes(context, user_id)
         stats_photo = await generate_stats_image(user_id, user_name, stats, avatar_bytes, "team")
         if stats_photo:
+            photo_caption = caption if len(caption) <= 1024 else caption[:1020] + "…"
             await update.message.reply_photo(
                 photo=stats_photo,
-                caption=caption,
+                caption=photo_caption,
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup
             )
@@ -19594,7 +19594,8 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [[back_button]]
         try:
-            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+            caption_text = text if len(text) <= 1024 else text[:1020] + "…"
+            await query.edit_message_caption(caption=caption_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception as e:
             logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20416)")
             try:

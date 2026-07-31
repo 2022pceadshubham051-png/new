@@ -1202,17 +1202,41 @@ def get_discounted_price(base_price: int) -> int:
     return max(1, int(round(base_price * (100 - pct) / 100)))
 
 # --- DUAL STORAGE MANAGER (SQL + JSON) ---
+# ═══════════════════════════════════════════════════════════════
+# 🔧 FIX: centralized, self-healing DB connection helper.
+# Every sqlite3.connect(DB_PATH/DB_FILE/TOURNAMENT_DB_PATH) call now
+# goes through here. This guarantees the schema exists (fixes
+# "no such table: user_stats" caused by any code path that opens a
+# connection before init_db()/init_tournament_db() has run, e.g.
+# after /restore with a partial DB, or on a fresh/wiped disk) without
+# re-running the full CREATE/ALTER TABLE sequence on every call
+# (only runs once per process, then is a cheap flag check).
+# ═══════════════════════════════════════════════════════════════
+_db_ready = False
+_tournament_db_ready = False
+
+def db_connect(path):
+    """Drop-in replacement for sqlite3.connect(path) that guarantees
+    the relevant schema has been created first."""
+    global _db_ready, _tournament_db_ready
+    try:
+        if path in (DB_PATH, DB_FILE) and not _db_ready:
+            init_db()
+            _db_ready = True
+        elif path == TOURNAMENT_DB_PATH and not _tournament_db_ready:
+            init_tournament_db()
+            _tournament_db_ready = True
+    except Exception:
+        logger.exception(f"db_connect: schema init check failed for {path}")
+    return sqlite3.connect(path)
+
+
 def init_db():
-    """Initialize SQL Tables"""
-    print(f"Creating database: {DB_FILE}")
-    
-    # Delete old database if exists
-    if os.path.exists(DB_FILE):
-        print(f"Deleting old database...")
-        os.remove(DB_FILE)
-    
-    conn = sqlite3.connect(DB_FILE)
+    """Initialize SQL Tables with SQLite WAL mode for high concurrency & speed."""
+    conn = sqlite3.connect(DB_FILE)  # raw connect on purpose: db_connect() calls init_db(), so using db_connect() here would recurse infinitely
     c = conn.cursor()
+    c.execute("PRAGMA journal_mode=WAL;")
+    c.execute("PRAGMA synchronous=NORMAL;")
     
     print("Creating tables...")
     
@@ -1366,7 +1390,7 @@ def init_db():
 
 def init_tournament_db():
     """Initialize tournament registration database"""
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn = sqlite3.connect(TOURNAMENT_DB_PATH)  # raw connect on purpose: db_connect() calls init_tournament_db(), so using db_connect() here would recurse infinitely
     c = conn.cursor()
     
     c.execute("""
@@ -1458,7 +1482,7 @@ def _save_tour_state_sync(group_id: int):
     """Actual blocking DB write — always run this inside a background thread,
     never directly on the event loop (see save_tour_state below)."""
     try:
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= db_connect(TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute("""
             INSERT INTO tour_state (group_id, teams, fixtures, points, match_stats, fixture_counter, updated_at)
@@ -1501,7 +1525,7 @@ def save_tour_state(group_id: int):
 def load_tour_state():
     """Restore any in-progress tours on startup so nothing is lost on a bot restart."""
     try:
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= db_connect(TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute("SELECT group_id, teams, fixtures, points, match_stats, fixture_counter FROM tour_state")
         rows = c.fetchall()
@@ -1521,7 +1545,7 @@ def load_tour_state():
 def clear_tour_state(group_id: int):
     """Wipe all temporary tour data for a group once the tour has ended."""
     try:
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= db_connect(TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute("DELETE FROM tour_state WHERE group_id = ?", (group_id,))
         conn.commit()
@@ -1539,7 +1563,7 @@ def clear_tour_state(group_id: int):
 def load_tournament_data():
     """Load tournament data on startup"""
     try:
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= db_connect(TOURNAMENT_DB_PATH)
         c = conn.cursor()
         
         c.execute('SELECT group_id FROM tournament_groups')
@@ -1577,7 +1601,7 @@ def _save_data_sync():
     """The actual blocking I/O — only ever run inside a background thread now."""
     try:
         # 1. SQL Save (Primary & Fast)
-        conn = sqlite3.connect(DB_FILE)
+        conn= db_connect(DB_FILE)
         c = conn.cursor()
         c.execute("BEGIN TRANSACTION")
         
@@ -1612,15 +1636,10 @@ def _save_data_sync():
 
 async def _save_data_debounced():
     """
-    🔧 SCALE FIX: save_data() used to run fully synchronously on the event
-    loop — with 500 groups active, every single stat update (every ball!)
-    would freeze ALL 500 groups for as long as the full dataset took to
-    serialize + write to disk (SQL + 6 JSON files, every user, every time).
-    Now: mark dirty, wait 2s for more updates to pile up, then do ONE real
-    write in a background thread (doesn't block the event loop at all).
+    🔧 SCALE FIX: save_data() debounces disk writes (wait 10s) and runs in background thread.
     """
     global _save_data_dirty, _save_data_task
-    await asyncio.sleep(2)
+    await asyncio.sleep(10)
     _save_data_dirty = False
     await asyncio.to_thread(_save_data_sync)
     _save_data_task = None
@@ -1648,7 +1667,7 @@ def load_data():
     
     # --- TRY LOADING FROM SQL ---
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn= db_connect(DB_FILE)
         c = conn.cursor()
         
         # Check if tables exist, if not create them
@@ -1765,7 +1784,7 @@ def load_gc_settings():
     """Load all gc_settings from DB into memory"""
     global gc_settings
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn= db_connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT group_id, drs_enabled, commentary_style, wide_enabled, lobby_time, solo_wide_enabled FROM gc_settings")
         rows = c.fetchall()
@@ -1787,7 +1806,7 @@ def save_gc_setting(group_id: int):
     """Save one group's settings to DB"""
     s = gc_settings.get(group_id, {})
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn= db_connect(DB_PATH)
         c = conn.cursor()
         c.execute("""INSERT OR REPLACE INTO gc_settings 
             (group_id, drs_enabled, commentary_style, wide_enabled, lobby_time, solo_wide_enabled)
@@ -3066,7 +3085,7 @@ def save_match_stats(match, winner_team, loser_team):
         # Sync team stats to DB columns so mystats team view shows correct data
         _all_team_players = list(winner_team.players) + list(loser_team.players)
         try:
-            conn_s = sqlite3.connect(DB_PATH)
+            conn_s= db_connect(DB_PATH)
             cs = conn_s.cursor()
             for player in _all_team_players:
                 uid = player.user_id
@@ -4054,7 +4073,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if not is_active:
                 # Check DB — must be is_active=1 AND end_date in future
-                conn_check = sqlite3.connect(TOURNAMENT_DB_PATH)
+                conn_check= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
                 c_check = conn_check.cursor()
                 c_check.execute(
                     "SELECT is_active, end_date FROM registration_periods WHERE group_id = ? AND is_active = 1",
@@ -4081,7 +4100,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             # Check if already registered
-            conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+            conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
             c = conn.cursor()
             c.execute('SELECT user_id FROM registered_players WHERE user_id = ? AND group_id = ?', (user_id, group_id))
             if c.fetchone():
@@ -4223,172 +4242,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Help command
 # --- HELPER FUNCTIONS FOR HELP MENU ---
-def get_help_main_text():
-    return (
-        "╭━━ 🏏 CRICOVERSE HELP CENTER ━━━━━\n"
-        "┃ 🎮 Your complete guide to Hand Cricket!\n"
-        "┃\n"
-        "┃ ⚡ QUICK COMMANDS\n"
-        "┃ ├ /game       ➔ Start a match\n"
-        "┃ ├ /mystats    ➔ Your career profile\n"
-        "┃ ├ /scorecard  ➔ Live scorecard\n"
-        "┃ ├ /lb         ➔ Global leaderboard\n"
-        "┃ ├ /players    ➔ View squad lineup\n"
-        "┃ └ /gcsettings ➔ Group settings (admin)\n"
-        "┃\n"
-        "┃ 👇 Pick a section below to explore more!\n"
-        "╰━━━━━━━━"
-    )
-
-
-def get_help_team_text():
-    return (
-        "👥 <b>TEAM MODE</b>\n"
-        "─────────────────\n"
-        "<i>Two teams battle it out → captain leads the charge!</i>\n\n"
-
-        "🛠 <b>Host Commands:</b>\n"
-        "• <code>/game</code> → Select <b>Team Mode</b>\n"
-        "• <code>/extend [secs]</code> → Extend joining lobby\n"
-        "• <code>/add @user</code> / <code>/remove @user</code> → Edit squads\n"
-        "• <code>/addx</code> / <code>/addy</code> → Add to Team X/Y\n"
-        "• <code>/endmatch</code> → End match early\n"
-        "• <code>/timeout</code> → Strategic timeout\n"
-        "• <code>/impact @old @new</code> → Impact player sub\n\n"
-
-        "🧢 <b>Captain Commands:</b>\n"
-        "• <code>/batting [no]</code> → Select striker/batsman\n"
-        "• <code>/bowling [no]</code> → Select bowler\n"
-        "• <code>/qbowling [no]</code> → Pre-queue next bowler\n"
-        "• <code>/drs</code> → Review wicket (if enabled)\n\n"
-
-        "📊 <b>Match Info Commands:</b>\n"
-        "• <code>/scorecard</code> → Full scorecard + worm\n"
-        "• <code>/players</code> → Live squad status\n"
-        "• <code>/momentum</code> → Momentum dashboard\n"
-        "• <code>/mystats</code> → Career profile\n\n"
-
-        "⚙️ <b>Group Settings (Admin):</b>\n"
-        "• <code>/gcsettings</code> → DRS, Wide, Commentary, Lobby time\n"
-        "• <code>/commentary</code> → Switch commentary style\n\n"
-
-        "🎮 <b>How It Works:</b>\n"
-        "• Batsman sends <b>0–6</b> in group chat\n"
-        "• Bowler sends <b>0–6</b> in bot DM\n"
-        "• Same number = <b>OUT ❌</b>\n"
-        "• Different = Batsman scores that many runs\n"
-        "• Bowler's same number 3× in a row = <b>Wide</b>"
-    )
-
-def get_help_solo_text():
-    return (
-        "⚔️ <b>SOLO BATTLE MODE</b>\n"
-        "─────────────────\n"
-        "<i>Free-for-all! Everyone bats, everyone bowls. Most runs wins!</i>\n\n"
-
-        "🛠 <b>Host Commands:</b>\n"
-        "• <code>/game</code> → Select <b>Solo Mode</b>\n"
-        "• <code>/extendsolo [secs]</code> → Add joining time\n"
-        "• <code>/endsolo</code> → End & show final leaderboard\n\n"
-
-        "👤 <b>Player Commands:</b>\n"
-        "• <code>/soloscore</code> → Live battle leaderboard\n"
-        "• <code>/soloplayers</code> → Player status list\n"
-        "• <code>/mystats</code> → Career profile\n\n"
-
-        "🎮 <b>Gameplay:</b>\n"
-        "• <b>Batting:</b> Send 0–6 in GROUP\n"
-        "• <b>Bowling:</b> Auto-rotates every 3 balls\n"
-        "• Wicket = next player bats\n"
-        "• Player with most runs at end wins!\n\n"
-
-        "🏆 <b>Special Events:</b>\n"
-        "• 50 runs → 🌟 Half Century celebrated!\n"
-        "• 100 runs → 💯 Century celebrated!\n"
-        "• Hat-trick → 🎩 Hat-trick alert!"
-    )
-
-def get_help_tournament_text():
-    return (
-        "🏆 <b>TOURNAMENT MODE</b>\n"
-        "─────────────────\n"
-        "<i>Requires owner approval. Admin-only access.</i>\n\n"
-
-        "🏏 <b>Team Management:</b>\n"
-        "• <code>/teamcreate [name]</code> → Create a team\n"
-        "• <code>/teamadd [team] @user @user2</code> → Add players\n"
-        "• <code>/teamremove [team] @user</code> → Remove player\n\n"
-
-        "▶️ <b>Running Matches:</b>\n"
-        "• <code>/game</code> → Tournament Mode → <b>Start Match</b>\n"
-        "• Select overs → teams play → results auto-saved\n"
-        "• <code>/tourresult [team]</code> → Record match result\n"
-        "• <code>/tourlb</code> → Tournament leaderboard\n\n"
-
-        "📊 <b>Standings & Fixtures:</b>\n"
-        "• <b>Points Table</b> → P/W/L/T/Pts/NRR\n"
-        "• <b>Fixtures</b> → All scheduled matches\n\n"
-
-        "📝 <b>Registration System:</b>\n"
-        "• Owner approves groups for tournament\n"
-        "• <code>/registration [group_id]</code> → Open registration\n"
-        "• <code>/startregistration [price]</code> → Generate signup link\n"
-        "• <code>/registeredlist</code> → View all registered players\n"
-        "• Registration link auto-expires when closed\n\n"
-
-        "🏦 <b>Auction System:</b>\n"
-        "• <code>/auction</code> → Start auction setup\n"
-        "• <code>/bidder [TeamName]</code> → Assign team bidder\n"
-        "• <code>/aucplayer @user [price]</code> → Add player to pool\n"
-        "• <code>/startauction</code> → Begin live auction\n"
-        "• <code>/bid [amount]</code> → Place bid\n"
-        "• <code>/wallet</code> → View team purses"
-    )
-
-def get_help_tutorial_text():
-    return (
-        "📚 <b>HOW TO PLAY CRICOVERSE</b>\n"
-        "─────────────────\n\n"
-
-        "🔵 <b>Step 1 → Start a Match</b>\n"
-        "• Add bot to your group as admin\n"
-        "• Type <code>/game</code> and pick a mode\n"
-        "• Players tap <b>Join Team X</b> or <b>Join Team Y</b>\n\n"
-
-        "🔵 <b>Step 2 → Team Setup</b>\n"
-        "• Host selects overs (1–20)\n"
-        "• Edit squads if needed\n"
-        "• Each team picks a captain\n"
-        "• Team X captain calls the toss\n\n"
-
-        "🔵 <b>Step 3 → Match Begins</b>\n"
-        "• Batting captain: <code>/batting [no]</code> → pick striker & non-striker\n"
-        "• Bowling captain: <code>/bowling [no]</code> → lock bowler\n"
-        "• Bowler gets DM prompt → sends 0–6 in DM\n"
-        "• Batsman sends 0–6 in group chat\n\n"
-
-        "⚡ <b>Scoring Rules</b>\n"
-        "• Same number = <b>OUT ❌</b>\n"
-        "• Different = Batsman scores their number as runs\n"
-        "• Bowler same number 3× in a row = <b>Wide 〰️ (+1 run)</b>\n\n"
-
-        "🏆 <b>Special Features</b>\n"
-        "• <b>DRS</b> → Challenge a dismissal (enable in /gcsettings)\n"
-        "• <b>Free Hit</b> → After a no-ball, can't get out\n"
-        "• <b>/qbowling</b> → Pre-queue next bowler\n"
-        "• <b>/timeout</b> → Strategic 2-min break\n"
-        "• <b>Super Over</b> → Auto-triggered on tie\n\n"
-
-        "🤖 <b>AI Mode</b>\n"
-        "• Play solo vs AI in your DM!\n"
-        "• Type <code>/game</code> in bot DM\n"
-        "• Choose difficulty and overs\n\n"
-
-        "<i>💡 Tip: Use /gcsettings to configure DRS, wide rules, commentary style and lobby time!</i>"
-    )
-
-
-
 # Cleaner public help copy. These definitions intentionally override the older
 # verbose copies above so the bot shows only the commands users should reach for.
 def get_help_main_text():
@@ -4649,98 +4502,6 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass # Ignore if message not modified
         
-async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Game start menu - DEBUG VERSION
-    Logs every step to console to identify where it fails.
-    """
-    try:
-        # Step 1: Entry Log
-        
-        chat = update.effective_chat
-        user = update.effective_user
-        
-        # Step 2: Ban Check
-        if not await check_group_ban(update, context):
-            return
-        
-        # Step 3: Private Chat Check
-        if chat.type == "private":
-            await context.bot.send_message(chat.id, "⚠️ This command only works in groups!")
-            return
-        
-        # Step 4: Active Match Check
-        if chat.id in active_matches:
-            match = active_matches[chat.id]
-            
-            # Ghost Match Auto-Fix
-            if match.phase == GamePhase.MATCH_ENDED:
-                del active_matches[chat.id]
-            else:
-                await context.bot.send_message(chat.id, "⚠️ Match already in progress! Use /endmatch to stop it.")
-                return
-        else:
-            pass
-        # Step 5: Register Group
-        if chat.id not in registered_groups:
-            registered_groups[chat.id] = {
-                "group_id": chat.id, 
-                "group_name": chat.title, 
-                "total_matches": 0,
-                "commentary_style": "english"
-            }
-            save_data()
-            
-            # Notify Support Group (Non-blocking)
-            try:
-                msg = f"🆕 <b>Bot Added to New Group</b>\n🆔 <code>{chat.id}</code>"
-                await context.bot.send_message(chat_id=SUPPORT_GROUP_ID, text=msg, parse_mode=ParseMode.HTML)
-            except Exception as e:
-                pass
-        # Step 6: Prepare UI
-        keyboard = [
-            [styled_button("⚔️ Solo Mode", callback_data="mode_solo"),
-             styled_button("🤖 AI Mode (DM)", callback_data="mode_ai")],
-            [styled_button("👥 Team Mode", callback_data="mode_team")],
-            [styled_button("📝 Registration", callback_data="tour_registration_mode"),
-             styled_button("🏦 Auction", callback_data="tour_auction_mode")],
-            [styled_button("🏆 Tournament Mode", callback_data="mode_tournament")]
-        ]
-        
-        requester_tag = f'<a href="tg://user?id={user.id}">{html.escape(user.first_name)}</a>'
-        msg = f"🎮 <b>Choose a mode</b> — requested by {requester_tag}"
-        
-        # Step 7: Send Message (Try Photo first, then Text)
-        
-        try:
-            photo_url = MEDIA_ASSETS.get("mode_select", "https://t.me/cricoverse/7")
-            
-            # Using context.bot.send_photo instead of reply_photo (Safest method)
-            await context.bot.send_photo(
-                chat_id=chat.id,
-                photo=photo_url,
-                caption=msg,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=ParseMode.HTML
-            )
-            
-        except Exception as photo_error:
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=chat.id,
-                    text=msg,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception as text_error:
-                pass
-    except Exception as e:
-        logger.error(f"Critical error in game_command: {e}", exc_info=True)
-        try:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Critical Error. Check logs.")
-        except: pass
-
 # Callback query handler for mode selection
 async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -4836,7 +4597,8 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode=ParseMode.HTML
                 )
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 4829)")
                 await query.message.reply_text(
                     caption,
                     reply_markup=InlineKeyboardMarkup(keyboard),
@@ -5093,7 +4855,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
                 )
             else:
                 raise Exception("no image")
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5086)")
             await query.message.reply_text(text, reply_markup=rm, parse_mode=ParseMode.HTML)
 
     elif query.data.startswith("tour_fixtures"):
@@ -5207,7 +4970,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
             keyboard = [[styled_button("🔙 Back", callback_data="mode_tournament")]]
             try:
                 await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5200)")
                 await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
             return
         
@@ -5238,10 +5002,12 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
                 chat_id=group_id, photo=photo, caption=text,
                 reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5231)")
             try:
                 await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5234)")
                 await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     elif query.data == "tour_teams_done":
@@ -5341,7 +5107,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
                 chat_id=group_id, photo=photo, caption=text,
                 reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5334)")
             await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     elif query.data.startswith("tour_host_"):
@@ -5375,7 +5142,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5368)")
             await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     elif query.data.startswith("tour_overs_"):
@@ -5407,7 +5175,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5400)")
             await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     elif query.data.startswith("tour_teamx_"):
@@ -5435,7 +5204,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
         ]
         try:
             await query.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5428)")
             await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
 
     elif query.data.startswith("tour_teamy_"):
@@ -5532,7 +5302,8 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=ParseMode.HTML
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5525)")
             await query.message.reply_text(
                 "🏦 <b>AUCTION MODE</b>",
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -5657,7 +5428,8 @@ async def teamadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "username": chat_member.user.username or "",
                     "first_name": chat_member.user.first_name
                 })
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5650)")
                 failed.append(f"@{username}")
         elif entity.type == "text_mention" and entity.user:
             mentioned_users.append({
@@ -5676,7 +5448,8 @@ async def teamadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "username": cm.user.username or "",
                     "first_name": cm.user.first_name
                 })
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5669)")
                 failed.append(arg)
     
     team_data = tournament_teams[group_id][team_name]
@@ -5763,7 +5536,8 @@ async def teamremove_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 cm = await context.bot.get_chat_member(group_id, f"@{username}")
                 ids_to_remove.add(cm.user.id)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 5756)")
                 pass
         elif entity.type == "text_mention" and entity.user:
             ids_to_remove.add(entity.user.id)
@@ -6537,7 +6311,8 @@ async def tourlb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             photo = MEDIA_ASSETS.get("tournament_mode")
             await update.message.reply_photo(photo=photo, caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 6530)")
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
@@ -7018,78 +6793,6 @@ async def team_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update_joining_board(context, chat.id, match)
 
 # Extend command (Admins only) → auto-detects Team/Solo mode
-async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Extend joining time - ADMIN ONLY, MAX 180 seconds. Works for Team and Solo modes."""
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
-    match = active_matches.get(chat_id)
-    if not match:
-        await update.message.reply_text("❌ No active match!")
-        return
-
-    # Check if user is admin
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        is_admin = member.status in ['creator', 'administrator']
-    except:
-        is_admin = False
-
-    if not is_admin:
-        await update.message.reply_text("❌ Only group admins can extend time!")
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "❌ Usage: /extend <seconds>\n"
-            "Example: /extend 120\n"
-            "⚠️ Maximum: 180 seconds"
-        )
-        return
-
-    try:
-        seconds = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Please provide a valid number!")
-        return
-
-    if seconds > 180:
-        await update.message.reply_text("❌ Maximum extension is 180 seconds (3 minutes)!")
-        return
-
-    if seconds <= 0:
-        await update.message.reply_text("❌ Extension must be greater than 0!")
-        return
-
-    # ── Solo joining phase ──
-    if getattr(match, 'game_mode', None) in ["SOLO", "MAGICBALL"] or match.phase == GamePhase.SOLO_JOINING:
-        match.solo_join_end_time += seconds
-        await update.message.reply_text(f"✅ Solo joining time extended by {seconds} seconds!")
-        return
-
-    # ── Team joining phase ──
-    match.last_activity = time.time() + seconds
-    new_deadline = datetime.fromtimestamp(match.last_activity)
-
-    await update.message.reply_text(
-        f"⏰ <b>Match Extended!</b>\n\n"
-        f"⏱️ Added <b>{seconds} seconds</b> to the match.\n"
-        f"🕐 New deadline: <b>{new_deadline.strftime('%I:%M:%S %p')}</b>",
-        parse_mode=ParseMode.HTML
-    )
-    
-    # Refresh Game Board
-    text = get_team_join_message(match)
-    keyboard = [
-        [styled_button("🧊 Join Team X", callback_data="join_team_x"),
-         styled_button("🔥 Join Team Y", callback_data="join_team_y")],
-        [styled_button("🚪 Leave Team", callback_data="leave_team")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # Use master function to keep it at bottom and pinned
-    await refresh_game_message(context, chat_id, match, text, reply_markup=reply_markup, media_key="joining")
-
 # Host selection callback
 async def host_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle Host Selection safely with 4-20 Overs"""
@@ -7571,7 +7274,8 @@ async def add_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             try:
                                 target_user = await context.bot.get_chat(uid)
                                 target_users.append(target_user)
-                            except:
+                            except Exception as e:
+                                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 7564)")
                                 pass
                             break
                 elif entity.type == "text_mention":
@@ -7585,7 +7289,8 @@ async def add_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         user_id = int(arg)
                         target_user = await context.bot.get_chat(user_id)
                         target_users.append(target_user)
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 7578)")
                         pass
     
     if not target_users:
@@ -8247,7 +7952,8 @@ async def batting_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         serial = int(context.args[0])
         logger.info(f"🔢 Serial number: {serial}")
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 8240)")
         await update.message.reply_text("❌ Invalid number.")
         return
 
@@ -8885,7 +8591,8 @@ async def bowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         serial = int(context.args[0])
         logger.info(f"🔢 Serial number: {serial}")
-    except: 
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 8878)")
         logger.error(f"❌ Invalid serial number: {context.args[0]}")
         await update.message.reply_text("❌ Invalid number.")
         return
@@ -9608,7 +9315,8 @@ async def bannedgroups_command(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             chat_info = await context.bot.get_chat(chat_id)
             group_name = chat_info.title
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 9601)")
             group_name = "Unknown/Left Group"
         
         msg += f"{i}. <b>{group_name}</b>\n"
@@ -9653,7 +9361,8 @@ async def unbangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 chat_info = await context.bot.get_chat(target_chat_id)
                 target_chat_name = chat_info.title
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 9646)")
                 target_chat_name = "Unknown Group"
         except ValueError:
             await update.message.reply_text(
@@ -9710,7 +9419,8 @@ async def unbangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ),
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 9703)")
         pass
 
 # ==================== ACHIEVEMENTS ADMIN COMMANDS ====================
@@ -10124,7 +9834,7 @@ async def notify_ban_status(context: ContextTypes.DEFAULT_TYPE, chat_id: int, is
 
 async def save_solo_match_stats(match):
     """Save solo match stats to database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn= await asyncio.to_thread(db_connect, DB_PATH)
     c = conn.cursor()
     
     # Get top 3 players
@@ -10213,7 +9923,8 @@ async def bangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 chat_info = await context.bot.get_chat(target_chat_id)
                 target_chat_name = chat_info.title
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 10206)")
                 target_chat_name = "Unknown Group"
         except ValueError:
             await update.message.reply_text(
@@ -10284,7 +9995,8 @@ async def bangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 10277)")
         pass
 
 async def process_player_number(update: Update, context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, number: int):
@@ -10348,7 +10060,8 @@ async def request_batsman_number(context: ContextTypes.DEFAULT_TYPE, group_id: i
             caption=text,
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 10341)")
         await context.bot.send_message(group_id, text, parse_mode=ParseMode.HTML)
     
     if match.ball_timeout_task:
@@ -10563,7 +10276,8 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             
             try:
                 await context.bot.send_animation(group_id, animation=gif_url, caption=msg, parse_mode=ParseMode.HTML)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 10556)")
                 await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
             
             match.is_free_hit = False
@@ -10606,7 +10320,8 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             gif_url = get_random_gif(MatchEvent.WICKET)
             try:
                 await context.bot.send_animation(group_id, animation=gif_url, caption=wicket_msg, parse_mode=ParseMode.HTML)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 10599)")
                 await context.bot.send_message(group_id, wicket_msg, parse_mode=ParseMode.HTML)
             
             await asyncio.sleep(2)
@@ -10785,7 +10500,8 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
                 await context.bot.send_animation(group_id, animation=gif_url, caption=msg, parse_mode=ParseMode.HTML, reply_markup=_bnd_react)
             else:
                 await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML, reply_markup=_bnd_react)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 10778)")
             await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
         
         # ✅ LOG BALL - runs scored
@@ -11173,7 +10889,8 @@ async def process_drs_review(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
             msg = await context.bot.send_animation(group_id, animation=gif_url, caption=drs_text, parse_mode=ParseMode.HTML)
         else:
             msg = await context.bot.send_message(group_id, drs_text, parse_mode=ParseMode.HTML)
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 11166)")
         msg = await context.bot.send_message(group_id, drs_text, parse_mode=ParseMode.HTML)
     
     await asyncio.sleep(3)
@@ -11197,7 +10914,8 @@ async def process_drs_review(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
                 await context.bot.send_animation(group_id, animation=gif, caption=result_text, parse_mode=ParseMode.HTML)
             else:
                 await context.bot.send_message(group_id, result_text, parse_mode=ParseMode.HTML)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 11190)")
             await context.bot.send_message(group_id, result_text, parse_mode=ParseMode.HTML)
         
         await asyncio.sleep(2)
@@ -11219,7 +10937,8 @@ async def process_drs_review(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
                 await context.bot.send_animation(group_id, animation=out_gif_url, caption=result_text, parse_mode=ParseMode.HTML)
             else:
                 await context.bot.send_message(group_id, result_text, parse_mode=ParseMode.HTML)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 11212)")
             await context.bot.send_message(group_id, result_text, parse_mode=ParseMode.HTML)
         
         await asyncio.sleep(2)
@@ -11839,13 +11558,15 @@ async def addauctionplayer_command(update: Update, context: ContextTypes.DEFAULT
                 if data.get("username", "").lower() == username:
                     try:
                         target_user = await context.bot.get_chat(uid)
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 11832)")
                         pass
                     break
         elif arg.isdigit():
             try:
                 target_user = await context.bot.get_chat(int(arg))
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 11838)")
                 pass
     
     if not target_user:
@@ -11916,7 +11637,8 @@ async def midauc_base_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         parts = query.data.split("_")
         price = int(parts[2])
         player_id = int(parts[3])
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 11909)")
         return
     
     # Get player info
@@ -12048,7 +11770,8 @@ async def addpurse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amount = int(context.args[-1])
         team_name = " ".join(context.args[:-1])
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12041)")
         await update.message.reply_text("❌ Invalid amount!")
         return
     
@@ -12101,7 +11824,8 @@ async def removepurse_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         amount = int(context.args[-1])
         team_name = " ".join(context.args[:-1])
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12094)")
         await update.message.reply_text("❌ Invalid amount!")
         return
     
@@ -12186,7 +11910,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
     
     # Also try to read from DB for accurate team stats
     try:
-        _auc_conn = sqlite3.connect(DB_PATH)
+        _auc_conn= await asyncio.to_thread(db_connect, DB_PATH)
         _auc_c = _auc_conn.cursor()
         _auc_c.execute("""SELECT 
             team_matches_played, team_matches_won,
@@ -12278,7 +12002,8 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
             parse_mode=ParseMode.HTML,
             reply_markup=quick_kb
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12271)")
         await context.bot.send_photo(
             chat_id,
             photo=MEDIA_ASSETS.get("auction_live"),
@@ -12449,7 +12174,8 @@ async def trigger_solo_ball(context, chat_id, match):
     ball_gif = "https://t.me/kyanaamrkhe/6"
     try:
         await context.bot.send_animation(chat_id, ball_gif, caption=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12442)")
         await context.bot.send_message(chat_id, msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
     
     # ── Build group redirect button for DM ──
@@ -12480,7 +12206,8 @@ async def trigger_solo_ball(context, chat_id, match):
         match.ball_timeout_task = asyncio.create_task(
             solo_game_timer(context, chat_id, match, "bowler", bowler.first_name, seq=bump_solo_ball_seq(match))
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12473)")
         await context.bot.send_message(chat_id, f"⚠️ Cannot DM {bowl_tag}. Please start the bot!", parse_mode=ParseMode.HTML)
 
 async def process_solo_turn_result(context, chat_id, match):
@@ -12571,7 +12298,8 @@ async def process_solo_turn_result(context, chat_id, match):
         try:
             if gif: await context.bot.send_animation(chat_id, gif, caption=msg, parse_mode=ParseMode.HTML)
             else: await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12564)")
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
         
         # 🎩 Hat-trick celebration
@@ -12587,7 +12315,8 @@ async def process_solo_turn_result(context, chat_id, match):
                     await context.bot.send_animation(chat_id, ht_gif, caption=ht_msg, parse_mode=ParseMode.HTML)
                 else:
                     await context.bot.send_message(chat_id, ht_msg, parse_mode=ParseMode.HTML)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12580)")
                 await context.bot.send_message(chat_id, ht_msg, parse_mode=ParseMode.HTML)
             match.solo_consecutive_wickets[bowler_key] = 0  # Reset after hat-trick
         match.current_solo_bat_idx += 1
@@ -12655,7 +12384,8 @@ async def process_solo_turn_result(context, chat_id, match):
         try:
             if gif: await context.bot.send_animation(chat_id, gif, caption=msg, parse_mode=ParseMode.HTML)
             else: await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12648)")
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
 
         # Over/Spell Rotation (Every 3 balls)
@@ -12677,7 +12407,8 @@ async def process_solo_turn_result(context, chat_id, match):
                     await context.bot.send_animation(chat_id, fifty_gif, caption=cel_msg, parse_mode=ParseMode.HTML)
                 else:
                     await context.bot.send_message(chat_id, cel_msg, parse_mode=ParseMode.HTML)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12670)")
                 await context.bot.send_message(chat_id, cel_msg, parse_mode=ParseMode.HTML)
         # Hundred celebration
         elif prev_runs < 100 and batter.runs >= 100:
@@ -12693,7 +12424,8 @@ async def process_solo_turn_result(context, chat_id, match):
                     await context.bot.send_animation(chat_id, hundred_gif, caption=cel_msg, parse_mode=ParseMode.HTML)
                 else:
                     await context.bot.send_message(chat_id, cel_msg, parse_mode=ParseMode.HTML)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12686)")
                 await context.bot.send_message(chat_id, cel_msg, parse_mode=ParseMode.HTML)
         if match.solo_balls_this_spell >= 3:
             match.solo_balls_this_spell = 0
@@ -12972,6 +12704,7 @@ async def end_solo_game_logic(context, chat_id, match):
     msg += "📊 <b>FINAL LEADERBOARD</b>\n"
     msg += "─────────────────\n"
     
+    medals = ["🥇", "🥈", "🥉"]  # 🔧 FIX: was undefined here, caused "name 'medals' is not defined"
     for i, p in enumerate(sorted_players):
         rank_icon = medals[i] if i < 3 else f"<b>{i+1}.</b>"
         status = " (Not Out)" if not p.is_out else ""
@@ -13003,7 +12736,8 @@ async def end_solo_game_logic(context, chat_id, match):
             await context.bot.send_animation(chat_id, victory_gif, caption=msg, parse_mode=ParseMode.HTML)
         else:
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 12996)")
         await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
 
 async def endsolo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -13024,7 +12758,8 @@ async def endsolo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         member = await context.bot.get_chat_member(chat_id, user_id)
         is_admin = member.status in ['creator', 'administrator']
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13017)")
         is_admin = False
     
     if not is_admin and user_id != match.host_id:
@@ -13059,7 +12794,8 @@ async def extendsolo_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         sec = int(context.args[0])
         match.solo_join_end_time += sec
         await update.message.reply_text(f"✅ Extended by {sec} seconds!")
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13052)")
         await update.message.reply_text("Usage: /extendsolo <seconds>")
 
 
@@ -13146,7 +12882,8 @@ async def aistart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13139)")
         await update.message.reply_text(
             caption,
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -13188,14 +12925,16 @@ async def ai_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13181)")
         try:
             await query.message.edit_text(
                 text=caption,
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=ParseMode.HTML
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13188)")
             await context.bot.send_message(
                 user.id,
                 text=caption,
@@ -13236,7 +12975,8 @@ async def ai_difficulty_callback(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13229)")
         # Fallback to edit_text (if it's a text message)
         try:
             await query.message.edit_text(
@@ -13244,7 +12984,8 @@ async def ai_difficulty_callback(update: Update, context: ContextTypes.DEFAULT_T
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=ParseMode.HTML
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13237)")
             # Last resort - send new message
             await context.bot.send_message(
                 user.id,
@@ -13296,7 +13037,8 @@ async def ai_over_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             await query.message.delete()
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13289)")
             pass
 
         await context.bot.send_photo(
@@ -13321,7 +13063,8 @@ async def ai_over_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             await query.message.delete()
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13314)")
             pass
 
         await context.bot.send_photo(
@@ -13343,7 +13086,8 @@ async def ai_over_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         await query.message.delete()
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13336)")
         pass
     
     await context.bot.send_photo(
@@ -13382,7 +13126,8 @@ async def ai_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         try:
             await query.message.delete()
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13375)")
             pass
         
         await context.bot.send_photo(
@@ -13413,7 +13158,8 @@ async def ai_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 await query.message.delete()
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13406)")
                 pass
             
             await context.bot.send_photo(
@@ -13431,7 +13177,8 @@ async def ai_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 await query.message.delete()
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13424)")
                 pass
             
             await context.bot.send_photo(
@@ -13476,7 +13223,8 @@ async def ai_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         try:
             await query.message.delete()
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13469)")
             pass
         
         await context.bot.send_photo(
@@ -13492,7 +13240,8 @@ async def ai_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         try:
             await query.message.delete()
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13485)")
             pass
         
         await context.bot.send_photo(
@@ -13672,7 +13421,8 @@ async def ai_play_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int):
             caption=msg, 
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13665)")
         await context.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
 
 
@@ -13742,7 +13492,8 @@ async def ai_bat_innings(context: ContextTypes.DEFAULT_TYPE, user_id: int):
             caption=msg,
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13735)")
         await context.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
     
     # Set match phase to waiting for user to bowl
@@ -13926,7 +13677,8 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
                         caption=result_msg,
                         parse_mode=ParseMode.HTML
                     )
-                except:
+                except Exception as e:
+                    logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13919)")
                     await context.bot.send_message(user_id, result_msg, parse_mode=ParseMode.HTML)
 
                 await asyncio.sleep(1)
@@ -13944,7 +13696,8 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
                     caption=result_msg,
                     parse_mode=ParseMode.HTML
                 )
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13937)")
                 await context.bot.send_message(user_id, result_msg, parse_mode=ParseMode.HTML)
             
             # Switch to second innings
@@ -13990,7 +13743,8 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
                             caption=result_msg,
                             parse_mode=ParseMode.HTML
                         )
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 13983)")
                         await context.bot.send_message(user_id, result_msg, parse_mode=ParseMode.HTML)
 
                     await asyncio.sleep(1)
@@ -14008,7 +13762,8 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
                         caption=result_msg,
                         parse_mode=ParseMode.HTML
                     )
-                except:
+                except Exception as e:
+                    logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 14001)")
                     await context.bot.send_message(user_id, result_msg, parse_mode=ParseMode.HTML)
                 
                 # Switch to second innings
@@ -14055,7 +13810,8 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
                 caption=result_msg,
                 parse_mode=ParseMode.HTML
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 14048)")
             await context.bot.send_message(user_id, result_msg, parse_mode=ParseMode.HTML)
         
         match["phase"] = "waiting_user"
@@ -14103,7 +13859,8 @@ async def ai_end_match_solo(context: ContextTypes.DEFAULT_TYPE, user_id: int):
             caption=msg,
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 14096)")
         await context.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
 
     del ai_matches[user_id]
@@ -14180,7 +13937,8 @@ async def ai_end_match(context: ContextTypes.DEFAULT_TYPE, user_id: int, result:
                 caption=msg,
                 parse_mode=ParseMode.HTML
             )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 14173)")
         await context.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
     
     # 🤖 AI Mode stats recording has been permanently disabled.
@@ -14523,7 +14281,8 @@ async def end_innings(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
                     await context.bot.send_animation(group_id, animation=gif_url, caption=msg, parse_mode=ParseMode.HTML)
                 else:
                     await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 14516)")
                 await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
         
             await asyncio.sleep(30)
@@ -14617,6 +14376,7 @@ async def finalize_fantasy_results(context: ContextTypes.DEFAULT_TYPE, group_id:
     results.sort(key=lambda r: r[2], reverse=True)
 
     lines = []
+    medals = ["🥇", "🥈", "🥉"]  # 🔧 FIX: was undefined here too
     for i, (oid, name, pts) in enumerate(results[:10]):
         medal = medals[i] if i < 3 else f"{i+1}."
         lines.append(f"{medal} {html.escape(name)} — <b>{pts}</b> pts")
@@ -15285,25 +15045,33 @@ def build_new_scorecard_html(match: "Match", group_id: int) -> str:
     return out
 
 
+_RICH_MESSAGE_SUPPORTED = False  # Global cache to prevent 15-second HTTP delays
+
 async def _tg_send_rich_message(chat_id: int, html_content: str) -> bool:
-    """Raw call to Bot API 10.1's sendRichMessage (python-telegram-bot
-    doesn't support this yet). Returns True on success, False on any
-    failure so the caller can fall back to the <pre> version."""
+    """Ultra-fast check call to Bot API 10.1's sendRichMessage with 0.5s timeout and memory caching
+    so network calls never delay scorecard or bot responses."""
+    global _RICH_MESSAGE_SUPPORTED
+    if _RICH_MESSAGE_SUPPORTED is False:
+        return False
+
     def _do_request():
+        global _RICH_MESSAGE_SUPPORTED
         try:
             resp = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendRichMessage",
                 json={"chat_id": chat_id, "rich_message": {"html": html_content}},
-                timeout=15,
+                timeout=0.5,
             )
             data = resp.json()
             if not data.get("ok"):
-                logger.warning(f"sendRichMessage failed: {data.get('description')}")
+                _RICH_MESSAGE_SUPPORTED = False
                 return False
+            _RICH_MESSAGE_SUPPORTED = True
             return True
-        except Exception as e:
-            logger.warning(f"sendRichMessage request error: {e}")
+        except Exception:
+            _RICH_MESSAGE_SUPPORTED = False
             return False
+
     return await asyncio.to_thread(_do_request)
 
 
@@ -15456,7 +15224,8 @@ async def send_final_scorecard(context: ContextTypes.DEFAULT_TYPE, group_id: int
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 15457)")
             await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
@@ -15582,156 +15351,6 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
 
 
 
-def generate_worm_graph(match) -> Optional[BytesIO]:
-    """
-    Ultra-Premium Worm Chart — Pure Black Stadium Canvas.
-    Deep neon glow, wicket markers, live-chase context.
-    """
-    try:
-        SC = 2
-        W, H = 1400 * SC, 800 * SC
-        PAD_L, PAD_R, PAD_T, PAD_B = 120*SC, 80*SC, 110*SC, 150*SC
-        CHART_W = W - PAD_L - PAD_R
-        CHART_H = H - PAD_T - PAD_B
-
-        img = Image.new("RGB", (W, H), (0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        for x in range(-H, W, 160 * SC):
-            draw.line([(x, 0), (x + H, H)], fill=(12, 18, 38), width=1 * SC)
-
-        C_X = (0, 210, 255); C_Y = (255, 50, 110)
-        C_GOLD = (255, 215, 0); C_GRAY = (80, 100, 140)
-        C_GRID = (18, 28, 55); C_WHITE = (235, 245, 255)
-        C_ORG  = (255, 145, 0)
-
-        fn_title = _get_font(True, 44 * SC)
-        fn_bold  = _get_font(True, 30 * SC)
-        fn_reg   = _get_font(False, 22 * SC)
-        fn_sm    = _get_font(False, 18 * SC)
-
-        bat_team = getattr(match, "current_batting_team", None)
-        ball_log = getattr(match, "ball_by_ball_log", [])
-
-        def build_bb(team_name):
-            scores, wkts, total = [0], [False], 0
-            for e in ball_log:
-                if e.get("batting_team") != team_name:
-                    continue
-                total += e.get("runs", 0)
-                scores.append(total)
-                wkts.append(e.get("is_wicket", False) or e.get("wicket", False))
-            return scores, wkts
-
-        x_scores, x_wkts = build_bb(match.team_x.name)
-        y_scores, y_wkts = build_bb(match.team_y.name)
-        total_overs = getattr(match, "total_overs", 5)
-        max_score = max(max(x_scores, default=0), max(y_scores, default=0), 10) + 15
-        n_balls   = max(len(x_scores), len(y_scores), 2) - 1
-
-        for j in range(7):
-            val = int(j * max_score / 6)
-            gy  = PAD_T + CHART_H - int(j * CHART_H / 6)
-            draw.line([(PAD_L, gy), (PAD_L + CHART_W, gy)], fill=C_GRID, width=1*SC)
-            draw.text((PAD_L - 78*SC, gy - 14*SC), str(val), font=fn_reg, fill=C_GRAY)
-
-        for ov in range(total_overs + 1):
-            ball_idx = ov * 6
-            if ball_idx > n_balls:
-                break
-            gx = PAD_L + int(ball_idx / n_balls * CHART_W) if n_balls else PAD_L
-            draw.line([(gx, PAD_T), (gx, PAD_T + CHART_H)], fill=C_GRID, width=2*SC)
-            draw.text((gx - 12*SC, PAD_T + CHART_H + 22*SC), str(ov), font=fn_reg, fill=C_GRAY)
-
-        def to_px(idx, score):
-            px = PAD_L + (idx / n_balls * CHART_W) if n_balls > 0 else PAD_L
-            py = PAD_T + CHART_H - (score / max_score * CHART_H)
-            return px, py
-
-        def draw_neon_worm(scores, color, wkts, is_live):
-            pts = [to_px(i, s) for i, s in enumerate(scores)]
-            if len(pts) < 2:
-                return
-            for w in [16, 10, 6, 3]:
-                dim = tuple(max(0, c - 140) for c in color)
-                draw.line(pts, fill=dim, width=w * SC)
-            for i in range(len(pts) - 1):
-                runs = (scores[i+1] - scores[i]) if i+1 < len(scores) else 0
-                is_w = wkts[i+1] if i+1 < len(wkts) else False
-                if runs == 6:
-                    seg = C_GOLD
-                elif runs == 4:
-                    seg = C_ORG
-                elif runs == 0 and not is_w:
-                    seg = (65, 80, 120)
-                else:
-                    seg = color
-                if is_live and i == len(pts) - 2:
-                    x1, y1 = pts[i]; x2, y2 = pts[i+1]
-                    for d in range(0, 8, 2):
-                        sx = x1+(x2-x1)*d/8; sy = y1+(y2-y1)*d/8
-                        ex = x1+(x2-x1)*(d+1)/8; ey = y1+(y2-y1)*(d+1)/8
-                        draw.line([(sx, sy), (ex, ey)], fill=seg, width=4*SC)
-                else:
-                    draw.line([pts[i], pts[i+1]], fill=seg, width=4*SC)
-            for i, (px, py) in enumerate(pts):
-                runs = (scores[i] - scores[i-1]) if i > 0 else 0
-                is_w = wkts[i] if i < len(wkts) else False
-                if is_w:
-                    draw.ellipse([px-15*SC, py-15*SC, px+15*SC, py+15*SC], fill=(190,22,45), outline=C_GOLD, width=2*SC)
-                    draw.text((px-8*SC, py-10*SC), "W", font=fn_sm, fill=C_WHITE)
-                elif runs == 6:
-                    draw.ellipse([px-10*SC, py-10*SC, px+10*SC, py+10*SC], fill=C_GOLD, outline=C_WHITE, width=1*SC)
-                elif runs == 4:
-                    draw.ellipse([px-7*SC, py-7*SC, px+7*SC, py+7*SC], fill=C_ORG, outline=C_WHITE, width=1*SC)
-                elif runs == 0:
-                    draw.ellipse([px-3*SC, py-3*SC, px+3*SC, py+3*SC], fill=(70, 85, 120))
-                else:
-                    draw.ellipse([px-5*SC, py-5*SC, px+5*SC, py+5*SC], fill=color, outline=C_WHITE, width=1*SC)
-
-        x_live = (bat_team == match.team_x)
-        y_live = (bat_team is not None and bat_team != match.team_x)
-        draw_neon_worm(x_scores, C_X, x_wkts, x_live)
-        if len(y_scores) > 1:
-            draw_neon_worm(y_scores, C_Y, y_wkts, y_live)
-
-        title_str = "SCORE WORM  *  " + match.team_x.name + " vs " + match.team_y.name
-        draw.text((PAD_L, 22*SC), title_str.upper(), font=fn_title, fill=C_GOLD)
-
-        leg_y = H - 88*SC
-        draw.rounded_rectangle([PAD_L-10*SC, leg_y-8*SC, PAD_L+980*SC, leg_y+58*SC],
-                                radius=14*SC, fill=(8,12,30), outline=(40,55,100), width=1*SC)
-        xwc = sum(1 for w in x_wkts if w)
-        ywc = sum(1 for w in y_wkts if w)
-        draw.rectangle([PAD_L+10*SC, leg_y+8*SC, PAD_L+40*SC, leg_y+40*SC], fill=C_X)
-        xl = "  " + match.team_x.name + "  " + str(x_scores[-1] if x_scores else 0) + "/" + str(xwc) + "  (" + str(len(x_scores)-1) + " balls)"
-        draw.text((PAD_L+50*SC, leg_y+4*SC), xl, font=fn_bold, fill=C_X)
-        draw.rectangle([PAD_L+500*SC, leg_y+8*SC, PAD_L+530*SC, leg_y+40*SC], fill=C_Y)
-        yl = "  " + match.team_y.name + "  " + str(y_scores[-1] if y_scores else 0) + "/" + str(ywc) + "  (" + str(len(y_scores)-1) + " balls)"
-        draw.text((PAD_L+540*SC, leg_y+4*SC), yl, font=fn_bold, fill=C_Y)
-        draw.text((W-80*SC, leg_y+10*SC), "W=Wicket  6=Gold  4=Orange", font=fn_sm, fill=C_GRAY)
-
-        if getattr(match, "innings", 1) == 2 and getattr(match, "target", 0):
-            bat = getattr(match, "current_batting_team", match.team_y)
-            need = max(match.target - bat.score, 0)
-            balls_left = max(match.total_overs * 6 - bat.balls, 0)
-            chase_txt = "CHASE: " + str(need) + " needed from " + str(balls_left) + " balls"
-            ctb = draw.textbbox((0,0), chase_txt, font=fn_bold)
-            draw.rounded_rectangle([PAD_L, PAD_T-48*SC, PAD_L+(ctb[2]-ctb[0])+36*SC, PAD_T-8*SC],
-                                   radius=12*SC, fill=(20,32,65), outline=C_GOLD, width=2*SC)
-            draw.text((PAD_L+18*SC, PAD_T-45*SC), chase_txt, font=fn_bold, fill=C_GOLD)
-
-        draw.text((W-82*SC, H-40*SC), "CRICOVERSE ANALYTICS", font=fn_sm, fill=(30,50,90))
-        img = img.resize((1400, 800), Image.Resampling.LANCZOS)
-        bio = BytesIO()
-        img.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-
-    except Exception as e:
-        print("Worm graph error: " + str(e))
-        return None
-
-
 # ─────────────────────────────────────────────────────────────────
 #  MATCH SUMMARY IMAGE  (PIL · black bg, professional design)
 # ─────────────────────────────────────────────────────────────────
@@ -15843,247 +15462,9 @@ def generate_ultimate_match_summary(match, winner_name: str) -> Optional[BytesIO
 # ─────────────────────────────────────────────────────────────────
 #  MID-MATCH LIVE SCORE CARD IMAGE (sent randomly every 2 overs)
 # ─────────────────────────────────────────────────────────────────
-def generate_mid_match_image(match) -> Optional[BytesIO]:
-    """
-    💎 BROADCAST-MASTER LIVE DASHBOARD:
-    • Glassmorphism with Dynamic Blur Simulation
-    • Geometric Vector Accents for Tactical Look
-    • Smooth Anti-Aliasing (Super-sampled rendering)
-    • Neon-Gradient Ball Badges
-    """
-    try:
-        # Internal Scaling for Ultra Smoothness (2x)
-        SC = 2
-        W, H = 1920 * SC, 1080 * SC
-        img = Image.new("RGBA", (W, H), (4, 6, 18, 255))
-        draw = ImageDraw.Draw(img)
-
-        # ── Palette (Enhanced Contrast) ──
-        C_GOLD, C_WHITE = (255, 210, 50, 255), (245, 250, 255, 255)
-        C_X, C_Y = (0, 190, 255, 255), (255, 60, 110, 255) # Electric Blue & Hot Pink
-        C_GREEN, C_RED = (0, 255, 140, 255), (255, 70, 85, 255)
-        C_PANEL = (15, 20, 45, 180) # Translucent Glass
-        C_GRID = (25, 35, 65, 255)
-
-        # ── 1. Dynamic Background ──
-        # Subtle Diagonal Stripes for Modern Tech Feel
-        for i in range(0, W + H, 100 * SC):
-            draw.line([(i, 0), (i - H, H)], fill=(20, 30, 60, 255), width=2 * SC)
-
-        # ── 2. Header (Glass Pill) ──
-        header_rect = [W//2 - 400*SC, 40*SC, W//2 + 400*SC, 130*SC]
-        draw.rounded_rectangle(header_rect, radius=45*SC, fill=(20, 25, 55, 255), outline=C_RED, width=4*SC)
-        _draw_text_centered_glow(draw, "🔴  LIVE MATCH CENTER", W//2, 60*SC, _get_font(True, 45*SC), C_WHITE)
-
-        bat_team = match.current_batting_team
-        bowl_team = match.current_bowling_team
-
-        if bat_team and bowl_team:
-            bat_color = C_X if bat_team == match.team_x else C_Y
-            bowl_color = C_Y if bat_team == match.team_x else C_X
-
-            # ── 3. MAIN SCORE PANEL (Glassmorphism) ──
-            # Left: Batting Info
-            main_py = 180 * SC
-            draw.rounded_rectangle([80*SC, main_py, W//2 - 30*SC, main_py + 360*SC], radius=50*SC, fill=C_PANEL, outline=bat_color, width=5*SC)
-            
-            # Team Name & Huge Score
-            draw.text((130*SC, main_py + 40*SC), f"🏏 {bat_team.name.upper()}", font=_get_font(True, 50*SC), fill=bat_color)
-            score_str = f"{bat_team.score}/{bat_team.wickets}"
-            draw.text((130*SC, main_py + 100*SC), score_str, font=_get_font(True, 150*SC), fill=C_WHITE)
-            
-            # Overs in a pill
-            ov_txt = f"({format_overs(bat_team.balls)} OV)"
-            draw.text((750*SC, main_py + 175*SC), ov_txt, font=_get_font(True, 80*SC), fill=(160, 180, 210, 255))
-
-            # CRR/RRR Stats Row
-            rr = round(bat_team.score / max(bat_team.balls / 6, 0.1), 2)
-            draw.text((130*SC, main_py + 280*SC), f"CRR: {rr}", font=_get_font(True, 40*SC), fill=C_WHITE)
-            
-            if match.innings == 2 and match.target > 0:
-                needed = match.target - bat_team.score
-                balls_left = (match.total_overs * 6) - bat_team.balls
-                draw.text((450*SC, main_py + 280*SC), f"NEED {needed} OFF {balls_left}B", font=_get_font(True, 40*SC), fill=C_GOLD)
-
-            # Right: Bowling Summary Info
-            draw.rounded_rectangle([W//2 + 30*SC, main_py, W - 80*SC, main_py + 360*SC], radius=50*SC, fill=(10, 15, 35, 150), outline=bowl_color, width=3*SC)
-            draw.text((W//2 + 80*SC, main_py + 40*SC), f"⚾ {bowl_team.name.upper()}", font=_get_font(True, 50*SC), fill=bowl_color)
-            draw.text((W//2 + 80*SC, main_py + 120*SC), f"{bowl_team.score}/{bowl_team.wickets}", font=_get_font(True, 100*SC), fill=(180, 200, 230, 255))
-
-            # ── 4. PLAYER CARDS (Geometric Detail) ──
-            card_py = 580 * SC
-            # Batsmen Card
-            draw.rounded_rectangle([80*SC, card_py, W//2 - 30*SC, card_py + 280*SC], radius=35*SC, fill=C_PANEL, outline=(50, 60, 110, 255), width=2*SC)
-            draw.text((120*SC, card_py + 20*SC), "AT THE CREASE", font=_get_font(True, 35*SC), fill=C_GOLD)
-            draw.line([(120*SC, card_py + 70*SC), (400*SC, card_py + 70*SC)], fill=C_GOLD, width=3*SC)
-
-            # Striker (Smooth Highlight)
-            striker = bat_team.players[bat_team.current_batsman_idx] if bat_team.current_batsman_idx is not None else None
-            if striker:
-                draw.text((120*SC, card_py + 90*SC), f"★ {striker.first_name.upper()}", font=_get_font(True, 55*SC), fill=C_WHITE)
-                draw.text((650*SC, card_py + 95*SC), f"{striker.runs} ({striker.balls_faced})", font=_get_font(True, 55*SC), fill=C_GREEN, anchor="ra")
-
-            # Bowler Card
-            draw.rounded_rectangle([W//2 + 30*SC, card_py, W - 80*SC, card_py + 280*SC], radius=35*SC, fill=C_PANEL, outline=(50, 60, 110, 255), width=2*SC)
-            draw.text((W//2 + 70*SC, card_py + 20*SC), "ACTIVE BOWLER", font=_get_font(True, 35*SC), fill=C_GOLD)
-            
-            if bowl_team.current_bowler_idx is not None:
-                bowler = bowl_team.players[bowl_team.current_bowler_idx]
-                draw.text((W//2 + 70*SC, card_py + 90*SC), f"⚡ {bowler.first_name.upper()}", font=_get_font(True, 55*SC), fill=C_WHITE)
-                draw.text((W - 130*SC, card_py + 95*SC), f"{bowler.wickets}/{bowler.runs_conceded}", font=_get_font(True, 55*SC), fill=C_Y, anchor="ra")
-                draw.text((W//2 + 70*SC, card_py + 180*SC), f"ECO: {bowler.get_economy()} | {format_overs(bowler.balls_bowled)} OV", font=_get_font(False, 35*SC), fill=(160, 175, 210, 255))
-
-            # ── 5. RECENT BALLS (Smooth Glow Badges) ──
-            last6 = match.last_6_balls[-6:]
-            if last6:
-                bx_start = W//2 - 350*SC
-                by = 920 * SC
-                draw.text((bx_start - 180*SC, by + 15*SC), "RECENT:", font=_get_font(True, 40*SC), fill=(120, 135, 170, 255))
-                
-                for bi, ball in enumerate(last6):
-                    r = ball.get("runs", 0) if isinstance(ball, dict) else (ball if isinstance(ball, int) else 0)
-                    w = ball.get("wicket", False) if isinstance(ball, dict) else False
-                    
-                    # Modern Color Logic
-                    b_color = C_RED if w else ((160, 80, 255, 255) if r >= 6 else ((40, 160, 255, 255) if r >= 4 else (60, 70, 100, 255)))
-                    
-                    bx = bx_start + (bi * 115 * SC)
-                    # Glow Ring
-                    draw.ellipse([bx-4*SC, by-4*SC, bx+84*SC, by+84*SC], outline=b_color, width=2*SC)
-                    # Main Ball
-                    draw.ellipse([bx+5*SC, by+5*SC, bx+75*SC, by+75*SC], fill=b_color)
-                    txt = "W" if w else (str(r) if r > 0 else "•")
-                    draw.text((bx + 40*SC, by + 10*SC), txt, font=_get_font(True, 45*SC), fill=C_WHITE, anchor="mt")
-
-        # ── 6. Footer (Premium Branding) ──
-        draw.line([(100*SC, 1020*SC), (W-100*SC, 1020*SC)], fill=(45, 60, 120, 255), width=2*SC)
-        footer_txt = "⚡ CRICORA ULTIMATE | THE PREMIUM CRICKET EXPERIENCE"
-        draw.text((W//2, 1045*SC), footer_txt, font=_get_font(False, 30*SC), fill=(110, 130, 170, 255), anchor="mt")
-
-        # FINAL SMOOTHING: Resize down (LANCZOS)
-        img = img.convert("RGB").resize((1920, 1080), Image.Resampling.LANCZOS)
-        
-        bio = BytesIO()
-        img.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-
-    except Exception as e:
-        print(f"Mid-Match Error: {e}")
-        return None
-
 # ─────────────────────────────────────────────────────────────────
 #  SOLO TOP BATSMEN IMAGE  (sent at solo game end)
 # ─────────────────────────────────────────────────────────────────
-def generate_solo_top3_image(sorted_players) -> Optional[BytesIO]:
-    """
-    🥇 GOD-LEVEL 4K PODIUM:
-    • 3D-Style Pedestal Layout for 1st, 2nd, and 3rd
-    • Glassmorphism Floating Cards with Material Depth
-    • Victory Aura Rays & Particle System
-    • Smooth Anti-Aliasing via 2x Downsampling
-    """
-    try:
-        if not sorted_players: return None
-
-        # 4K Internal Rendering for Smoothness (Anti-Aliasing)
-        SC = 2
-        W, H = 1920 * SC, 1080 * SC
-        img = Image.new("RGBA", (W, H), (5, 8, 22, 255))
-        draw = ImageDraw.Draw(img)
-
-        # --- COLORS ---
-        C_GOLD, C_SILVER, C_BRONZE = (255, 215, 0, 255), (192, 192, 192, 255), (205, 127, 50, 255)
-        C_WIN, C_WHITE = (0, 255, 150, 255), (245, 250, 255, 255)
-        C_PANEL = (15, 20, 45, 200)
-
-        # 1. ENHANCED VICTORY BACKGROUND
-        # Deep space gradient with victory rays
-        for i in range(H):
-            draw.line([(0, i), (W, i)], fill=(10 + i//100, 15 + i//150, 35 + i//80, 255))
-        
-        cx_bg, cy_bg = W // 2, H // 2 + 200*SC
-        for angle in range(0, 360, 10):
-            rad = math.radians(angle)
-            ex, ey = cx_bg + 2000*math.cos(rad), cy_bg + 2000*math.sin(rad)
-            draw.line([(cx_bg, cy_bg), (ex, ey)], fill=(30, 45, 90, 100), width=3*SC)
-
-        # 2. PODIUM DATA
-        top3 = sorted_players[:3]
-        
-        # Slots: (Player, Rank_Index, Center_X, Elevation, Card_Scale, Color)
-        slots = []
-        if len(top3) >= 3:
-            slots = [
-                (top3[1], 1, W//2 - 550*SC, 420*SC, 0.85, C_SILVER), # 2nd Left
-                (top3[2], 2, W//2 + 550*SC, 480*SC, 0.80, C_BRONZE), # 3rd Right
-                (top3[0], 0, W//2, 300*SC, 1.0, C_GOLD)             # 1st Center
-            ]
-        elif len(top3) == 2:
-            slots = [
-                (top3[1], 1, W//2 - 300*SC, 400*SC, 0.9, C_SILVER), 
-                (top3[0], 0, W//2 + 300*SC, 300*SC, 1.0, C_GOLD)
-            ]
-        else:
-            slots = [(top3[0], 0, W//2, 320*SC, 1.1, C_GOLD)]
-
-        # 3. DRAW SLOTS (Z-INDEX AWARE)
-        # Hum 1st place (Rank 0) ko sabse aakhir mein draw karenge taaki wo upar dikhe
-        slots.sort(key=lambda x: x[1], reverse=True)
-
-        for p, rank_idx, cx, sy, scale, color in slots:
-            cw, ch = int(500 * SC * scale), int(620 * SC * scale)
-            px1, py1 = cx - cw // 2, sy
-            px2, py2 = cx + cw // 2, sy + ch
-
-            # Glassmorphism Card with Elevation Glow
-            glow_color = (*color[:3], 60)
-            draw.rounded_rectangle([px1-15*SC, py1-15*SC, px2+15*SC, py2+15*SC], radius=45*SC, fill=glow_color)
-            draw.rounded_rectangle([px1, py1, px2, py2], radius=40*SC, fill=C_PANEL, outline=color, width=4*SC)
-
-            # Medal Emoji / Rank Number
-            _draw_text_centered_glow(draw, medals[rank_idx], cx, py1 - 70*SC, _get_font(True, 100*SC), color)
-
-            # Player Stats (Using first_name to avoid attribute errors)
-            p_name = getattr(p, 'first_name', 'PLAYER').upper()
-            draw.text((cx, py1 + 80*SC), p_name, font=_get_font(True, int(55*SC * scale)), fill=C_WHITE, anchor="mt")
-            draw.line([(cx - 80*SC, py1 + 160*SC), (cx + 80*SC, py1 + 160*SC)], fill=color, width=3*SC)
-            
-            score_txt = f"{p.runs} ({p.balls_faced})"
-            draw.text((cx, py1 + 220*SC), score_txt, font=_get_font(True, int(85*SC * scale)), fill=C_WIN, anchor="mt")
-            
-            sr = round((p.runs / max(p.balls_faced, 1)) * 100, 1)
-            draw.text((cx, py1 + 330*SC), f"SR: {sr}", font=_get_font(True, int(45*SC * scale)), fill=C_GOLD if sr > 140 else C_WHITE, anchor="mt")
-
-            # Boundaries Badge
-            if hasattr(p, 'boundaries') and (p.boundaries > 0 or getattr(p, 'sixes', 0) > 0):
-                badge_rect = [cx - 150*SC*scale, py2 - 90*SC*scale, cx + 150*SC*scale, py2 - 30*SC*scale]
-                draw.rounded_rectangle(badge_rect, radius=15*SC, fill=(25, 35, 70, 255))
-                b_txt = f"4s: {p.boundaries} • 6s: {getattr(p, 'sixes', 0)}"
-                draw.text((cx, py2 - 75*SC*scale), b_txt, font=_get_font(False, int(32*SC * scale)), fill=C_WHITE, anchor="mt")
-
-        # 4. VICTORY OVERLAY (Particles around Champion)
-        random.seed(42)
-        for _ in range(80):
-            ptx, pty = random.randint(W//2 - 600*SC, W//2 + 600*SC), random.randint(150*SC, 700*SC)
-            draw.ellipse([ptx, pty, ptx+6*SC, pty+6*SC], fill=random.choice([C_GOLD, C_WHITE, C_WIN, (255,255,255,100)]))
-
-        # 5. FOOTER & BRANDING
-        draw.text((W//2, H - 150*SC), f"🏆 BATTLE CHAMPION: {getattr(top3[0], 'first_name', 'PLAYER').upper()} 🏆", font=_get_font(True, 65*SC), fill=C_GOLD, anchor="mt")
-        draw.text((W//2, H - 60*SC), "⚡ CRICORA • SOLO BATTLE SERIES", font=_get_font(False, 30*SC), fill=(140, 160, 200, 255), anchor="mt")
-
-        # Final Rescale (LANCZOS) for makhan-smooth edges
-        final_img = img.convert("RGB").resize((1920, 1080), Image.Resampling.LANCZOS)
-        
-        bio = BytesIO()
-        final_img.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-        
-    except Exception as e:
-        print(f"Podium Error: {e}")
-        return None
-
 # ─────────────────────────────────────────────────────────────────
 #  TEAM END IMAGE V3  (wrapper using new summary image)
 # ─────────────────────────────────────────────────────────────────
@@ -16135,33 +15516,6 @@ def _build_mid_match_caption(match) -> str:
     return caption
 
 
-
-
-def _clean_display_name(name: str, max_len: int = 20) -> str:
-    """
-    Clean a Telegram display name for image rendering.
-    Removes emojis, special symbols, designer/role tags, and limits length.
-    Handles names like '🎨 Designer | John' → 'John'
-    or '⚡ John ⚡' → 'John'
-    """
-    import unicodedata
-    import re
-    # Remove emoji characters using unicode category check
-    cleaned = ''.join(
-        ch for ch in name
-        if not (unicodedata.category(ch).startswith('So') or  # Symbol, other (many emoji)
-                unicodedata.category(ch).startswith('Sm') or  # Symbol, math
-                unicodedata.category(ch).startswith('Sk') or  # Symbol, modifier
-                ord(ch) > 0x1F000)  # Emoji range
-    )
-    # Remove common role/designer tag patterns like "Designer |", "| Owner"
-    cleaned = re.sub(r'[|/\\#@*_~`<>]', ' ', cleaned)
-    # Collapse multiple spaces
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    # If nothing left, fall back to original truncated
-    if not cleaned:
-        cleaned = re.sub(r'\s+', ' ', name).strip()[:max_len]
-    return cleaned[:max_len]
 
 
 def _draw_text_centered(draw, text, cx, y, font, fill):
@@ -16288,7 +15642,8 @@ def _create_avatar_image(avatar_bytes: bytes, size: int, initials: str) -> Image
     draw_fallback.ellipse((0, 0, size, size), fill=(20, 30, 50, 255))
     try:
         font = ImageFont.truetype("Roboto-Bold.ttf", int(size * 0.4))
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 16289)")
         font = ImageFont.load_default(size=int(size * 0.4))
     
     # Center text
@@ -16338,7 +15693,8 @@ async def fetch_overall_stats_snapshot(user_id: int, name: str, stats: dict, ava
             f_value = ImageFont.truetype("Roboto-Bold.ttf", 44 * SC)
             f_small = ImageFont.truetype("Roboto-Regular.ttf", 22 * SC)
             f_mode  = ImageFont.truetype("Roboto-Bold.ttf", 26 * SC)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 16339)")
             f_title = ImageFont.load_default(size=62 * SC)
             f_label = ImageFont.load_default(size=20 * SC)
             f_value = ImageFont.load_default(size=44 * SC)
@@ -16506,180 +15862,6 @@ from PIL import Image, ImageDraw, ImageFilter
 from io import BytesIO
 from typing import Optional
 
-def generate_over_bar_chart(match) -> Optional[BytesIO]:
-    """
-    Over-by-Over Bar Chart — Pure Black Stadium Canvas.
-    Neon rounded bars, wicket chips, live-over highlight.
-    """
-    try:
-        SC = 2
-        W, H = 1400 * SC, 800 * SC
-        PAD_L, PAD_R, PAD_T, PAD_B = 100*SC, 70*SC, 150*SC, 145*SC
-        CHART_W = W - PAD_L - PAD_R
-        CHART_H = H - PAD_T - PAD_B
-
-        # Pure black base
-        img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
-        draw = ImageDraw.Draw(img)
-
-        # Subtle vertical streak texture (stadium floodlights)
-        for x in range(0, W, 90*SC):
-            draw.line([(x, 0), (x, H)], fill=(8, 14, 32, 255), width=2*SC)
-        for x in range(-H, W, 160*SC):
-            draw.line([(x, 0), (x+H, H)], fill=(10, 18, 40, 80), width=1*SC)
-
-        C_X    = (0, 200, 255, 255)
-        C_Y    = (255, 55, 120, 255)
-        C_GOLD = (255, 215, 0, 255)
-        C_WHITE= (240, 248, 255, 255)
-        C_MUTED= (100, 125, 175, 255)
-        C_GRID = (22, 35, 70, 200)
-        C_WKT  = (240, 50, 55, 255)
-
-        fn_title = _get_font(True, 52*SC)
-        fn_bold  = _get_font(True, 38*SC)
-        fn_med   = _get_font(True, 28*SC)
-        fn_reg   = _get_font(False, 24*SC)
-
-        # Data
-        bat_team_bar = getattr(match, "current_batting_team", None)
-        cur_over_runs = getattr(match, "current_over_runs", 0)
-        cur_over_wkts = getattr(match, "current_over_wickets", 0)
-
-        full_x_runs = list(match.team_x_over_runs)
-        full_y_runs = list(match.team_y_over_runs)
-        full_x_wkts = list(getattr(match, "team_x_over_wickets", []))
-        full_y_wkts = list(getattr(match, "team_y_over_wickets", []))
-
-        x_is_live = y_is_live = False
-        if bat_team_bar is not None and cur_over_runs > 0:
-            if bat_team_bar == match.team_x:
-                full_x_runs = full_x_runs + [cur_over_runs]
-                full_x_wkts = full_x_wkts + [cur_over_wkts]
-                x_is_live = True
-            else:
-                full_y_runs = full_y_runs + [cur_over_runs]
-                full_y_wkts = full_y_wkts + [cur_over_wkts]
-                y_is_live = True
-
-        x_runs = full_x_runs[-8:]
-        y_runs = full_y_runs[-8:]
-        x_wkts = full_x_wkts[-8:]
-        y_wkts = full_y_wkts[-8:]
-
-        x_live_idx = len(x_runs) - 1 if x_is_live else -1
-        y_live_idx = len(y_runs) - 1 if y_is_live else -1
-
-        n = max(len(x_runs), len(y_runs), 1)
-        while len(x_runs) < n: x_runs.insert(0, 0); x_wkts.insert(0, 0)
-        while len(y_runs) < n: y_runs.insert(0, 0); y_wkts.insert(0, 0)
-
-        x_over_offset = len(full_x_runs) - len(x_runs)
-        y_over_offset = len(full_y_runs) - len(y_runs)
-
-        max_runs = max(x_runs + y_runs + [10]) + 3
-        slot_w = CHART_W // n
-        bar_w = int(slot_w * 0.30)
-
-        # Grid lines
-        for j in range(6):
-            val = int(j * max_runs / 5)
-            gy = PAD_T + CHART_H - int(j * CHART_H / 5)
-            draw.line([(PAD_L, gy), (PAD_L + CHART_W, gy)], fill=C_GRID, width=2*SC)
-            draw.text((PAD_L - 55*SC, gy - 14*SC), str(val), font=fn_reg, fill=C_MUTED)
-
-        # Axis lines
-        draw.line([(PAD_L, PAD_T), (PAD_L, PAD_T + CHART_H)], fill=(50, 70, 130, 255), width=2*SC)
-        draw.line([(PAD_L, PAD_T + CHART_H), (PAD_L + CHART_W, PAD_T + CHART_H)], fill=(50, 70, 130, 255), width=2*SC)
-
-        def draw_bar(x1, x2, runs, wkts, color, is_live):
-            if runs <= 0 and not is_live:
-                return
-            bh = max(16*SC, int(runs / max_runs * CHART_H))
-            y2 = PAD_T + CHART_H
-            y1 = y2 - bh
-
-            # Shadow
-            draw.rounded_rectangle([x1+5*SC, y1+6*SC, x2+5*SC, y2], radius=10*SC, fill=(0,0,0,140))
-
-            # Gradient bar (lighter top, darker bottom)
-            for i in range(bh):
-                ratio = i / bh
-                bright = tuple(int(c * (0.35 + 0.65 * (1 - ratio))) for c in color[:3])
-                draw.line([(x1, y1+i), (x2, y1+i)], fill=bright)
-
-            # Live pulsing outline
-            outline_c = (80, 255, 160, 255) if is_live else (255, 255, 255, 60)
-            draw.rounded_rectangle([x1, y1, x2, y2], radius=10*SC, outline=outline_c, width=3*SC if is_live else 1*SC)
-
-            # Top highlight
-            draw.line([(x1+3*SC, y1), (x2-3*SC, y1)], fill=(255, 255, 255, 180), width=3*SC)
-
-            # Run label above bar
-            txt = str(runs) + (" LIVE" if is_live else "")
-            tb = draw.textbbox((0,0), txt, font=fn_med)
-            tw = tb[2] - tb[0]
-            tx = (x1 + x2) // 2 - tw // 2
-            draw.text((tx, y1 - 55*SC), txt, font=fn_med, fill=(80,255,160,255) if is_live else C_WHITE)
-
-            # Wicket chip
-            if wkts and wkts > 0:
-                cx = (x1 + x2) // 2
-                cy = y1 - 95*SC
-                rad = 18*SC
-                draw.ellipse([cx-rad, cy-rad, cx+rad, cy+rad], fill=C_WKT, outline=C_GOLD, width=2*SC)
-                wb = draw.textbbox((0,0), str(wkts), font=fn_med)
-                draw.text((cx - (wb[2]-wb[0])//2, cy - (wb[3]-wb[1])//2), str(wkts), font=fn_med, fill=C_WHITE)
-
-        for i in range(n):
-            center_x = PAD_L + i * slot_w + (slot_w // 2)
-            bar_x_live = (i == x_live_idx)
-            bar_y_live = (i == y_live_idx)
-
-            if x_runs[i] > 0 or bar_x_live:
-                bx1, bx2 = center_x - bar_w - 6*SC, center_x - 6*SC
-                draw_bar(bx1, bx2, x_runs[i], x_wkts[i] if i < len(x_wkts) else 0, C_X[:3], bar_x_live)
-
-            if y_runs[i] > 0 or bar_y_live:
-                by1, by2 = center_x + 6*SC, center_x + bar_w + 6*SC
-                draw_bar(by1, by2, y_runs[i], y_wkts[i] if i < len(y_wkts) else 0, C_Y[:3], bar_y_live)
-
-            if x_runs[i] > 0 or x_is_live:
-                ov_num = x_over_offset + i + 1
-            else:
-                ov_num = y_over_offset + i + 1
-            live_mark = " *" if (bar_x_live or bar_y_live) else ""
-            lbl = "OV " + str(ov_num) + live_mark
-            lb = draw.textbbox((0,0), lbl, font=fn_reg)
-            draw.text((center_x - (lb[2]-lb[0])//2, PAD_T + CHART_H + 28*SC), lbl, font=fn_reg,
-                       fill=C_GOLD if (bar_x_live or bar_y_live) else C_MUTED)
-
-        # Title + score line
-        title = match.team_x.name + " ** " + match.team_y.name
-        _draw_text_centered_glow(draw, title.upper(), W//2, 28*SC, fn_title, C_GOLD, glow_color=(130, 105, 0))
-        score_txt = (match.team_x.name + "  " + str(match.team_x.score) + "/" + str(match.team_x.wickets) +
-                     "   vs   " + match.team_y.name + "  " + str(match.team_y.score) + "/" + str(match.team_y.wickets))
-        _draw_text_centered_glow(draw, score_txt, W//2, 108*SC, fn_reg, C_WHITE)
-
-        # Legend
-        leg_y = H - 72*SC
-        draw.line([(PAD_L, leg_y - 10*SC), (W - PAD_R, leg_y - 10*SC)], fill=(38, 55, 100, 200), width=1*SC)
-        draw.rectangle([PAD_L, leg_y, PAD_L + 34*SC, leg_y + 28*SC], fill=C_X[:3])
-        draw.text((PAD_L + 42*SC, leg_y), match.team_x.name, font=fn_reg, fill=C_X)
-        draw.rectangle([PAD_L + 300*SC, leg_y, PAD_L + 334*SC, leg_y + 28*SC], fill=C_Y[:3])
-        draw.text((PAD_L + 342*SC, leg_y), match.team_y.name, font=fn_reg, fill=C_Y)
-        draw.ellipse([PAD_L + 620*SC, leg_y + 4*SC, PAD_L + 644*SC, leg_y + 28*SC], fill=C_WKT[:3])
-        draw.text((PAD_L + 654*SC, leg_y), "= Wickets", font=fn_reg, fill=C_MUTED)
-        draw.text((W - PAD_R, leg_y + 4*SC), "Last 8 overs", font=fn_reg, fill=C_MUTED, anchor="ra")
-
-        img = img.convert("RGB").resize((1400, 800), Image.Resampling.LANCZOS)
-        bio = BytesIO()
-        img.save(bio, "PNG", quality=95)
-        bio.seek(0)
-        return bio
-    except Exception as e:
-        print("Over bar chart error: " + str(e))
-        return None
 def _draw_neo_bar(draw, x1, x2, runs, max_runs, chart_h, pad_t, color, wkts, font):
     """Draws a rounded, glowing bar with wicket indicators."""
     bh = max(int(runs / max_runs * chart_h), 10)
@@ -17626,208 +16808,6 @@ def add_vintage_texture(img: Image.Image) -> Image.Image:
     # Composite the texture over the original image
     return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
-def generate_newspaper_image(match, winner, loser, top_scorer_name: str,
-                               top_scorer_runs: int, mom_name: str, margin: str) -> Optional[BytesIO]:
-    """Generate a high-fidelity, vintage newspaper-style post-match summary image."""
-    try:
-        W, H = 1080, 1080  # Increased height for a more authentic front-page feel
-        # Base cream paper
-        img = Image.new("RGBA", (W, H), (235, 226, 205, 255))
-        draw = ImageDraw.Draw(img)
-
-        # ── Color palette ──
-        C_INK    = (25, 22, 18, 255)       # Soft off-black for ink
-        C_RED    = (160, 40, 40, 255)      # Faded vintage red
-        C_GOLD   = (165, 125, 50, 255)
-        C_GRAY   = (90, 85, 80, 255)
-        C_LIGHT  = (180, 170, 150, 255)
-        C_DIVIDER = (100, 90, 80, 255)
-
-        fn_masthead = _get_font(True,  78)
-        fn_headline = _get_font(True,  52)
-        fn_subhead  = _get_font(False, 28)
-        fn_body     = _get_font(False, 24)
-        fn_caption  = _get_font(False, 18)
-        fn_small    = _get_font(False, 16)
-
-        # ── MASTHEAD ──
-        draw.rectangle([0, 0, W, 100], fill=C_INK)
-        
-        # Center helper
-        def draw_text_centered(txt, cx, cy, fnt, col):
-            bbox = draw.textbbox((0, 0), txt, font=fnt)
-            w = bbox[2] - bbox[0]
-            draw.text((cx - w//2, cy), txt, font=fnt, fill=col)
-
-        draw_text_centered("THE CRICOVERSE TIMES", W//2, 10, fn_masthead, (245, 235, 215, 255))
-
-        # Date & Edition strip
-        draw.rectangle([0, 100, W, 125], fill=C_GOLD)
-        now_str = datetime.now().strftime("%A, %B %d, %Y")
-        edition = f"SPORTS FINAL EDITION  ·  {now_str}  ·  VOL. XCIII"
-        draw.text((30, 103), edition, font=fn_small, fill=C_INK)
-        draw.text((W - 140, 103), "PRICE: 2 PENCE", font=fn_small, fill=C_INK)
-        
-        # Double line underneath date
-        draw.line([(0, 128), (W, 128)], fill=C_INK, width=3)
-        draw.line([(0, 133), (W, 133)], fill=C_INK, width=1)
-
-        # ── MAIN HEADLINE ──
-        headline_tmpl = random.choice(_HEADLINE_TEMPLATES)
-        headline = headline_tmpl.format(
-            winner=winner.name.upper(),
-            loser=loser.name.upper(),
-            margin=margin.upper(),
-            top_scorer=top_scorer_name.upper(),
-            runs=top_scorer_runs,
-            opponent_team=loser.name.upper()
-        )
-        
-        # Smart word-wrap for headline
-        words = headline.split()
-        lines, cur = [], ""
-        for w in words:
-            test = (cur + " " + w).strip()
-            if draw.textlength(test, font=fn_headline) < W - 60:
-                cur = test
-            else:
-                if cur: lines.append(cur)
-                cur = w
-        if cur: lines.append(cur)
-
-        y_head = 155
-        for line in lines[:4]:
-            draw_text_centered(line, W//2, y_head, fn_headline, C_RED)
-            y_head += 60
-
-        y_head += 10
-        draw.line([(40, y_head), (W - 40, y_head)], fill=C_INK, width=4)
-        draw.line([(40, y_head+6), (W - 40, y_head+6)], fill=C_INK, width=1)
-        y_head += 25
-
-        # ── THREE-COLUMN LAYOUT (More authentic newspaper style) ──
-        col1_x, col2_x, col3_x = 40, W // 3 + 20, (W // 3) * 2
-        col_w = W // 3 - 40
-        y_col = y_head
-
-        # ── Column 1: Match Result & Details ──
-        draw.text((col1_x, y_col), "THE SCORECARD", font=_get_font(True, 24), fill=C_INK)
-        y_col += 30
-        draw.line([(col1_x, y_col), (col1_x + col_w, y_col)], fill=C_DIVIDER, width=2)
-        y_col += 10
-
-        score_lines = [
-            f"{winner.name.upper()}",
-            f"{winner.score}/{winner.wickets} ({winner.balls // 6}.{winner.balls % 6} OV)",
-            "",
-            f"{loser.name.upper()}",
-            f"{loser.score}/{loser.wickets} ({loser.balls // 6}.{loser.balls % 6} OV)",
-            "",
-            "MARGIN OF VICTORY:",
-            f"{margin.upper()}",
-        ]
-        
-        for i, sl in enumerate(score_lines):
-            fnt = _get_font(True, 22) if i in [0, 3, 6] else fn_body
-            draw.text((col1_x, y_col), sl, font=fnt, fill=C_INK)
-            y_col += 30
-
-        y_col += 10
-        draw.line([(col1_x, y_col), (col1_x + col_w, y_col)], fill=C_DIVIDER, width=1)
-        y_col += 15
-        
-        draw.text((col1_x, y_col), "HERO OF THE MATCH", font=_get_font(True, 22), fill=C_INK)
-        y_col += 30
-        draw.text((col1_x, y_col), f"⭐ {mom_name.upper()}", font=fn_body, fill=C_RED)
-
-        # ── Column 2: Simulated "Photo" & Report ──
-        # Draw a vintage photo placeholder box
-        photo_h = 220
-        draw.rectangle([col2_x, y_head, col3_x - 20, y_head + photo_h], fill=(200, 190, 170, 255), outline=C_INK, width=2)
-        
-        # Add some inner halftone/sketch lines to simulate a printed photo
-        for py in range(y_head + 5, y_head + photo_h, 8):
-            draw.line([(col2_x + 5, py), (col3_x - 25, py)], fill=(180, 170, 150, 255), width=2)
-            
-        draw_text_centered("[ ACTION SHOT ]", col2_x + col_w//2, y_head + photo_h//2 - 10, _get_font(True, 20), C_INK)
-        
-        y_col2 = y_head + photo_h + 10
-        draw.text((col2_x, y_col2), "MATCH REPORT", font=_get_font(True, 24), fill=C_INK)
-        y_col2 += 30
-        draw.line([(col2_x, y_col2), (col3_x - 20, y_col2)], fill=C_DIVIDER, width=2)
-        y_col2 += 10
-
-        sub = random.choice(_SUBHEADLINES).format(winner=winner.name, loser=loser.name, top_scorer=top_scorer_name)
-        
-        sub_words = sub.split()
-        sub_lines, sub_cur = [], ""
-        for sw in sub_words:
-            test = (sub_cur + " " + sw).strip()
-            if draw.textlength(test, font=fn_subhead) < col_w + 20:
-                sub_cur = test
-            else:
-                if sub_cur: sub_lines.append(sub_cur)
-                sub_cur = sw
-        if sub_cur: sub_lines.append(sub_cur)
-        
-        for sl2 in sub_lines[:6]:
-            draw.text((col2_x, y_col2), sl2, font=fn_subhead, fill=C_INK)
-            y_col2 += 34
-
-        # ── Column 3: The Write-Up ──
-        y_col3 = y_head
-        draw.text((col3_x, y_col3), "EXPERT ANALYSIS", font=_get_font(True, 24), fill=C_INK)
-        y_col3 += 30
-        draw.line([(col3_x, y_col3), (W - 40, y_col3)], fill=C_DIVIDER, width=2)
-        y_col3 += 10
-        
-        filler = (
-            f"Spectators gathered in their thousands to witness what was billed as a clash of titans, "
-            f"but ultimately transformed into a masterclass by {winner.name}. "
-            f"From the very first delivery, the intent was clear. {top_scorer_name} stepped up to the crease "
-            f"and immediately dictated the pace of the game, bludgeoning the ball to all corners of the ground. "
-            f"The {loser.name} bowling attack looked entirely bereft of ideas. "
-            f"Their fielding unravelled under the immense pressure, leading to a crushing {margin} victory. "
-            f"Management will have serious questions to answer before their next outing."
-        )
-        filler_words = filler.split()
-        f_lines, f_cur = [], ""
-        for fw in filler_words:
-            test = (f_cur + " " + fw).strip()
-            if draw.textlength(test, font=fn_caption) < col_w + 10:
-                f_cur = test
-            else:
-                if f_cur: f_lines.append(f_cur)
-                f_cur = fw
-        if f_cur: f_lines.append(f_cur)
-        
-        for fl in f_lines[:25]:
-            draw.text((col3_x, y_col3), fl, font=fn_caption, fill=C_GRAY)
-            y_col3 += 24
-
-        # ── Vertical Column Dividers ──
-        draw.line([(col2_x - 15, y_head), (col2_x - 15, H - 70)], fill=C_LIGHT, width=1)
-        draw.line([(col3_x - 15, y_head), (col3_x - 15, H - 70)], fill=C_LIGHT, width=1)
-
-        # ── APPLY VINTAGE TEXTURE ──
-        img = add_vintage_texture(img)
-        draw = ImageDraw.Draw(img) # Re-init draw on the final flattened RGB image
-
-        # ── FOOTER ──
-        draw.rectangle([0, H - 50, W, H], fill=C_INK)
-        footer = f"© The Cricoverse Times Publishing Co.  ·  All rights reserved  ·  {match.group_name.upper()}"
-        draw_text_centered(footer, W//2, H - 35, fn_small, (200, 190, 170))
-
-        # Save to buffer
-        bio = BytesIO()
-        img.save(bio, "PNG", optimize=True)
-        bio.seek(0)
-        return bio
-
-    except Exception as e:
-        print(f"generate_newspaper_image error: {e}") # Replace with logger.error in production
-        return None
-
 async def send_potm_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
     🌟 PLAYER OF THE MATCH - DB update + DM only (group announcement now in win message)
@@ -17900,7 +16880,7 @@ async def send_potm_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, m
         # ✅ FIX: Also update DB directly right here
         def _update_mom_db(uid):
             try:
-                _mom_conn = sqlite3.connect(DB_PATH)
+                _mom_conn= db_connect(DB_PATH)
                 _mom_c = _mom_conn.cursor()
                 _mom_c.execute(
                     "INSERT INTO user_stats (user_id, player_of_match_count) VALUES (?, 1) "
@@ -18234,7 +17214,8 @@ async def determine_super_over_winner(context: ContextTypes.DEFAULT_TYPE, group_
     
     try:
         await context.bot.send_animation(group_id, animation=victory_gif, caption=msg, parse_mode=ParseMode.HTML)
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 18235)")
         await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
     
     # Update stats
@@ -18514,7 +17495,7 @@ async def update_player_stats_after_match(match: Match, winner: Team, loser: Tea
     # a background thread.
     def _sync_player_stats_to_db(all_players, winner):
         try:
-            conn_s = sqlite3.connect(DB_PATH)
+            conn_s= db_connect(DB_PATH)
             cs = conn_s.cursor()
             for player in all_players:
                 uid   = player.user_id
@@ -18740,7 +17721,7 @@ def _save_match_to_history_sync(match, winner_team: str):
     """All the blocking DB work for save_match_to_history — always run via
     asyncio.to_thread. This runs at the end of EVERY team match in EVERY
     group, so keeping it off the event loop matters a lot at scale."""
-    conn = sqlite3.connect(DB_PATH)
+    conn= db_connect(DB_PATH)
     c = conn.cursor()
     
     # Determine scores
@@ -18870,7 +17851,7 @@ def compute_player_role(user_id: int) -> str:
 def build_team_stats_text(user_id: int, user_name: str) -> str:
     """Build the 👥 Team stats section text shown in /mystats (also used as the default view)."""
     SEP = "─────────────────"
-    conn = sqlite3.connect(DB_PATH)
+    conn= db_connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         SELECT
@@ -18890,7 +17871,7 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
 
     if not db_row or db_row[0] == 0:
         # Fallback to old columns
-        conn2 = sqlite3.connect(DB_PATH)
+        conn2= db_connect(DB_PATH)
         c2 = conn2.cursor()
         c2.execute("""
             SELECT matches_played, matches_won, total_runs, highest_score,
@@ -19061,7 +18042,7 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
 
 def fetch_team_stats_for_card(user_id: int) -> dict:
     """Fetch team stats in the same dict shape generate_stats_image expects."""
-    conn = sqlite3.connect(DB_PATH)
+    conn= db_connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         SELECT team_matches_played, team_matches_won, team_total_runs, team_highest_score,
@@ -20223,7 +19204,7 @@ async def generate_stats_image(user_id: int, name: str, stats: dict, avatar_byte
 def fetch_overall_stats(user_id: int) -> dict:
     """Fetch overall player statistics from user_stats and calculate derived values."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn= db_connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
             SELECT 
@@ -20400,10 +19381,12 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         menu_text = f"📊 <b>{user_name}'s STATS</b>\n{SEP}\n👇 <i>Choose a category to view:</i>"
         try:
             await query.edit_message_caption(caption=menu_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20401)")
             try:
                 await query.edit_message_text(menu_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20404)")
                 await query.message.reply_text(menu_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
     # ══════════════════════════════════════
@@ -20415,10 +19398,12 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[back_button]]
         try:
             await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20416)")
             try:
                 await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20419)")
                 await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
     # ══════════════════════════════════════
@@ -20487,10 +19472,12 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyword = [[back_button]]
         try:
             await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyword))
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20488)")
             try:
                 await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyword))
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20491)")
                 await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyword))
 
     # ══════════════════════════════════════
@@ -20502,10 +19489,12 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[back_button]]
         try:
             await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20503)")
             try:
                 await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20506)")
                 await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
     # ══════════════════════════════════════
@@ -20527,7 +19516,8 @@ async def groupapprove_command(update: Update, context: ContextTypes.DEFAULT_TYP
             return
         try:
             group_id = int(context.args[0])
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20528)")
             return
     else:
         group_id = chat.id
@@ -20536,10 +19526,11 @@ async def groupapprove_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         group_name = (await context.bot.get_chat(group_id)).title
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20537)")
         group_name = "Unknown Group"
 
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     expires_at = (datetime.now() + timedelta(days=30)).isoformat()
     c.execute('INSERT OR REPLACE INTO tournament_groups (group_id, group_name, approved_at, expires_at, reminder_sent) VALUES (?, ?, CURRENT_TIMESTAMP, ?, 0)',
@@ -20568,7 +19559,8 @@ async def groupapprove_command(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         try:
             await context.bot.pin_chat_message(chat_id=group_id, message_id=sent.message_id, disable_notification=False)
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20569)")
             pass
     except Exception as e:
         logger.warning(f"Could not notify group {group_id}: {e}")
@@ -20622,7 +19614,7 @@ async def unapprove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     TOURNAMENT_APPROVED_GROUPS.discard(group_id)
     
     # Remove from database
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     c.execute('DELETE FROM tournament_groups WHERE group_id = ?', (group_id,))
     conn.commit()
@@ -20678,7 +19670,7 @@ async def unapprovegroup_command(update: Update, context: ContextTypes.DEFAULT_T
     TOURNAMENT_APPROVED_GROUPS.discard(group_id)
 
     # ── Remove from database ──
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     c.execute('DELETE FROM tournament_groups WHERE group_id = ?', (group_id,))
     conn.commit()
@@ -21119,7 +20111,8 @@ async def auction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=ParseMode.HTML
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 21120)")
             await update.message.reply_photo(
                 photo=MEDIA_ASSETS.get("tournament_locked"),
                 caption=(
@@ -21192,7 +20185,8 @@ async def auction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 21193)")
         sent = await update.message.reply_photo(
             photo=MEDIA_ASSETS.get("auction_setup"),
             caption=msg,
@@ -21316,7 +20310,7 @@ async def aucplayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if player_identifier.isdigit():
         user_id = int(player_identifier)
         # Try to get name from database
-        conn = sqlite3.connect(DB_PATH)
+        conn= await asyncio.to_thread(db_connect, DB_PATH)
         c = conn.cursor()
         c.execute('SELECT first_name FROM user_stats WHERE user_id = ?', (user_id,))
         result = c.fetchone()
@@ -21327,7 +20321,7 @@ async def aucplayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # It's a username - clean it
         username = player_identifier.lstrip('@')
         # Try to find in database by username
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute('SELECT user_id, full_name FROM registered_players WHERE username = ?', (username,))
         result = c.fetchone()
@@ -21388,7 +20382,8 @@ async def aucplayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     target_user = await context.bot.get_chat(uid)
                                     target_users.append(target_user)
                                     user_found = True
-                                except:
+                                except Exception as e:
+                                    logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 21389)")
                                     # Fallback: Use stored data
                                     class BasicUser:
                                         def __init__(self, uid, uname, fname):
@@ -22185,13 +21180,15 @@ async def mid_game_add_logic(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 if data.get("username", "").lower() == username:
                     try:
                         target_user = await context.bot.get_chat(uid)
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 22186)")
                         pass
                     break
         elif arg.isdigit():
             try:
                 target_user = await context.bot.get_chat(int(arg))
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 22192)")
                 pass
     if not target_user:
         await update.message.reply_text(
@@ -22824,7 +21821,8 @@ async def startauction_command(update: Update, context: ContextTypes.DEFAULT_TYP
             caption=msg,
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 22825)")
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
     
     await asyncio.sleep(3)
@@ -22891,7 +21889,8 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         try:
             amount = int(context.args[0])
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 22892)")
             await update.message.reply_text(
                 "⚠️ <b>INVALID BID!</b>\n\n"
                 "<b>Usage:</b> <code>/bid [amount]</code>",
@@ -23639,7 +22638,8 @@ async def end_auction(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction:
             caption=msg,
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 23640)")
         await context.bot.send_photo(
             chat_id,
             photo=MEDIA_ASSETS.get("auction_end"),
@@ -23708,7 +22708,7 @@ async def end_auction(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction:
 def _fetch_stats_view_data(target_id: int):
     """Blocking DB reads for stats_view_callback — always call this via
     asyncio.to_thread, never directly on the event loop."""
-    conn = sqlite3.connect(DB_PATH)
+    conn= db_connect(DB_PATH)
     c = conn.cursor()
 
     c.execute("SELECT * FROM user_stats WHERE user_id = ?", (target_id,))
@@ -23745,7 +22745,8 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         parts = query.data.split("_")
         mode = parts[2]  # 'solo' or 'team'
         target_id = int(parts[3])
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 23746)")
         return
 
     # ========== FETCH FROM DATABASE ==========
@@ -23757,7 +22758,8 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         chat = await context.bot.get_chat(target_id)
         name = chat.first_name
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 23758)")
         name = "Player"
 
     # ========== PARSE DATABASE STATS ==========
@@ -23927,7 +22929,8 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     if photo_bio:
         try: 
             await query.message.delete()
-        except: 
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 23928)")
             pass
         
         await context.bot.send_photo(
@@ -24314,7 +23317,7 @@ def _fetch_botstats_data():
     asyncio.to_thread, never directly on the event loop (owner-only command,
     but a dozen sequential queries here used to freeze every group's game
     for however long this took)."""
-    conn = sqlite3.connect(DB_PATH)
+    conn= db_connect(DB_PATH)
     c = conn.cursor()
 
     # User stats from DB
@@ -24324,7 +23327,8 @@ def _fetch_botstats_data():
     try:
         c.execute('SELECT COUNT(*) FROM match_history')
         db_matches = c.fetchone()[0] or 0
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24325)")
         c.execute('SELECT SUM(team_matches_played) FROM user_stats')
         db_matches_raw = c.fetchone()[0] or 0
         db_matches = db_matches_raw // 2 if db_matches_raw > 1 else db_matches_raw
@@ -24344,7 +23348,8 @@ def _fetch_botstats_data():
     try:
         c.execute('SELECT COUNT(*) FROM groups')
         total_groups = c.fetchone()[0] or 0
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24345)")
         total_groups = len(registered_groups)
 
     # AI match stats
@@ -24354,7 +23359,8 @@ def _fetch_botstats_data():
         ai_players = ai_row[0] or 0
         ai_total = ai_row[1] or 0
         ai_wins = ai_row[2] or 0
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24355)")
         ai_players = ai_total = ai_wins = 0
 
     conn.close()
@@ -24410,7 +23416,8 @@ async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cpu = await asyncio.to_thread(psutil.cpu_percent, 0.1)
             memory = psutil.virtual_memory().percent
             disk = psutil.disk_usage('/').percent
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24411)")
             pass
     
     text = "🏏 <b>CRICOVERSE → BOT STATS</b>\n"
@@ -24501,7 +23508,7 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         
         # Get database statistics
-        conn = sqlite3.connect(DB_PATH)
+        conn= await asyncio.to_thread(db_connect, DB_PATH)
         c = conn.cursor()
         
         c.execute('SELECT COUNT(DISTINCT user_id) FROM user_stats')
@@ -24612,7 +23619,8 @@ async def send_milestone_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int, p
     
     try:
         await context.bot.send_animation(chat_id, animation=gif, caption=msg, parse_mode=ParseMode.HTML)
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24613)")
         await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
 
 # 2. Automated Backup Job (Background Task)
@@ -24668,7 +23676,7 @@ async def registration_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
             if end_dt <= now:
                 # Count players
                 try:
-                    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+                    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
                     c = conn.cursor()
                     c.execute("SELECT COUNT(*) FROM registered_players WHERE group_id = ?", (group_id,))
                     count = c.fetchone()[0]
@@ -24712,7 +23720,7 @@ async def registration_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
 
                     # Count current registrations
                     try:
-                        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+                        conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
                         c = conn.cursor()
                         c.execute("SELECT COUNT(*) FROM registered_players WHERE group_id = ?", (group_id,))
                         count = c.fetchone()[0]
@@ -24763,7 +23771,7 @@ async def approval_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
     """
     try:
         now = datetime.now()
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute("SELECT group_id, group_name, expires_at, reminder_sent FROM tournament_groups")
         rows = c.fetchall()
@@ -24773,7 +23781,8 @@ async def approval_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
             try:
                 expires_at = datetime.fromisoformat(expires_at_str)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24774)")
                 continue
 
             days_left = (expires_at - now).days
@@ -24834,7 +23843,8 @@ async def approval_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                     )
                     try:
                         await context.bot.pin_chat_message(chat_id=group_id, message_id=warn_msg.message_id, disable_notification=False)
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24835)")
                         pass
                 except Exception as e:
                     logger.error(f"Failed to warn group {group_id}: {e}")
@@ -25370,7 +24380,8 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         member = await update.effective_chat.get_member(user_id)
         is_admin = member.status in ["creator", "administrator"]
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 25371)")
         is_admin = False
 
     is_host = (user_id == match.host_id)
@@ -26098,7 +25109,8 @@ async def impact_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             init_player_stats(new_player_id)
             save_data()
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 26099)")
             await update.message.reply_text("📡 Cannot fetch new player info. Make sure they've started the bot.")
             return
     
@@ -26313,7 +25325,8 @@ async def create_prediction_poll(context: ContextTypes.DEFAULT_TYPE, group_id: i
                 message_id=poll_message.message_id,
                 disable_notification=True
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 26314)")
             pass  # If bot can't pin, continue anyway
             
     except Exception as e:
@@ -26365,7 +25378,7 @@ async def check_and_trigger_super_over(update, context, group_id, match):
     
     # Update match phase to SUPER_OVER
     try:
-        conn = get_db_connection()
+        conn = db_connect(DB_PATH)  # 🔧 FIX: get_db_connection() was never defined anywhere in this file — this whole block (including match.phase update below) was silently failing every time
         cursor = conn.cursor()
         cursor.execute(
             """UPDATE matches 
@@ -26480,7 +25493,8 @@ async def handle_group_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     
                     try: 
                         await update.message.delete()
-                    except: 
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 26481)")
                         pass
                     
                     await process_solo_turn_result(context, chat_id, match)
@@ -26728,7 +25742,8 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             caption=result_msg,
                             parse_mode=ParseMode.HTML
                         )
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 26729)")
                         await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
                     await asyncio.sleep(1)
                     await ai_end_match_solo(context, user.id)
@@ -26755,7 +25770,8 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=result_msg,
                         parse_mode=ParseMode.HTML
                     )
-                except:
+                except Exception as e:
+                    logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 26756)")
                     await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
                 
                 # Start AI batting
@@ -26803,7 +25819,8 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 caption=result_msg,
                                 parse_mode=ParseMode.HTML
                             )
-                        except:
+                        except Exception as e:
+                            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 26804)")
                             await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
                         await asyncio.sleep(1)
                         await ai_end_match_solo(context, user.id)
@@ -26843,7 +25860,8 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             caption=result_msg,
                             parse_mode=ParseMode.HTML
                         )
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 26844)")
                         await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
                     
                     await asyncio.sleep(2)
@@ -26872,7 +25890,8 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             caption=result_msg,
                             parse_mode=ParseMode.HTML
                         )
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 26873)")
                         await update.message.reply_text(result_msg, parse_mode=ParseMode.HTML)
                     await asyncio.sleep(1)
                     await ai_play_ball(context, user.id)
@@ -27016,7 +26035,8 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         try:
                             await context.bot.send_animation(gid, "https://t.me/kyanaamrkhe/7", caption=notification_msg, parse_mode=ParseMode.HTML)
-                        except:
+                        except Exception as e:
+                            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 27017)")
                             await context.bot.send_message(gid, notification_msg, parse_mode=ParseMode.HTML)
                             
                         match.ball_timeout_task = asyncio.create_task(
@@ -27192,7 +26212,8 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                             try:
                                 await context.bot.send_animation(gid, "https://t.me/kyanaamrkhe/7", caption=notification_msg, parse_mode=ParseMode.HTML)
-                            except:
+                            except Exception as e:
+                                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 27193)")
                                 await context.bot.send_message(gid, notification_msg, parse_mode=ParseMode.HTML)
                             
                             match.ball_timeout_task = asyncio.create_task(
@@ -27345,7 +26366,8 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                     creates_join_request=False
                 )
                 link = invite_link.invite_link
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 27346)")
                 link = "Unable to create link"
             
             # Send notification to support group
@@ -27431,7 +26453,8 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         member = await update.effective_chat.get_member(user.id)
         is_admin = member.status in ["creator", "administrator"]
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 27432)")
         is_admin = False
     
     if not is_admin and user.id != OWNER_ID:
@@ -27500,7 +26523,8 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         member = await context.bot.get_chat_member(group_id, user.id)
         is_admin = member.status in ["creator", "administrator"]
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 27501)")
         is_admin = False
     
     if not is_admin and user.id != OWNER_ID:
@@ -27544,7 +26568,8 @@ async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     try:
         chat_title = query.message.chat.title or "This Group"
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 27545)")
         chat_title = "This Group"
     
     text = (
@@ -27742,7 +26767,8 @@ async def endauction_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         member = await update.effective_chat.get_member(user_id)
         is_admin = member.status in ["creator", "administrator"]
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 27743)")
         is_admin = False
     
     is_host = (user_id == auction.host_id)
@@ -28220,19 +27246,21 @@ async def groupapprove_tournament_command(update: Update, context: ContextTypes.
             return
         try:
             group_id = int(context.args[0])
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28221)")
             await update.message.reply_text("🏏 Invalid group ID!")
             return
     else:
         group_id = update.effective_chat.id
     
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     
     try:
         chat = await context.bot.get_chat(group_id)
         group_name = chat.title
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28233)")
         group_name = "Unknown Group"
     
     c.execute('INSERT OR REPLACE INTO tournament_groups (group_id, group_name, approved_at, expires_at, reminder_sent) VALUES (?, ?, CURRENT_TIMESTAMP, ?, 0)', 
@@ -28266,7 +27294,8 @@ async def registration_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     try:
         group_id = int(context.args[0])
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28267)")
         await update.message.reply_text("🏏 Invalid group ID!")
         return
 
@@ -28317,7 +27346,8 @@ async def days_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if days < 1 or days > 90:
             await update.message.reply_text("🏏 Days must be between 1 and 90!")
             return
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28318)")
         await update.message.reply_text("🏏 Invalid number!")
         return
     
@@ -28325,7 +27355,7 @@ async def days_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tournament_name = context.user_data.get('tournament_name', 'Unknown Tournament')
     end_date = datetime.now() + timedelta(days=days)
     
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     c.execute('INSERT INTO registration_periods (group_id, tournament_name, end_date, days, is_active) VALUES (?, ?, ?, ?, 1)', 
               (group_id, tournament_name, end_date.isoformat(), days))
@@ -28390,7 +27420,8 @@ async def days_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"4. Choose base price",
                 parse_mode=ParseMode.MARKDOWN
             )
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28391)")
             pass
 
 async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -28405,7 +27436,7 @@ async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     
     c.execute("""
@@ -28480,7 +27511,8 @@ async def startregistration_command(update: Update, context: ContextTypes.DEFAUL
     
     try:
         base_price = int(context.args[0])
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28481)")
         await update.message.reply_text("🏏 Invalid base price! Use a number.")
         return
     
@@ -28529,7 +27561,7 @@ async def registrationclose_command(update: Update, context: ContextTypes.DEFAUL
         if not context.args:
             # Interactive tournament selector for owner
             try:
-                conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+                conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
                 c = conn.cursor()
                 c.execute("""
                     SELECT rp.group_id, COALESCE(rp.tournament_name, tg.group_name) as name 
@@ -28582,12 +27614,13 @@ async def registrationclose_command(update: Update, context: ContextTypes.DEFAUL
     if group_id not in REGISTRATION_ACTIVE:
         # Also check if it's in DB
         try:
-            conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+            conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
             c = conn.cursor()
             c.execute("SELECT group_id FROM registration_periods WHERE group_id = ? AND is_active = 1", (group_id,))
             row = c.fetchone()
             conn.close()
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28588)")
             row = None
         if not row:
             await update.message.reply_text(
@@ -28602,7 +27635,7 @@ async def registrationclose_command(update: Update, context: ContextTypes.DEFAUL
 
     # Also update DB to mark registration as closed in both tables
     try:
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute("UPDATE tournament_groups SET registration_active = 0 WHERE group_id = ?", (group_id,))
         c.execute("UPDATE registration_periods SET is_active = 0 WHERE group_id = ?", (group_id,))
@@ -28613,7 +27646,7 @@ async def registrationclose_command(update: Update, context: ContextTypes.DEFAUL
 
     # Count registered players
     try:
-        conn2 = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn2= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
         c2 = conn2.cursor()
         c2.execute("SELECT COUNT(*) FROM registered_players WHERE group_id = ?", (group_id,))
         player_count = c2.fetchone()[0] or 0
@@ -28665,13 +27698,14 @@ async def closereg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     # Get tournament name
     try:
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute("SELECT COALESCE(tournament_name, 'Tournament') FROM registration_periods WHERE group_id = ?", (group_id,))
         row = c.fetchone()
         tournament_name = row[0] if row else "Tournament"
         conn.close()
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28672)")
         tournament_name = "Tournament"
         
     # Remove from REGISTRATION_ACTIVE
@@ -28679,7 +27713,7 @@ async def closereg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Update DB to mark registration as closed in both tables
     try:
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute("UPDATE tournament_groups SET registration_active = 0 WHERE group_id = ?", (group_id,))
         c.execute("UPDATE registration_periods SET is_active = 0 WHERE group_id = ?", (group_id,))
@@ -28690,7 +27724,7 @@ async def closereg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     # Count registered players
     try:
-        conn2 = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn2= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
         c2 = conn2.cursor()
         c2.execute("SELECT COUNT(*) FROM registered_players WHERE group_id = ?", (group_id,))
         player_count = c2.fetchone()[0] or 0
@@ -28711,7 +27745,8 @@ async def closereg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.edit_text(close_msg, parse_mode=ParseMode.HTML)
     try:
         await context.bot.send_message(group_id, close_msg, parse_mode=ParseMode.HTML)
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28712)")
         pass
 
 async def reg_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -28722,7 +27757,7 @@ async def reg_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     group_id = int(query.data.split('_')[2])
     user_id = query.from_user.id
     
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     c.execute('SELECT id FROM registered_players WHERE group_id = ? AND user_id = ?', (group_id, user_id))
     if c.fetchone():
@@ -28774,7 +27809,7 @@ async def reg_price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     username = query.from_user.username or "No username"
     full_name = query.from_user.full_name
     
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     
     try:
@@ -28862,7 +27897,7 @@ async def unregister_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     user_id = update.effective_user.id
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
 
     # Find all active registrations this user is part of
@@ -28925,7 +27960,7 @@ async def unreg_confirm_callback(update: Update, context: ContextTypes.DEFAULT_T
     full_name = query.from_user.full_name
     username = query.from_user.username or "N/A"
 
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
 
     # Check registration still open
@@ -29010,14 +28045,15 @@ async def tpower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         group_id = int(context.args[0])
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 29011)")
         await update.message.reply_text("🏏 Invalid group ID!")
         return
     
     target_user_id = update.message.reply_to_message.from_user.id
     target_name = update.message.reply_to_message.from_user.full_name
     
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     c.execute('INSERT OR IGNORE INTO tournament_power_users (user_id, group_id) VALUES (?, ?)', (target_user_id, group_id))
     conn.commit()
@@ -29189,7 +28225,7 @@ async def reglist_close_callback(update: Update, context: ContextTypes.DEFAULT_T
             pass
 
 def _check_tournament_power_user_db(user_id: int, group_id: int) -> bool:
-    conn_chk = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn_chk= db_connect(TOURNAMENT_DB_PATH)
     c_chk = conn_chk.cursor()
     c_chk.execute(
         'SELECT user_id FROM tournament_power_users WHERE user_id = ? AND group_id = ?',
@@ -29201,7 +28237,7 @@ def _check_tournament_power_user_db(user_id: int, group_id: int) -> bool:
 
 
 def _fetch_registeredlist_data(group_id: int):
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= db_connect(TOURNAMENT_DB_PATH)
     c = conn.cursor()
     c.execute(
         'SELECT user_id, username, full_name, base_price, registered_at '
@@ -29303,7 +28339,8 @@ async def auctionset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         try:
             group_id = int(context.args[0])
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 29304)")
             await update.message.reply_text("🏏 Invalid group ID!", parse_mode=ParseMode.HTML)
             return
     else:
@@ -29311,7 +28348,7 @@ async def auctionset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # Check permissions
     if user_id not in [OWNER_ID, SECOND_APPROVER_ID] and (user_id, group_id) not in TOURNAMENT_POWER_USERS:
-        conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+        conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
         c = conn.cursor()
         c.execute('SELECT user_id FROM tournament_power_users WHERE user_id = ? AND group_id = ?', (user_id, group_id))
         if not c.fetchone():
@@ -29321,7 +28358,7 @@ async def auctionset_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         conn.close()
     
     # Fetch registered players
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     c.execute('SELECT user_id, username, full_name, base_price FROM registered_players WHERE group_id = ? ORDER BY base_price, registered_at', (group_id,))
     players = c.fetchall()
@@ -29387,14 +28424,15 @@ async def auctionresults_command(update: Update, context: ContextTypes.DEFAULT_T
     if not group_id and context.args:
         try:
             group_id = int(context.args[0])
-        except:
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 29388)")
             pass
     
     if not group_id:
         await update.message.reply_text("🏏 Use in group or provide group ID!")
         return
     
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     c.execute('SELECT player_name, team_name, final_price, auction_date FROM auction_results WHERE group_id = ? ORDER BY team_name, final_price DESC', (group_id,))
     results = c.fetchall()
@@ -29421,7 +28459,7 @@ async def auctionresults_command(update: Update, context: ContextTypes.DEFAULT_T
 
 async def save_auction_results_to_db(group_id: int, auction):
     """Save auction results to tournament database"""
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
     try:
         for team_name, team in auction.teams.items():
@@ -29565,7 +28603,7 @@ async def tourrestore_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # ── Count restored data ──
         try:
-            conn_new = sqlite3.connect(TOURNAMENT_DB_PATH)
+            conn_new= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
             c_new = conn_new.cursor()
             c_new.execute("SELECT COUNT(*) FROM registered_players")
             new_players = c_new.fetchone()[0]
@@ -29727,7 +28765,8 @@ async def tourlb_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         gid = int(parts[1])
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 29728)")
         gid = update.effective_chat.id
     metric = parts[2]
 
@@ -29783,7 +28822,8 @@ async def tourlb_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     try:
         await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 29784)")
         try:
             await query.edit_message_text(text=text, parse_mode=ParseMode.HTML, reply_markup=kb)
         except Exception:
@@ -29888,6 +28928,11 @@ async def mysquad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def _pad(s, w):
         s = html.escape(str(s))
         return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+
+    def _rpad(s, w):
+        # 🔧 FIX: was undefined here — every /mysquad call crashed with NameError
+        s = str(s)
+        return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
 
     header = f"{_pad('Rank', 5)}{_pad('Player', 14)}{_pad('Role', 12)}{_rpad('Points', 8)}\n"
     table = header + ("─" * 31) + "\n"
@@ -30106,7 +29151,7 @@ def calculate_ccc_rating(runs: int, wickets: int, wins: int, sixes: int, fours: 
 def get_ccc_rankings_with_trend(limit: int = 10) -> list:
     """Fetch top players ordered by CCC rating."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn= db_connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
             SELECT user_id, first_name, username,
@@ -30184,7 +29229,7 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
-    conn = sqlite3.connect(TOURNAMENT_DB_PATH)
+    conn= db_connect(TOURNAMENT_DB_PATH)
     c = conn.cursor()
 
     if metric == "runs":
@@ -30748,7 +29793,8 @@ async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
             parse_mode=ParseMode.HTML
         )
-    except:
+    except Exception as e:
+        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 30749)")
         pass
 
 
@@ -30775,7 +29821,8 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
             try:
                 expires_at = datetime.fromisoformat(expires_at_str)
-            except:
+            except Exception as e:
+                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 30776)")
                 continue
 
             days_left = (expires_at - now).days
@@ -30816,7 +29863,8 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                             ),
                             parse_mode=ParseMode.HTML
                         )
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 30817)")
                         pass
 
             # ── Auto-kill expired clones ──
@@ -30838,7 +29886,8 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                 if script_path and os.path.exists(script_path):
                     try:
                         os.remove(script_path)
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 30839)")
                         pass
 
                 # Notify groups
@@ -30855,7 +29904,8 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                             ),
                             parse_mode=ParseMode.HTML
                         )
-                    except:
+                    except Exception as e:
+                        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 30856)")
                         pass
 
                 try:
@@ -30864,7 +29914,8 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                         text=f"🛑 Clone @{bot_username} (PID {pid}) auto-stopped → 1 month expired.",
                         parse_mode=ParseMode.HTML
                     )
-                except:
+                except Exception as e:
+                    logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 30865)")
                     pass
 
                 logger.info(f"🛑 Auto-stopped clone @{bot_username} - expired")

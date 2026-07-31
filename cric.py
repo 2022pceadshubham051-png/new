@@ -761,6 +761,84 @@ def themed(title: str, lines: list, emoji: str = "🏏") -> str:
     return f"{header}\n{body}\n{footer}"
 
 
+# ── 📊 RICH TABLE HELPER (Telegram Bot API 10.1+ sendRichMessage) ──────────
+# Real tables via Bot API's new Rich Messages system, instead of monospace
+# <pre> hacks. If the call fails for any reason (older client, transient
+# error, etc.) we transparently fall back to a normal HTML message so the
+# bot never breaks.
+def _rt_text(val) -> dict:
+    """Wrap a plain string as a RichText 'plain' node."""
+    return {"type": "plain", "text": "" if val is None else str(val)}
+
+
+def _rt_cell(val, header: bool = False) -> dict:
+    cell = {"text": [_rt_text(val)]}
+    if header:
+        cell["is_header"] = True
+    return cell
+
+
+async def send_rich_table_message(
+    chat_id: int,
+    headers: list,
+    rows: list,
+    title: Optional[str] = None,
+    intro_lines: Optional[list] = None,
+    footer: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None,
+    fallback_html: Optional[str] = None,
+) -> Optional[int]:
+    """Send a real Telegram table via sendRichMessage (Bot API 10.1+).
+
+    headers      – list[str] column headers
+    rows         – list[list[str]] row values (plain text, no HTML needed)
+    title        – optional heading shown above the table
+    intro_lines  – optional list of paragraph lines shown above the table
+    footer       – optional footer line shown below the table
+    fallback_html– if given, used to send a normal HTML message when the
+                   rich message call fails (e.g. library/server too old)
+    Returns the sent message_id, or None if it fell back / failed.
+    """
+    blocks = []
+    if title:
+        blocks.append({"type": "section_heading", "level": 1, "text": [_rt_text(title)]})
+    if intro_lines:
+        for line in intro_lines:
+            blocks.append({"type": "paragraph", "text": [_rt_text(line)]})
+
+    table_rows = [{"cells": [_rt_cell(h, header=True) for h in headers]}]
+    for row in rows:
+        table_rows.append({"cells": [_rt_cell(v) for v in row]})
+    blocks.append({"type": "table", "rows": table_rows})
+
+    if footer:
+        blocks.append({"type": "footer", "text": [_rt_text(footer)]})
+
+    payload = {"chat_id": chat_id, "rich_message": {"blocks": blocks}}
+    if reply_to_message_id:
+        payload["reply_parameters"] = {"message_id": reply_to_message_id}
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendRichMessage"
+    try:
+        resp = await asyncio.to_thread(requests.post, url, json=payload, timeout=15)
+        data = resp.json()
+        if data.get("ok"):
+            return data["result"]["message_id"]
+        logger.warning(f"sendRichMessage failed ({chat_id}): {data.get('description')}")
+    except Exception as e:
+        logger.warning(f"sendRichMessage request error ({chat_id}): {e}")
+
+    # Fallback: plain HTML message so the command still works
+    if fallback_html:
+        try:
+            await application.bot.send_message(chat_id, fallback_html, parse_mode=ParseMode.HTML,
+                                                 reply_to_message_id=reply_to_message_id,
+                                                 disable_web_page_preview=True)
+        except Exception as e2:
+            logger.error(f"Rich table fallback send also failed ({chat_id}): {e2}")
+    return None
+
+
 # --- GLOBAL HELPER FUNCTION (FIXED) ---
 def get_user_tag(user):
     """Returns a clickable HTML link for the user"""
@@ -3398,6 +3476,49 @@ def _solo_rpad(s, w):
     return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
 
 
+def _build_solo_scorecard_html(match) -> str:
+    """Real <table> version of the solo scorecard for sendRichMessage
+    (Bot API 10.1+) — same pattern as build_new_scorecard_html."""
+    players = match.solo_players
+
+    bat_rows = ""
+    for i, p in enumerate(players):
+        status = "*" if p.is_out else (" (batting)" if i == match.current_solo_bat_idx else "")
+        name = html.escape(f"{p.first_name}{status}")
+        bat_rows += (
+            f"<tr><td>{name}</td><td align='right'>{p.runs}</td>"
+            f"<td align='right'>{p.balls_faced}</td><td align='right'>{p.boundaries}</td>"
+            f"<td align='right'>{p.sixes}</td><td align='right'>{p.get_strike_rate()}</td></tr>"
+        )
+    if not bat_rows:
+        bat_rows = "<tr><td colspan='6' align='center'>No batters yet</td></tr>"
+    bat_table = (
+        "<table bordered striped>"
+        "<tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr>"
+        f"{bat_rows}</table>"
+    )
+
+    bowl_rows = ""
+    for p in players:
+        if p.balls_bowled <= 0:
+            continue
+        name = html.escape(p.first_name)
+        bowl_rows += (
+            f"<tr><td>{name}</td><td align='right'>{format_overs(p.balls_bowled)}</td>"
+            f"<td align='right'>{p.runs_conceded}</td><td align='right'>{p.wickets}</td>"
+            f"<td align='right'>{p.get_economy()}</td></tr>"
+        )
+    if not bowl_rows:
+        bowl_rows = "<tr><td colspan='5' align='center'>No bowling yet</td></tr>"
+    bowl_table = (
+        "<table bordered striped>"
+        "<tr><th>Bowler</th><th>O</th><th>R</th><th>W</th><th>Eco</th></tr>"
+        f"{bowl_rows}</table>"
+    )
+
+    return f"<h3>🏏 SOLO SCORECARD</h3><p><b>Batting</b></p>{bat_table}<p><b>Bowling</b></p>{bowl_table}"
+
+
 def _build_solo_scorecard(match):
     """Build the standalone Solo Scorecard message: Batting table + Bowling
     table, with Refresh/Back buttons. Returns (text, InlineKeyboardMarkup)."""
@@ -3505,7 +3626,18 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── SOLO MODE: standalone Batting/Bowling table scorecard ──
     if getattr(match, 'game_mode', None) in ["SOLO", "MAGICBALL"] or match.phase in [GamePhase.SOLO_JOINING, GamePhase.SOLO_MATCH]:
         text, kb = _build_solo_scorecard(match)
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        try:
+            html_solo = _build_solo_scorecard_html(match)
+            ok = await _tg_send_rich_message(group_id, html_solo)
+        except Exception as solo_rt_e:
+            logger.warning(f"Solo scorecard rich table error: {solo_rt_e}")
+            ok = False
+        if ok:
+            await update.message.reply_text(
+                "🔄 Refresh / ◀ Back", reply_markup=kb, disable_notification=True
+            )
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
     # ── Image cooldown check ──
@@ -14275,14 +14407,14 @@ async def end_innings(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
             ib_lines.append("⏳ 2nd Innings begins in 30 seconds...")
             msg = themed("⏸ INNINGS BREAK", ib_lines, "🥎")
         
-            gif_url = get_random_gif(MatchEvent.INNINGS_BREAK)
             try:
-                if gif_url:
-                    await context.bot.send_animation(group_id, animation=gif_url, caption=msg, parse_mode=ParseMode.HTML)
+                worm_bio = await asyncio.to_thread(generate_worm_graph, match)
+                if worm_bio:
+                    await context.bot.send_photo(group_id, photo=worm_bio, caption=msg, parse_mode=ParseMode.HTML)
                 else:
                     await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
             except Exception as e:
-                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 14516)")
+                logger.warning(f"Innings-break worm graph failed, falling back to text: {e}")
                 await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
         
             await asyncio.sleep(30)
@@ -19865,14 +19997,24 @@ async def unsold_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         return
-    msg = "❌ <b>UNSOLD PLAYERS</b>\n"
-    msg += "─────────────────\n\n"
+    rows = []
+    fb = "❌ <b>UNSOLD PLAYERS</b>\n─────────────────\n\n"
     for i, player_data in enumerate(auction.unsold_players, 1):
         name = player_data if isinstance(player_data, str) else player_data.get('player_name', 'Unknown')
-        msg += f"{i}. {name}\n"
-    msg += f"\n─────────────────\n"
-    msg += f"📊 <b>Total Unsold:</b> {len(auction.unsold_players)}"
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        base = "" if isinstance(player_data, str) else player_data.get('base_price', player_data.get('price', ''))
+        rows.append([i, name, base])
+        fb += f"{i}. {name}\n"
+    fb += f"\n─────────────────\n📊 <b>Total Unsold:</b> {len(auction.unsold_players)}"
+
+    await send_rich_table_message(
+        chat.id,
+        headers=["#", "Player", "Base Price"],
+        rows=rows,
+        title="❌ UNSOLD PLAYERS",
+        footer=f"📊 Total Unsold: {len(auction.unsold_players)}",
+        reply_to_message_id=update.message.message_id,
+        fallback_html=fb,
+    )
 
 async def bring_back_unsold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🔄 Bring back unsold players"""
@@ -21421,31 +21563,58 @@ async def team_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         squad_count = len(team.players)
         purse_used = team.total_spent
         purse_left = team.purse_remaining
+        bidder_plain = team.bidder_name or tname  # plain text (rich table cells aren't HTML)
 
-        msg = f"╭━━ 🏆 {html.escape(tname.upper())} ━━━━━━\n"
-        msg += f"┃ 👑 Bidder: {bidder_tag}\n"
-        msg += f"┃ 💰 Purse Remaining: <b>{purse_left} 🔷</b>\n"
-        msg += f"┃ 💸 Total Spent: {purse_used} 🔷\n"
-        msg += f"┃ 👥 Squad Size: {squad_count}\n"
-        msg += f"┣━─────────────────\n"
+        intro_lines = [
+            f"👑 Bidder: {bidder_plain}",
+            f"💰 Purse Remaining: {purse_left} 🔷   |   💸 Total Spent: {purse_used} 🔷   |   👥 Squad Size: {squad_count}",
+        ]
 
+        rows = []
+        for i, p in enumerate(team.players, 1):
+            p_name = p.get('player_name', 'Unknown')
+            p_price = p.get('price', 0)
+            rows.append([i, p_name, f"{p_price} 🪙"])
+
+        # HTML fallback (old-style box message) in case Rich Messages aren't
+        # supported yet by the running Bot API server / client.
+        fb = f"╭━━ 🏆 {html.escape(tname.upper())} ━━━━━━\n"
+        fb += f"┃ 👑 Bidder: {bidder_tag}\n"
+        fb += f"┃ 💰 Purse Remaining: <b>{purse_left} 🔷</b>\n"
+        fb += f"┃ 💸 Total Spent: {purse_used} 🔷\n"
+        fb += f"┃ 👥 Squad Size: {squad_count}\n"
+        fb += f"┣━─────────────────\n┃ 🏏 BOUGHT PLAYERS\n┃ ─────────────────\n"
         if team.players:
-            msg += f"┃ 🏏 BOUGHT PLAYERS\n"
-            msg += f"┃ ─────────────────\n"
             for i, p in enumerate(team.players, 1):
                 p_id = p.get('player_id', '')
                 p_name = p.get('player_name', 'Unknown')
                 p_price = p.get('price', 0)
                 p_tag = f'<a href=\"tg://user?id={p_id}\">{html.escape(p_name)}</a>' if p_id else html.escape(p_name)
-                msg += f"┃ {i}. {p_tag} — <b>{p_price} 🪙</b>\n"
+                fb += f"┃ {i}. {p_tag} — <b>{p_price} 🪙</b>\n"
         else:
-            msg += f"┃ 🏏 BOUGHT PLAYERS\n"
-            msg += f"┃ ─────────────────\n"
-            msg += f"┃ <i>No players bought yet.</i>\n"
+            fb += f"┃ <i>No players bought yet.</i>\n"
+        fb += f"╰━━━━━━━━\n"
 
-        msg += f"╰━━━━━━━━\n"
-
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        if team.players:
+            await send_rich_table_message(
+                chat.id,
+                headers=["#", "Player", "Price"],
+                rows=rows,
+                title=f"🏆 {tname.upper()}",
+                intro_lines=intro_lines,
+                reply_to_message_id=update.message.message_id,
+                fallback_html=fb,
+            )
+        else:
+            await send_rich_table_message(
+                chat.id,
+                headers=["Info", "Value"],
+                rows=[["Bought Players", "No players bought yet"]],
+                title=f"🏆 {tname.upper()}",
+                intro_lines=intro_lines,
+                reply_to_message_id=update.message.message_id,
+                fallback_html=fb,
+            )
 
 
 def _auc_pad(s, w):
@@ -23455,8 +23624,41 @@ async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"🏏 Active Matches: <b>{active_match_count}</b>  ┊  🎪 Auctions: <b>{active_auction_count}</b>\n"
     text += "─────────────────\n"
     text += "✅ <b>All systems operational</b>"
-    
-    await msg.edit_text(text, parse_mode=ParseMode.HTML)
+
+    stats_rows = [
+        ["Ping", f"{ping_ms} ms"],
+        ["CPU", f"{cpu}%"],
+        ["RAM", f"{memory}%"],
+        ["Total Users", f"{total_users:,}"],
+        ["DM Users", f"{db_dm_users:,}"],
+        ["Groups", f"{total_groups}"],
+        ["Banned Groups", f"{total_banned}"],
+        ["Active Groups", f"{active_groups}"],
+        ["Matches Played", f"{total_matches:,}"],
+        ["Runs Scored", f"{total_runs:,}"],
+        ["Wickets Taken", f"{total_wickets:,}"],
+        ["Sixes", f"{total_sixes:,}"],
+        ["Fours", f"{total_fours:,}"],
+        ["AI Players", f"{ai_players}"],
+        ["AI Matches", f"{ai_total}"],
+        ["AI User Wins", f"{ai_wins}"],
+        ["Active Matches", f"{active_match_count}"],
+        ["Active Auctions", f"{active_auction_count}"],
+    ]
+
+    # Delete the "fetching..." placeholder and send a real table in its place
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    await send_rich_table_message(
+        update.effective_chat.id,
+        headers=["Metric", "Value"],
+        rows=stats_rows,
+        title="🏏 CRICOVERSE → BOT STATS",
+        footer="✅ All systems operational",
+        fallback_html=text,
+    )
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """📦 Enhanced Manual Backup Command with Multi-DB Support"""
     user = update.effective_user

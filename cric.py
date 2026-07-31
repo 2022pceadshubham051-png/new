@@ -3482,41 +3482,48 @@ def _build_solo_scorecard_html(match) -> str:
     players = match.solo_players
 
     bat_rows = ""
+    sno = 0
     for i, p in enumerate(players):
+        if p.balls_faced <= 0 and not p.is_out and i != match.current_solo_bat_idx:
+            continue
+        sno += 1
         status = "*" if p.is_out else (" (batting)" if i == match.current_solo_bat_idx else "")
         name = html.escape(f"{p.first_name}{status}")
         bat_rows += (
-            f"<tr><td>{name}</td><td align='right'>{p.runs}</td>"
-            f"<td align='right'>{p.balls_faced}</td><td align='right'>{p.boundaries}</td>"
-            f"<td align='right'>{p.sixes}</td><td align='right'>{p.get_strike_rate()}</td></tr>"
+            f"<tr><td align='center'>{sno}</td><td>{name}</td><td align='right'>{p.runs}</td>"
+            f"<td align='right'>{p.balls_faced}</td><td align='right'>{p.get_strike_rate()}</td>"
+            f"<td align='right'>{p.sixes}</td><td align='right'>{p.boundaries}</td></tr>"
         )
     if not bat_rows:
-        bat_rows = "<tr><td colspan='6' align='center'>No batters yet</td></tr>"
+        bat_rows = "<tr><td colspan='7' align='center'>No batters yet</td></tr>"
     bat_table = (
         "<table bordered striped>"
-        "<tr><th>Batter</th><th>R</th><th>B</th><th>4s</th><th>6s</th><th>SR</th></tr>"
+        "<tr><th>#️⃣</th><th>🧢Name</th><th>🏏Runs</th><th>⚪Balls</th><th>⚡S.R</th><th>🚀6s</th><th>🔥4s</th></tr>"
         f"{bat_rows}</table>"
     )
 
     bowl_rows = ""
+    sno = 0
     for p in players:
         if p.balls_bowled <= 0:
             continue
+        sno += 1
+        extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
         name = html.escape(p.first_name)
         bowl_rows += (
-            f"<tr><td>{name}</td><td align='right'>{format_overs(p.balls_bowled)}</td>"
+            f"<tr><td align='center'>{sno}</td><td>{name}</td><td align='right'>{format_overs(p.balls_bowled)}</td>"
             f"<td align='right'>{p.runs_conceded}</td><td align='right'>{p.wickets}</td>"
-            f"<td align='right'>{p.get_economy()}</td></tr>"
+            f"<td align='right'>{p.get_economy()}</td><td align='right'>{extras}</td></tr>"
         )
     if not bowl_rows:
-        bowl_rows = "<tr><td colspan='5' align='center'>No bowling yet</td></tr>"
+        bowl_rows = "<tr><td colspan='7' align='center'>No bowling yet</td></tr>"
     bowl_table = (
         "<table bordered striped>"
-        "<tr><th>Bowler</th><th>O</th><th>R</th><th>W</th><th>Eco</th></tr>"
+        "<tr><th>#️⃣</th><th>🎯Name</th><th>⏱️Ovr</th><th>🏏Runs</th><th>🎳Wkt</th><th>💰Eco</th><th>➕Extra</th></tr>"
         f"{bowl_rows}</table>"
     )
 
-    return f"<h3>🏏 SOLO SCORECARD</h3><p><b>Batting</b></p>{bat_table}<p><b>Bowling</b></p>{bowl_table}"
+    return f"<h3>🏏 SOLO SCORECARD</h3><p><b>Batting</b></p>{bat_table}<p><b>Bowling</b></p>{bowl_table}<footer>📟 SOLO SCORECARD 🎮</footer>"
 
 
 def _build_solo_scorecard(match):
@@ -3524,27 +3531,34 @@ def _build_solo_scorecard(match):
     table, with Refresh/Back buttons. Returns (text, InlineKeyboardMarkup)."""
     players = match.solo_players
 
-    bat_header = f"{_solo_pad('Batter', 14)}{_solo_rpad('R', 4)}{_solo_rpad('B', 4)}{_solo_rpad('4', 3)}{_solo_rpad('6', 3)}{_solo_rpad('SR', 7)}\n"
-    bat_table = bat_header + ("─" * 35) + "\n"
+    bat_header = f"{_solo_pad('#️⃣', 4)}{_solo_pad('🧢Name', 14)}{_solo_rpad('🏏R', 5)}{_solo_rpad('⚪B', 4)}{_solo_rpad('🔥4s', 5)}{_solo_rpad('🚀6s', 5)}{_solo_rpad('⚡S.R', 7)}\n"
+    bat_table = bat_header + ("─" * 44) + "\n"
+    sno = 0
     for i, p in enumerate(players):
+        if p.balls_faced <= 0 and not p.is_out and i != match.current_solo_bat_idx:
+            continue
+        sno += 1
         status = ""
         if p.is_out:
             status = "*"
         elif i == match.current_solo_bat_idx:
             status = " (batting)"
         name = f"{p.first_name}{status}"
-        bat_table += f"{_solo_pad(name, 14)}{_solo_rpad(p.runs, 4)}{_solo_rpad(p.balls_faced, 4)}{_solo_rpad(p.boundaries, 3)}{_solo_rpad(p.sixes, 3)}{_solo_rpad(p.get_strike_rate(), 7)}\n"
-    if not players:
+        bat_table += f"{_solo_pad(sno, 4)}{_solo_pad(name, 14)}{_solo_rpad(p.runs, 5)}{_solo_rpad(p.balls_faced, 4)}{_solo_rpad(p.boundaries, 5)}{_solo_rpad(p.sixes, 5)}{_solo_rpad(p.get_strike_rate(), 7)}\n"
+    if sno == 0:
         bat_table += "  No batters yet\n"
 
-    bowl_header = f"{_solo_pad('Bowler', 14)}{_solo_rpad('O', 5)}{_solo_rpad('R', 4)}{_solo_rpad('W', 3)}{_solo_rpad('Eco', 6)}\n"
-    bowl_table = bowl_header + ("─" * 32) + "\n"
+    bowl_header = f"{_solo_pad('#️⃣', 4)}{_solo_pad('🎯Name', 14)}{_solo_rpad('⏱️Ovr', 6)}{_solo_rpad('🏏Run', 5)}{_solo_rpad('🎳Wkt', 5)}{_solo_rpad('💰Eco', 6)}{_solo_rpad('➕Ext', 5)}\n"
+    bowl_table = bowl_header + ("─" * 45) + "\n"
     any_bowled = False
+    sno = 0
     for i, p in enumerate(players):
         if p.balls_bowled <= 0:
             continue
+        sno += 1
         any_bowled = True
-        bowl_table += f"{_solo_pad(p.first_name, 14)}{_solo_rpad(format_overs(p.balls_bowled), 5)}{_solo_rpad(p.runs_conceded, 4)}{_solo_rpad(p.wickets, 3)}{_solo_rpad(p.get_economy(), 6)}\n"
+        extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
+        bowl_table += f"{_solo_pad(sno, 4)}{_solo_pad(p.first_name, 14)}{_solo_rpad(format_overs(p.balls_bowled), 6)}{_solo_rpad(p.runs_conceded, 5)}{_solo_rpad(p.wickets, 5)}{_solo_rpad(p.get_economy(), 6)}{_solo_rpad(extras, 5)}\n"
     if not any_bowled:
         bowl_table += "  No bowling yet\n"
 
@@ -3553,6 +3567,7 @@ def _build_solo_scorecard(match):
     text += f"<pre>{bat_table}</pre>"
     text += "Bowling\n"
     text += f"<pre>{bowl_table}</pre>"
+    text += "\n📟 SOLO SCORECARD 🎮"
 
     group_id = getattr(match, "group_id", None) or getattr(match, "chat_id", None)
     kb = InlineKeyboardMarkup([[
@@ -15052,10 +15067,56 @@ def _nsc_bowling_table(bowl_team: "Team") -> str:
     return header + ("─" * 45) + "\n" + rows
 
 
-def build_new_scorecard(match: "Match", group_id: int):
+def _nsc_compute_result(match: "Match") -> Optional[dict]:
+    """Build the RESULT info (winner, margin, top scorer, best bowler, MOTM,
+    time taken) for a finished match, to be embedded inside the scorecard
+    table instead of shown as a separate block."""
+    first_innings = match.batting_first
+    second_innings = match.get_other_team(first_innings)
+
+    if second_innings.score >= match.target:
+        winner = second_innings
+        wickets_remaining = len(winner.players) - 1 - winner.wickets
+        margin = f"{wickets_remaining} wicket{'s' if wickets_remaining != 1 else ''}"
+    else:
+        winner = first_innings
+        margin = f"{first_innings.score - second_innings.score} run{'s' if (first_innings.score - second_innings.score) != 1 else ''}"
+
+    all_players = first_innings.players + second_innings.players
+    top_scorer = max([p for p in all_players if p.balls_faced > 0], key=lambda x: x.runs, default=None)
+    best_bowler = max([p for p in all_players if p.balls_bowled > 0],
+                       key=lambda x: (x.wickets, -x.runs_conceded), default=None)
+
+    # MOTM = highest combined batting+bowling impact
+    def _impact(p):
+        return p.runs + (p.wickets * 25)
+    motm_player = max([p for p in all_players if p.balls_faced > 0 or p.balls_bowled > 0],
+                       key=_impact, default=None)
+
+    time_taken = None
+    created_at = getattr(match, "created_at", None)
+    if created_at:
+        delta = datetime.now() - created_at
+        mins = int(delta.total_seconds() // 60)
+        secs = int(delta.total_seconds() % 60)
+        time_taken = f"{mins}m {secs}s"
+
+    return {
+        "winner": winner.name,
+        "margin": margin,
+        "top_scorer": f"{top_scorer.first_name} • {top_scorer.runs} ({top_scorer.balls_faced})" if top_scorer else None,
+        "best_bowler": f"{best_bowler.first_name} • {best_bowler.wickets}/{best_bowler.runs_conceded}" if best_bowler else None,
+        "motm": motm_player.first_name if motm_player else None,
+        "time_taken": time_taken,
+    }
+
+
+def build_new_scorecard(match: "Match", group_id: int, result: Optional[dict] = None):
     """Professional live-cricket-style scorecard:
     Team X - runs/wkts (overs)  → Batting table → Bowling table (opponent)
     Team Y - runs/wkts (overs)  → Batting table → Bowling table (opponent)
+    If `result` is given (match finished), a RESULT block is embedded at
+    the top of the scorecard instead of being shown as a separate message.
     """
     first = match.batting_first if getattr(match, "batting_first", None) else match.team_x
     second = match.get_other_team(first) if hasattr(match, "get_other_team") else match.team_y
@@ -15077,12 +15138,27 @@ def build_new_scorecard(match: "Match", group_id: int):
         block += f"<pre>{_nsc_bowling_table(bowl_team)}</pre>"
         return block
 
-    text = _innings(first, second, "X")
+    result_block = ""
+    if result:
+        result_block += "┌─────────────────────\n"
+        result_block += "├ 🏆 𝗥𝗘𝗦𝗨𝗟𝗧\n"
+        result_block += f"├ 🥇 {html.escape(result['winner'])} won by {result['margin']}\n"
+        if result.get("top_scorer"):
+            result_block += f"├ ⭐ Top Scorer ➜ {html.escape(result['top_scorer'])}\n"
+        if result.get("best_bowler"):
+            result_block += f"├ 🎯 Best Bowling ➜ {html.escape(result['best_bowler'])}\n"
+        if result.get("motm"):
+            result_block += f"├ 🌟 MOTM ➜ {html.escape(result['motm'])}\n"
+        if result.get("time_taken"):
+            result_block += f"├ ⏱️ Time Taken ➜ {result['time_taken']}\n"
+        result_block += "└─────────────────────\n\n"
+
+    text = result_block + _innings(first, second, "X")
     text += "\n"
     text += _innings(second, first, "Y", is_second_innings=True)
 
     used = NEW_SCORECARD_USE_COUNT.get(group_id, 0)
-    text += f"\ncommand count - {used} out of {MAX_NEW_SCORECARD_USES}"
+    text += f"\n📟 command count - {used} out of {MAX_NEW_SCORECARD_USES} 🎮"
 
     return text, None
 
@@ -15115,7 +15191,7 @@ def _nsc_html_batting_table(bat_team: "Team") -> str:
         rows = "<tr><td colspan='7' align='center'>Did not bat</td></tr>"
     return (
         "<table bordered striped>"
-        "<tr><th>#</th><th>Name</th><th>Run</th><th>Balls</th><th>S.R</th><th>6s</th><th>4s</th></tr>"
+        "<tr><th>#️⃣</th><th>🧢Name</th><th>🏏Runs</th><th>⚪Balls</th><th>⚡S.R</th><th>🚀6s</th><th>🔥4s</th></tr>"
         f"{rows}</table>"
     )
 
@@ -15133,22 +15209,24 @@ def _nsc_html_bowling_table(bowl_team: "Team") -> str:
         rows += (
             f"<tr><td align='center'>{sno}</td><td>{name}</td>"
             f"<td align='right'>{format_overs(p.balls_bowled)}</td>"
+            f"<td align='right'>{p.runs_conceded}</td>"
             f"<td align='right'>{p.wickets}</td>"
             f"<td align='right'>{p.get_economy()}</td>"
             f"<td align='right'>{extras}</td></tr>"
         )
     if not rows:
-        rows = "<tr><td colspan='6' align='center'>Did not bowl</td></tr>"
+        rows = "<tr><td colspan='7' align='center'>Did not bowl</td></tr>"
     return (
         "<table bordered striped>"
-        "<tr><th>#</th><th>Name</th><th>Ovr</th><th>Wkt</th><th>Eco</th><th>Extra</th></tr>"
+        "<tr><th>#️⃣</th><th>🎯Name</th><th>⏱️Ovr</th><th>🏏Runs</th><th>🎳Wkt</th><th>💰Eco</th><th>➕Extra</th></tr>"
         f"{rows}</table>"
     )
 
 
-def build_new_scorecard_html(match: "Match", group_id: int) -> str:
+def build_new_scorecard_html(match: "Match", group_id: int, result: Optional[dict] = None) -> str:
     """Same professional scorecard, built with real <table> tags for
-    sendRichMessage's html field (Bot API 10.1+ native tables)."""
+    sendRichMessage's html field (Bot API 10.1+ native tables). If `result`
+    is given (match finished), a RESULT section is embedded at the top."""
     first = match.batting_first if getattr(match, "batting_first", None) else match.team_x
     second = match.get_other_team(first) if hasattr(match, "get_other_team") else match.team_y
 
@@ -15171,9 +15249,23 @@ def build_new_scorecard_html(match: "Match", group_id: int) -> str:
         block += _nsc_html_bowling_table(bowl_team)
         return block
 
+    result_html = ""
+    if result:
+        result_html += "<h3>🏆 RESULT</h3>"
+        result_html += f"<p>🥇 <b>{html.escape(result['winner'])}</b> won by {result['margin']}</p>"
+        if result.get("top_scorer"):
+            result_html += f"<p>⭐ Top Scorer ➜ {html.escape(result['top_scorer'])}</p>"
+        if result.get("best_bowler"):
+            result_html += f"<p>🎯 Best Bowling ➜ {html.escape(result['best_bowler'])}</p>"
+        if result.get("motm"):
+            result_html += f"<p>🌟 MOTM ➜ {html.escape(result['motm'])}</p>"
+        if result.get("time_taken"):
+            result_html += f"<p>⏱️ Time Taken ➜ {result['time_taken']}</p>"
+        result_html += "<hr/>"
+
     used = NEW_SCORECARD_USE_COUNT.get(group_id, 0)
-    out = _innings(first, second, "X") + "<hr/>" + _innings(second, first, "Y", is_second_innings=True)
-    out += f"<footer>command count - {used} out of {MAX_NEW_SCORECARD_USES}</footer>"
+    out = result_html + _innings(first, second, "X") + "<hr/>" + _innings(second, first, "Y", is_second_innings=True)
+    out += f"<footer>📟 command count - {used} out of {MAX_NEW_SCORECARD_USES} 🎮</footer>"
     return out
 
 
@@ -15230,71 +15322,27 @@ async def send_new_scorecard(target_message, group_id: int, match: "Match"):
 async def send_final_scorecard(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
     📊 PREMIUM MATCH SCORECARD - Professional Design
+
+    The old separate "┌── RESULT ──" ASCII block + duplicate innings tables
+    have been removed. Winner / margin / top scorer / best bowler / MOTM /
+    time taken now live INSIDE the emoji scorecard table itself (see
+    _nsc_compute_result + build_new_scorecard_html). The photo caption below
+    is just a short result summary, not a duplicate scorecard.
     """
-    
+
     first_innings = match.batting_first
     second_innings = match.get_other_team(first_innings)
-    
-    def _pad(s, w):
-        s = str(s)
-        return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
 
-    def _rpad(s, w):
-        s = str(s)
-        return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
-
-    # Helper function for batting + bowling box for one innings, rendered as
-    # aligned monospace tables (inside <pre>) instead of bullet lines.
-    def format_innings_card(bat_team, bowl_team, icon):
-        rr = round(bat_team.score / max(bat_team.overs, 0.1), 2)
-        extras = getattr(bat_team, 'extras', 0)
-        card = f"{icon} <b>{html.escape(bat_team.name)}</b> ➜ {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)} ov)\n"
-        card += f"📈 RR: {rr}  •  ⚖️ Extras: {extras}\n"
-
-        bat_header = f"{_pad('Batter', 15)}{_rpad('R', 4)}{_rpad('B', 4)}{_rpad('SR', 7)}\n" + ("─" * 30) + "\n"
-        batters = sorted([p for p in bat_team.players if p.balls_faced > 0 or p.is_out],
-                        key=lambda x: x.runs, reverse=True)
-        bat_rows = ""
-        for p in batters:
-            sr = round((p.runs / max(p.balls_faced, 1)) * 100, 1)
-            not_out = "*" if not p.is_out and p.balls_faced > 0 else ""
-            name = f"{p.first_name[:13]}{not_out}"
-            bat_rows += f"{_pad(name, 15)}{_rpad(p.runs, 4)}{_rpad(p.balls_faced, 4)}{_rpad(sr, 7)}\n"
-        if not bat_rows:
-            bat_rows = "  Did not bat\n"
-        card += f"<pre>{bat_header}{bat_rows}</pre>"
-
-        bowl_header = f"{_pad('Bowler', 15)}{_rpad('O', 6)}{_rpad('R', 4)}{_rpad('W', 4)}{_rpad('Eco', 7)}\n" + ("─" * 36) + "\n"
-        bowlers = sorted([p for p in bowl_team.players if p.balls_bowled > 0],
-                        key=lambda x: (x.wickets, -x.runs_conceded), reverse=True)
-        bowl_rows = ""
-        for p in bowlers:
-            ov = format_overs(p.balls_bowled)
-            econ = round(p.runs_conceded / max(p.balls_bowled / 6, 0.1), 2)
-            bowl_rows += f"{_pad(p.first_name[:14], 15)}{_rpad(ov, 6)}{_rpad(p.runs_conceded, 4)}{_rpad(p.wickets, 4)}{_rpad(econ, 7)}\n"
-        if not bowl_rows:
-            bowl_rows = "  Did not bowl\n"
-        card += f"<pre>{bowl_header}{bowl_rows}</pre>"
-        return card
-
-    # Match Result
-    winner = None
-    if second_innings.score >= match.target:
-        winner = second_innings
-        wickets_remaining = len(winner.players) - 1 - winner.wickets
-        margin = f"{wickets_remaining} wicket{'s' if wickets_remaining != 1 else ''}"
-    else:
-        winner = first_innings
-        margin = f"{first_innings.score - second_innings.score} runs"
+    result = _nsc_compute_result(match)
 
     # Keep this match reachable for the new-style scorecard's drop-down
     # buttons even after active_matches[group_id] is cleaned up.
     FINISHED_MATCH_CACHE[group_id] = match
     try:
-        html_nsc = build_new_scorecard_html(match, group_id)
+        html_nsc = build_new_scorecard_html(match, group_id, result=result)
         ok = await _tg_send_rich_message(group_id, html_nsc)
         if not ok:
-            text_nsc, _ = build_new_scorecard(match, group_id)
+            text_nsc, _ = build_new_scorecard(match, group_id, result=result)
             if len(text_nsc) > 4096:
                 await context.bot.send_message(group_id, text_nsc[:4090] + "…", parse_mode=ParseMode.HTML)
                 await context.bot.send_message(group_id, "…" + text_nsc[4090:], parse_mode=ParseMode.HTML)
@@ -15303,27 +15351,21 @@ async def send_final_scorecard(context: ContextTypes.DEFAULT_TYPE, group_id: int
     except Exception as nsc_end_e:
         logger.error(f"New-style scorecard (end of game) error: {nsc_end_e}")
 
-    all_players = first_innings.players + second_innings.players
-
-    top_scorer = max([p for p in all_players if p.balls_faced > 0],
-                    key=lambda x: x.runs, default=None)
-    best_bowler = max([p for p in all_players if p.balls_bowled > 0],
-                     key=lambda x: (x.wickets, -x.runs_conceded), default=None)
-
-    # Build Complete Scorecard — new format
+    # Short RESULT-only caption for the worm-graph / fallback photo — the
+    # full batting/bowling tables already went out in the rich message above.
     msg = f"┌─────────────────────\n"
     msg += f"├ 🏆 𝗥𝗘𝗦𝗨𝗟𝗧\n"
-    msg += f"├ 🥇 {html.escape(winner.name)} won by {margin}\n"
-    if top_scorer:
-        msg += f"├ ⭐ Top Scorer ➜ {html.escape(top_scorer.first_name)} • {top_scorer.runs} ({top_scorer.balls_faced})\n"
-    if best_bowler:
-        msg += f"├ 🎯 Best Bowling ➜ {html.escape(best_bowler.first_name)} • {best_bowler.wickets}/{best_bowler.runs_conceded}\n"
-    msg += f"└─────────────────────\n\n"
+    msg += f"├ 🥇 {html.escape(result['winner'])} won by {result['margin']}\n"
+    if result.get("top_scorer"):
+        msg += f"├ ⭐ Top Scorer ➜ {html.escape(result['top_scorer'])}\n"
+    if result.get("best_bowler"):
+        msg += f"├ 🎯 Best Bowling ➜ {html.escape(result['best_bowler'])}\n"
+    if result.get("motm"):
+        msg += f"├ 🌟 MOTM ➜ {html.escape(result['motm'])}\n"
+    if result.get("time_taken"):
+        msg += f"├ ⏱️ Time Taken ➜ {result['time_taken']}\n"
+    msg += f"└─────────────────────"
 
-    msg += format_innings_card(first_innings, second_innings, "🧊")
-    msg += "\n╠═════════════════════════╣\n"
-    msg += format_innings_card(second_innings, first_innings, "🔥")
-    
     # ── Rematch button (moved here from the removed old victory message) ──
     rematch_data = f"rematch_{group_id}_{match.total_overs}_{match.game_mode or 'TEAM'}"
     keyboard = InlineKeyboardMarkup([[
@@ -29434,61 +29476,190 @@ def sync_legacy_player_stats_to_ccc():
         logger.error(f"sync_legacy_player_stats_to_ccc failed: {e}")
 
 
-def calculate_ccc_rating(runs: int, wickets: int, wins: int, sixes: int, fours: int, ducks: int, matches: int) -> int:
-    """Calculate CCC skill rating score."""
-    if matches < CCC_MIN_MATCHES:
-        return 0
-    base = 1000
-    points = int((runs * 1.5) + (wickets * 25) + (wins * 40) + (sixes * 4) + (fours * 2) - (ducks * 15))
-    return max(100, base + points)
+def ensure_ccc_rank_table():
+    """Create the CCC Ranking snapshot table if it doesn't exist yet (idempotent)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS ccc_rank_snapshot (
+        user_id INTEGER PRIMARY KEY,
+        rank INTEGER,
+        rating REAL,
+        snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    conn.commit()
+    conn.close()
 
-def get_ccc_rankings_with_trend(limit: int = 10) -> list:
-    """Fetch top players ordered by CCC rating."""
-    try:
-        conn= db_connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            SELECT user_id, first_name, username,
-                   (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS mp,
-                   (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS mw,
-                   (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS tr,
-                   (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS tw,
-                   (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) AS ts,
-                   (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) AS tf,
-                   (COALESCE(total_ducks,0) + COALESCE(team_total_ducks,0)) AS td
-            FROM user_stats
-            WHERE (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) >= 5
-        """)
-        rows = c.fetchall()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Error fetching CCC rankings: {e}")
-        rows = []
 
-    ranked = []
-    for uid, fname, uname, mp, mw, tr, tw, ts, tf, td in rows:
-        rating = calculate_ccc_rating(tr, tw, mw, ts, tf, td, mp)
-        ranked.append({
-            "user_id": uid,
-            "first_name": fname or "Player",
-            "username": uname,
-            "rating": rating
+def _compute_ccc_ranking_rows():
+    """
+    🏅 CCC RANKING — CricoVerse's overall player rating, ICC-style.
+    Combines batting, bowling, wins and match-winning impact into a single rating,
+    averaged per match so grinders don't automatically outrank sharper performers.
+    Returns a strictly-ordered list (no ties) of dicts, richest performer first:
+    [{user_id, first_name, matches, wins, rating, rank}, ...]
+    """
+    ensure_ccc_rank_table()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT user_id, first_name,
+            (COALESCE(matches_played,0) + COALESCE(team_matches_played,0)) AS matches,
+            (COALESCE(matches_won,0) + COALESCE(team_matches_won,0)) AS wins,
+            (COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) AS runs,
+            (COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) AS wickets,
+            (COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) AS sixes,
+            (COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) AS fours,
+            (COALESCE(total_hundreds,0) + COALESCE(team_total_hundreds,0)) AS hundreds,
+            (COALESCE(total_fifties,0) + COALESCE(team_total_fifties,0)) AS fifties,
+            (COALESCE(total_ducks,0) + COALESCE(team_total_ducks,0)) AS ducks,
+            COALESCE(player_of_match_count,0) AS mom
+        FROM user_stats
+    """)
+    all_rows = c.fetchall()
+    conn.close()
+
+    # First pass: gather raw points-per-match for every qualified player so we can
+    # compute a league-average baseline. A *pure* per-match average (old formula)
+    # rewards a handful of lucky matches over sustained volume, since one bad game
+    # drags a small sample down just as hard as a big one — so grinders who keep
+    # playing (and inevitably rack up a few average/bad games too) end up looking
+    # worse than someone who played the bare minimum and got lucky. We fix this
+    # two ways:
+    #   1. Bayesian smoothing — shrink each player's average toward the league
+    #      baseline by a fixed number of "phantom" matches (K). This tames small
+    #      sample swings without capping anyone's ceiling once they have real volume.
+    #   2. Explicit experience bonus — a small flat bonus per matches played
+    #      (capped) so consistent grinders get real credit for volume rather than
+    #      being purely at the mercy of an average.
+    prelim = []
+    for (user_id, first_name, matches, wins, runs, wickets, sixes, fours,
+         hundreds, fifties, ducks, mom) in all_rows:
+        if matches < CCC_MIN_MATCHES:
+            continue
+
+        win_rate = (wins / matches) * 100 if matches else 0
+
+        # Weighted point system (total career points, not yet normalized)
+        points = (
+            runs * 1.0 +
+            wickets * 20 +
+            wins * 15 +
+            sixes * 2 +
+            fours * 1 +
+            hundreds * 50 +
+            fifties * 20 +
+            mom * 25 +
+            win_rate * matches * 0.5 -
+            ducks * 5
+        )
+
+        prelim.append({
+            "user_id": user_id,
+            "first_name": first_name or "Player",
+            "matches": matches,
+            "wins": wins,
+            "points": points,
         })
 
-    ranked.sort(key=lambda x: x["rating"], reverse=True)
+    if not prelim:
+        return []
 
-    result = []
-    for idx, p in enumerate(ranked[:limit], 1):
-        p["rank"] = idx
-        result.append(p)
-    return result
+    # League baseline = average points-per-match across all qualified players
+    baseline = sum(p["points"] / p["matches"] for p in prelim) / len(prelim)
 
-def get_player_ccc_rank(user_id: int) -> dict:
-    """Get rank and rating for a specific player."""
-    rankings = get_ccc_rankings_with_trend(limit=500)
-    for p in rankings:
-        if p["user_id"] == user_id:
-            return {"rank": p["rank"], "rating": p["rating"]}
+    K = 15          # regularization strength (in "phantom" matches) — bigger K = more shrinkage for low-volume players
+    EXP_BONUS_PER_MATCH = 0.25   # flat reward per real match played, rewarding volume/experience
+    EXP_BONUS_CAP_MATCHES = 300  # bonus stops growing past this many matches
+
+    scored = []
+    for p in prelim:
+        matches = p["matches"]
+        points = p["points"]
+
+        # Bayesian-smoothed average: pulls low-sample players toward the baseline
+        # instead of letting a handful of great matches rocket them to the top,
+        # while barely affecting players who already have a lot of matches.
+        smoothed_avg = (points + K * baseline) / (matches + K)
+
+        experience_bonus = min(matches, EXP_BONUS_CAP_MATCHES) * EXP_BONUS_PER_MATCH
+
+        rating = round(smoothed_avg + experience_bonus, 2)
+
+        scored.append({
+            "user_id": p["user_id"],
+            "first_name": p["first_name"],
+            "matches": matches,
+            "wins": p["wins"],
+            "rating": rating,
+        })
+
+    # Strict deterministic order → guarantees no two players ever share a rank
+    scored.sort(key=lambda r: (-r["rating"], -r["matches"], r["user_id"]))
+    for i, row in enumerate(scored):
+        row["rank"] = i + 1
+
+    return scored
+
+
+CCC_TREND_WINDOW = timedelta(days=1)  # 🔧 trend arrows (🔼/🔽/🆕) only compare against
+                                       # a snapshot taken within the last 1 day; an older
+                                       # snapshot is treated as stale and ignored so trend
+                                       # effectively resets/expires after 1 day.
+
+
+def get_ccc_rankings_with_trend(limit: Optional[int] = None):
+    """
+    Returns the CCC ranking rows (optionally truncated to `limit`), each tagged with a
+    'trend' field showing movement since the last snapshot **taken within the last 1 day**:
+    '🆕' new entry (or snapshot older than 1 day / missing), '🔼N' climbed N spots,
+    '🔽N' dropped N spots, '➖' unchanged.
+    Also refreshes the snapshot table used for the next trend comparison.
+    """
+    rows = _compute_ccc_ranking_rows()
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, rank, snapshot_at FROM ccc_rank_snapshot")
+    now = datetime.now()
+    old_ranks = {}
+    for uid, r, snap_at in c.fetchall():
+        try:
+            snap_dt = snap_at if isinstance(snap_at, datetime) else datetime.fromisoformat(str(snap_at))
+        except (ValueError, TypeError):
+            continue
+        # Ignore snapshots older than the trend window — trend "expires" after 1 day
+        if now - snap_dt <= CCC_TREND_WINDOW:
+            old_ranks[uid] = r
+
+    for row in rows:
+        old_rank = old_ranks.get(row["user_id"])
+        if old_rank is None:
+            row["trend"] = "🆕"
+        elif old_rank > row["rank"]:
+            row["trend"] = f"🔼{old_rank - row['rank']}"
+        elif old_rank < row["rank"]:
+            row["trend"] = f"🔽{row['rank'] - old_rank}"
+        else:
+            row["trend"] = "➖"
+
+        c.execute(
+            "INSERT INTO ccc_rank_snapshot (user_id, rank, rating, snapshot_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank, rating=excluded.rating, snapshot_at=excluded.snapshot_at",
+            (row["user_id"], row["rank"], row["rating"], now)
+        )
+
+    conn.commit()
+    conn.close()
+
+    return rows[:limit] if limit else rows
+
+
+def get_player_ccc_rank(user_id: int):
+    """Returns this player's single CCC ranking row (with trend), or None if not yet ranked."""
+    rows = get_ccc_rankings_with_trend()
+    for row in rows:
+        if row["user_id"] == user_id:
+            return row
     return None
 
 
@@ -29706,37 +29877,39 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         metric = data
         offset = 0
 
-    # CCC RANKING
+    # 🏅 CCC RANKING → always top 10 only, no pagination
     if metric == "ccc":
         rows = await asyncio.to_thread(get_ccc_rankings_with_trend, 10)
+        medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+        lines = []
+        for i, row in enumerate(rows):
+            medal = medals[i] if i < 10 else f"<b>#{row['rank']}</b>"
+            name = html.escape(row["first_name"] or "Player")
+            name = name if len(name) <= 16 else name[:15] + "…"
+            jnum = jersey_number_prefix(row["user_id"])
+            lines.append(
+                f'{medal} <a href="tg://user?id={row["user_id"]}">{jnum}{name}</a>\n'
+                f'     <code>⭐ {row["rating"]:>7} · {row["matches"]}M</code>  {row["trend"]}'
+            )
 
-        def _pad(s, w):
-            s = html.escape(str(s))
-            return (s[: max(w - 1, 1)] + "…") if len(s) > w else s + (" " * (w - len(s)))
+        text  = "🏅 <b>CCC RANKING</b> · CricoVerse Career Rating\n"
+        text += "─────────────────\n"
+        text += f"🌍 Overall skill ranking · min {CCC_MIN_MATCHES} matches\n"
+        text += "─────────────────\n\n"
+        if lines:
+            text += "\n".join(lines)
+        else:
+            text += f"<i>No one's qualified yet → play {CCC_MIN_MATCHES}+ matches! 🏏</i>"
+        text += "\n\n─────────────────"
 
-        def _rpad(s, w):
-            s = str(s)
-            return (s[: max(w - 1, 1)] + "…") if len(s) > w else (" " * (w - len(s))) + s
-
-        header = f"{_pad('Rank', 5)}{_pad('Name', 14)}{_pad('Username', 14)}{_rpad('Rating', 8)}\n"
-        table = header + ("─" * 41) + "\n"
-        for row in rows:
-            name = (row.get("first_name") or "Player")[:12]
-            uname = f"@{row.get('username') or '-'}"[:12]
-            table += f"{_pad(row['rank'], 5)}{_pad(name, 14)}{_pad(uname, 14)}{_rpad(row['rating'], 8)}\n"
-        if not rows:
-            table += f"  No one's qualified yet — play {CCC_MIN_MATCHES}+ matches!\n"
-
-        text = (
-            "🏆 <b>CRICOVERSE CCC RANKING</b>\n"
-            "─────────────────\n"
-            f"Overall skill ranking · min {CCC_MIN_MATCHES} matches\n"
-            f"<pre>{table}</pre>"
-        )
-
-        kb = InlineKeyboardMarkup([[styled_button("🔙 Back", callback_data="lb_back")]])
-        photo_bio = await asyncio.to_thread(generate_leaderboard_image, "CCC RANKING", rows, "ccc", 0) if rows else None
-        await _send_lb_view(query, text, kb, photo_bio)
+        kb = InlineKeyboardMarkup([[styled_button("🔙 Back", callback_data="lb_back", style="primary")]])
+        try:
+            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception:
+            try:
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            except Exception:
+                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
     PAGE_SIZE = 10

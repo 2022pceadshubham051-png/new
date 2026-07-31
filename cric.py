@@ -15981,35 +15981,51 @@ def generate_leaderboard_image(title: str, rows: list, metric: str, offset: int 
                 draw.text((44 if rank >= 10 else 56, y + 40), txt, font=fn_sm, fill=GRAY)
 
             # Name + stat
-            if metric == "runs":
-                uid, name, val1, val2 = row
+            # 🔧 FIX: _lb_query() rows are (user_id, first_name, username, ...) —
+            # the username column was missing from every unpack below, which
+            # made this function raise on every real leaderboard row (silently
+            # caught -> returned None -> no photo ever sent). Also added the
+            # missing 'fours' branch and a 'ccc' branch (dict rows, not tuples).
+            if metric == "ccc":
+                name = row.get("first_name") or "Player"
+                rating = row.get("rating", 0)
+                name_str = name[:22]
+                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
+                draw.text((150, y + 76), f"⭐ {rating} rating", font=fn_sm, fill=ACCENT)
+            elif metric == "runs":
+                uid, name, uname, val1, val2 = row
                 avg = round(val1 / max(val2, 1), 1)
                 name_str = (name or "Player")[:22]
                 draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
                 draw.text((150, y + 76), f"{val1} runs  •  avg {avg}", font=fn_sm, fill=ACCENT)
             elif metric == "wickets":
-                uid, name, val = row
+                uid, name, uname, val, tbb, trc = row
                 name_str = (name or "Player")[:22]
                 draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
                 draw.text((150, y + 76), f"{val} wickets", font=fn_sm, fill=ACCENT)
+            elif metric == "fours":
+                uid, name, uname, val, tr, tb = row
+                name_str = (name or "Player")[:22]
+                draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
+                draw.text((150, y + 76), f"{val} fours", font=fn_sm, fill=ACCENT)
             elif metric == "wins":
-                uid, name, tw, tp = row
+                uid, name, uname, tw, tp = row
                 name_str = (name or "Player")[:22]
                 draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
                 draw.text((150, y + 76), f"{tw} wins  /  {tp} played", font=fn_sm, fill=ACCENT)
             elif metric == "winrate":
-                uid, name, tw, tp = row
+                uid, name, uname, tw, tp = row
                 wr = round(tw / max(tp, 1) * 100, 1)
                 name_str = (name or "Player")[:22]
                 draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
                 draw.text((150, y + 76), f"{wr}%  ({tw}/{tp})", font=fn_sm, fill=ACCENT)
             elif metric == "sixes":
-                uid, name, val = row
+                uid, name, uname, val, tr, tb = row
                 name_str = (name or "Player")[:22]
                 draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
                 draw.text((150, y + 76), f"{val} sixes", font=fn_sm, fill=ACCENT)
             elif metric == "mom":
-                uid, name, val = row
+                uid, name, uname, val = row
                 name_str = (name or "Player")[:22]
                 draw.text((150, y + 20), name_str, font=fn_bold, fill=WHITE)
                 draw.text((150, y + 76), f"{val} MOM awards", font=fn_sm, fill=ACCENT)
@@ -23969,7 +23985,17 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Replace database
         shutil.move(temp_path, DB_FILE)
-        
+
+        # 🔧 FIX: force schema re-init on the restored file. db_connect()
+        # only runs init_db() once per process (guarded by _db_ready), so
+        # without this reset a restored backup missing tables/columns
+        # (e.g. an older export without user_stats) kept throwing
+        # "no such table: user_stats" for the rest of the bot's uptime.
+        global _db_ready
+        _db_ready = False
+        init_db()
+        _db_ready = True
+
         # Clear and reload data
         global user_data, match_history, player_stats, achievements, registered_groups
         user_data = {}
@@ -23979,6 +24005,7 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         registered_groups = {}
         
         load_data()
+        sync_legacy_player_stats_to_ccc()
         
         await status.edit_text(
             f"✅ <b>Restore Complete!</b>\n"
@@ -24027,7 +24054,13 @@ async def handle_restore_confirmation(update: Update, context: ContextTypes.DEFA
             
             # Replace database
             shutil.move(temp_path, DB_FILE)
-            
+
+            # 🔧 FIX: same schema re-init as /restore direct path — see comment there.
+            global _db_ready
+            _db_ready = False
+            init_db()
+            _db_ready = True
+
             # Clear and reload data
             global user_data, match_history, player_stats, achievements, registered_groups
             user_data = {}
@@ -24037,6 +24070,7 @@ async def handle_restore_confirmation(update: Update, context: ContextTypes.DEFA
             registered_groups = {}
             
             load_data()
+            sync_legacy_player_stats_to_ccc()
             
             await status.edit_text(
                 f"✅ <b>Restore Complete!</b>\n"
@@ -29140,6 +29174,64 @@ async def fantasy_equiptitle_callback(update: Update, context: ContextTypes.DEFA
 # ═══════════════════════════════════════════════════════════════
 CCC_MIN_MATCHES = 5
 
+def sync_legacy_player_stats_to_ccc():
+    """🔧 FIX: 'purane stats' (old solo/team stats stored only in the
+    JSON-backed player_stats dict, from before per-match SQL sync existed
+    or from matches that only ever updated player_stats) were invisible to
+    CCC ranking because get_ccc_rankings_with_trend()/_lb_query() read only
+    the user_stats SQL table. This walks player_stats once and folds each
+    user's solo+team totals into user_stats, taking the MAX of existing vs
+    legacy values per column so it only ever backfills gaps — it never
+    overwrites newer/larger numbers already recorded in SQL."""
+    if not player_stats:
+        return
+    try:
+        conn = db_connect(DB_PATH)
+        c = conn.cursor()
+        for uid, stats in player_stats.items():
+            solo = stats.get("solo", {}) or {}
+            team = stats.get("team", {}) or {}
+
+            legacy = {
+                "matches_played": solo.get("matches", 0),
+                "matches_won": solo.get("wins", 0),
+                "total_runs": solo.get("runs", 0),
+                "total_balls_faced": solo.get("balls", 0),
+                "total_wickets": solo.get("wickets", 0),
+                "total_sixes": solo.get("sixes", 0),
+                "total_fours": solo.get("fours", 0),
+                "total_ducks": solo.get("ducks", 0),
+                "highest_score": solo.get("highest", solo.get("high_score", 0)),
+                "total_hundreds": solo.get("centuries", 0),
+                "total_fifties": solo.get("fifties", 0),
+                "team_matches_played": team.get("matches_played", team.get("matches", 0)),
+                "team_matches_won": team.get("wins", 0),
+                "team_total_runs": team.get("runs", 0),
+                "team_total_wickets": team.get("wickets", 0),
+                "team_total_sixes": team.get("sixes", 0),
+                "team_total_fours": team.get("fours", 0),
+                "team_total_ducks": team.get("ducks", 0),
+                "team_highest_score": team.get("highest", 0),
+                "team_total_hundreds": team.get("centuries", 0),
+                "team_total_fifties": team.get("fifties", 0),
+            }
+
+            if not any(legacy.values()):
+                continue
+
+            c.execute("SELECT user_id FROM user_stats WHERE user_id = ?", (uid,))
+            if not c.fetchone():
+                c.execute("INSERT INTO user_stats (user_id) VALUES (?)", (uid,))
+
+            for col, val in legacy.items():
+                c.execute(f"UPDATE user_stats SET {col} = MAX(COALESCE({col},0), ?) WHERE user_id = ?", (val, uid))
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"sync_legacy_player_stats_to_ccc failed: {e}")
+
+
 def calculate_ccc_rating(runs: int, wickets: int, wins: int, sixes: int, fours: int, ducks: int, matches: int) -> int:
     """Calculate CCC skill rating score."""
     if matches < CCC_MIN_MATCHES:
@@ -29229,7 +29321,12 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
-    conn= db_connect(TOURNAMENT_DB_PATH)
+    # 🔧 FIX: user_stats lives in DB_PATH (resume1.db), not TOURNAMENT_DB_PATH
+    # (tournament.db). Connecting to the tournament DB here caused
+    # "no such table: user_stats" for every leaderboard tab except CCC
+    # (which already correctly used DB_PATH), so runs/wickets/wins/
+    # winrate/fours/sixes/mom never showed any rows.
+    conn= db_connect(DB_PATH)
     c = conn.cursor()
 
     if metric == "runs":
@@ -29331,6 +29428,41 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
     return title, rows, total
 
 
+async def _send_lb_view(query, text: str, kb, photo_bio: Optional[BytesIO]):
+    """🔧 FIX: leaderboard views were always text-only because
+    generate_leaderboard_image() existed but was never called anywhere.
+    This sends/edits the view as a photo (image + caption) when an image
+    was generated, with graceful fallbacks for every message state
+    (original was text, or edit fails for any reason)."""
+    if photo_bio is not None:
+        try:
+            photo_bio.seek(0)
+            media = InputMediaPhoto(media=photo_bio, caption=text, parse_mode=ParseMode.HTML)
+            await query.edit_message_media(media=media, reply_markup=kb)
+            return
+        except Exception:
+            pass
+        try:
+            photo_bio.seek(0)
+            await query.message.reply_photo(photo=photo_bio, caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            return
+        except Exception:
+            pass
+
+    # Fallback: text-only (image generation/sending failed)
+    try:
+        await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception:
+        try:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception:
+            await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
 async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle leaderboard tab buttons with pagination"""
     query = update.callback_query
@@ -29401,13 +29533,8 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         kb = InlineKeyboardMarkup([[styled_button("🔙 Back", callback_data="lb_back")]])
-        try:
-            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        except Exception:
-            try:
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-            except Exception:
-                await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        photo_bio = await asyncio.to_thread(generate_leaderboard_image, "CCC RANKING", rows, "ccc", 0) if rows else None
+        await _send_lb_view(query, text, kb, photo_bio)
         return
 
     PAGE_SIZE = 10
@@ -29501,13 +29628,8 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     kb_rows.append([styled_button("🔙 Back", callback_data="lb_back", style="danger")])
     kb = InlineKeyboardMarkup(kb_rows)
 
-    try:
-        await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    except Exception:
-        try:
-            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        except Exception:
-            await query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    photo_bio = await asyncio.to_thread(generate_leaderboard_image, title, rows, metric, offset) if rows else None
+    await _send_lb_view(query, text, kb, photo_bio)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -31138,6 +31260,7 @@ def main():
 
     # Load data on startup
     load_data()
+    sync_legacy_player_stats_to_ccc()  # 🔧 FIX: fold old JSON-only stats into CCC ranking
     ensure_fonts()
 
     # 🌊 Flood-control protection: auto-retry-with-backoff on Telegram rate limits.

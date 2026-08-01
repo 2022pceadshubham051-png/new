@@ -3700,33 +3700,132 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # still available on demand via its own refresh/worm button
     # (scorecard_worm_callback) instead of being force-sent every time.
 
+# Phases that have their OWN dedicated inactivity timers already
+# (join_phase_task, toss_decision_timeout, batsman_selection_timeout,
+# fantasy_window_timeout, host_selection, over_selection, etc).
+# match.last_activity is ONLY refreshed by plain-number ball input, so
+# applying the blanket 10-min check to these setup/lobby phases used to
+# auto-end matches while players were still actively tapping buttons.
+_BALL_PHASES_FOR_TIMEOUT = {
+    GamePhase.MATCH_IN_PROGRESS,
+    GamePhase.SOLO_MATCH,
+    GamePhase.SUPER_OVER,
+    GamePhase.MAGIC_BALL,
+}
+
+
+def _touch_match_activity(match) -> None:
+    """Refresh a match's last-activity timestamp AND clear any inactivity
+    warning flags, so a fresh burst of activity after a 5-min/9-min nudge
+    resets the whole timeout cycle instead of instantly re-firing."""
+    match.last_activity = time.time()
+    match._inactivity_warn5_sent = False
+    match._inactivity_warn9_sent = False
+
+
+def _host_tag_for_match(match) -> str:
+    """Best-effort clickable tag for the match host, for inactivity nudges."""
+    host_id = getattr(match, "host_id", None)
+    host_name = getattr(match, "host_name", None) or "Host"
+    if not host_id:
+        return html.escape(host_name)
+    return f'<a href="tg://user?id={host_id}">{html.escape(host_name)}</a>'
+
+
 async def cleanup_inactive_matches(context: ContextTypes.DEFAULT_TYPE):
-    """Auto-end matches inactive for > 10 minutes"""
+    """
+    Inactivity watchdog for ball-by-ball phases only (lobby/setup phases have
+    their own dedicated timers). Runs every 60s and, per match:
+      • at 5 min idle  → tag host once: "inactivity detected"
+      • at 9 min idle  → tag host once again: final warning, ~1 min left
+      • at 10 min idle → auto-end the match, save a 12h /regame snapshot,
+                         and announce the auto-end
+    """
     current_time = time.time()
-    inactive_threshold = 10 * 60  # 10 Minutes in seconds
+    warn5_threshold = 5 * 60
+    warn9_threshold = 9 * 60
+    end_threshold = 10 * 60
     chats_to_remove = []
 
-    # Check all active matches
     for chat_id, match in active_matches.items():
-        if current_time - match.last_activity > inactive_threshold:
+        # 🔧 GLITCH FIX: don't time out lobby/setup phases — those already
+        # have their own dedicated timers, and last_activity isn't tracked
+        # there, so this check used to fire wrongly mid-setup / mid-match.
+        if match.phase not in _BALL_PHASES_FOR_TIMEOUT:
+            continue
+
+        idle_for = current_time - match.last_activity
+        host_tag = _host_tag_for_match(match)
+
+        if idle_for >= end_threshold:
             chats_to_remove.append(chat_id)
             try:
-                # Send Time Out Message
+                # 💾 Save a resumable snapshot (same 12h /regame system as a
+                # manual /endmatch) before we tear the match down, since this
+                # is a mid-game force-stop with no result declared.
+                resume_code = save_match_for_resume(match, chat_id, match.group_name, match.host_id)
+                extra = f"\n🔑 Resume within 12h: <code>/regame {resume_code}</code>" if resume_code else ""
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text="⏰ <b>MATCH TIMEOUT!</b>\nGame auto-ended after 10 minutes of inactivity (no response recorded).",
+                    text=(
+                        f"⏰ <b>AUTO END DUE TO INACTIVITY!</b>\n"
+                        f"{host_tag}, the match was ended after 10 minutes with no response.{extra}"
+                    ),
                     parse_mode=ParseMode.HTML
                 )
-                # Unpin message
                 if match.main_message_id:
                     await context.bot.unpin_chat_message(chat_id=chat_id, message_id=match.main_message_id)
             except Exception as e:
                 logger.error(f"Error ending inactive match {chat_id}: {e}")
 
-    # Remove from memory
+        elif idle_for >= warn9_threshold and not getattr(match, "_inactivity_warn9_sent", False):
+            match._inactivity_warn9_sent = True
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"⚠️ {host_tag}, still no response! The match will auto-end due to "
+                        f"inactivity in ~1 minute if no one plays."
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Error sending 9-min inactivity warning for {chat_id}: {e}")
+
+        elif idle_for >= warn5_threshold and not getattr(match, "_inactivity_warn5_sent", False):
+            match._inactivity_warn5_sent = True
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"⏳ {host_tag}, inactivity detected! No one has played for 5 minutes — "
+                        f"play a ball soon or the match will auto-end."
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Error sending 5-min inactivity warning for {chat_id}: {e}")
+
+    # 🔧 GLITCH FIX: do a FULL cleanup (cancel lingering tasks + clear
+    # per-group locks) instead of a blunt dict delete — otherwise stale
+    # tasks/locks from the killed match could linger and make the very
+    # next /game behave as if an old match were still around.
     for chat_id in chats_to_remove:
-        if chat_id in active_matches:
-            del active_matches[chat_id]
+        match = active_matches.get(chat_id)
+        if match is None:
+            continue
+        for task_attr in (
+            'ball_timeout_task', 'batsman_selection_task', 'bowler_selection_task',
+            'join_phase_task', 'solo_timer_task', 'pause_task', 'active_ball_task',
+        ):
+            task = getattr(match, task_attr, None)
+            if task:
+                try:
+                    task.cancel()
+                except Exception:
+                    pass
+        active_matches.pop(chat_id, None)
+        processing_commands.pop(chat_id, None)
 
 async def game_timer(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, player_type: str, player_name: str):
     """Handles 45s timer with Penalties & Disqualification"""
@@ -6962,7 +7061,7 @@ async def host_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     # Set Host
     match.host_id = user.id
     match.host_name = user.first_name
-    match.last_activity = time.time()  # Reset timer
+    _touch_match_activity(match)  # Reset timer
     
     match.phase = GamePhase.OVER_SELECTION
     
@@ -15711,20 +15810,35 @@ def _draw_gradient_rect(img_draw_tuple, x1, y1, x2, y2, color_top, color_bot):
         draw.line([(x1, y1 + i), (x2, y1 + i)], fill=(r, g, b))
 
 
-async def send_photo_generation_status(update: Update, title: str, detail: str = "Rendering a smoother visual card."):
-    """Small progress message used while heavier PIL cards are being generated."""
+# 🎞️ GIF shown while a player card / dashboard image is being generated,
+# instead of the old "Building your player card..." text message.
+# Drop the file in the same folder as the jersey templates and set the name here.
+CARD_GENERATION_GIF_FILENAME = "loading.gif"
+
+
+def _resolve_asset_path(filename: str) -> Optional[str]:
+    """Look for an asset next to the jersey templates: current working dir first,
+    then the /home/cricoverse/ deployment fallback used elsewhere in this file."""
+    if os.path.exists(filename):
+        return filename
+    fallback = f"/home/cricoverse/{filename}"
+    if os.path.exists(fallback):
+        return fallback
+    return None
+
+
+async def send_photo_generation_status(update: Update, title: str = "", detail: str = ""):
+    """Small progress indicator shown while heavier PIL cards are being generated.
+    Now sends a looping GIF instead of a text status message. title/detail are kept
+    as no-op params so existing call sites don't need to change."""
     try:
         if update.effective_chat:
             await update.effective_chat.send_action("upload_photo")
-        return await update.message.reply_text(
-            f"🎨 <b>{title}</b>\n"
-            f"─────────────────\n"
-            f"• Calibrating layout\n"
-            f"• Smoothing edges\n"
-            f"• Polishing the final card\n\n"
-            f"<i>{detail}</i>",
-            parse_mode=ParseMode.HTML
-        )
+        gif_path = _resolve_asset_path(CARD_GENERATION_GIF_FILENAME)
+        if not gif_path:
+            return None
+        with open(gif_path, "rb") as f:
+            return await update.message.reply_animation(animation=f)
     except Exception:
         return None
 
@@ -19267,10 +19381,31 @@ def _render_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Opti
         from PIL import Image, ImageDraw, ImageFont, ImageOps
         from io import BytesIO
 
-        TEMPLATE_PATH = "mystats_jersey_template.jpg"
-        if not os.path.exists(TEMPLATE_PATH):
-            # Fallback: try upload location
-            TEMPLATE_PATH = "/home/cricoverse/mystats_jersey_template.jpg"
+        # 🏅 CCC rank lookup — decided early because it also picks which card
+        # template/color scheme we render with (top-5 gets the Golden Tier
+        # card; an owner /upgrade grant gets the Legendary Tier card, which
+        # takes priority over everything else).
+        try:
+            ccc_row = get_player_ccc_rank(user_id)
+        except Exception:
+            ccc_row = None
+        _cat_rank_for_template = ccc_row.get('cat_rank', ccc_row.get('rank')) if ccc_row else None
+        is_top5 = _cat_rank_for_template is not None and _cat_rank_for_template <= 5
+        is_legendary = user_data.get(user_id, {}).get("manual_tier") == "legendary"
+
+        if is_legendary:
+            TEMPLATE_PATH = "mystats_jersey_template_legendary.jpg"
+            if not os.path.exists(TEMPLATE_PATH):
+                TEMPLATE_PATH = "/home/cricoverse/mystats_jersey_template_legendary.jpg"
+        elif is_top5:
+            TEMPLATE_PATH = "mystats_jersey_template_gold.jpg"
+            if not os.path.exists(TEMPLATE_PATH):
+                TEMPLATE_PATH = "/home/cricoverse/mystats_jersey_template_gold.jpg"
+        else:
+            TEMPLATE_PATH = "mystats_jersey_template.jpg"
+            if not os.path.exists(TEMPLATE_PATH):
+                # Fallback: try upload location
+                TEMPLATE_PATH = "/home/cricoverse/mystats_jersey_template.jpg"
 
         base = Image.open(TEMPLATE_PATH).convert("RGBA")
         W, H = base.size  # 1536 x 1024
@@ -19284,16 +19419,36 @@ def _render_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Opti
             except Exception:
                 return ImageFont.load_default(size=size)
 
-        f_jersey_name = _font("Roboto-Bold.ttf", 48)
-        f_jersey_num  = _font("Roboto-Bold.ttf", 240)
-        f_card_name   = _font("Roboto-Bold.ttf", 40)
-        f_rank        = _font("Roboto-Bold.ttf", 128)
-        f_stat_val    = _font("Roboto-Bold.ttf", 60)
+        f_jersey_name = _font("Roboto-Bold.ttf", 36)
+        f_jersey_num  = _font("Roboto-Bold.ttf", 180)
+        f_card_name   = _font("Roboto-Bold.ttf", 34)
+        f_rank        = _font("Roboto-Bold.ttf", 60)
+        f_rank_cat    = _font("Roboto-Bold.ttf", 32)
+        f_stat_val    = _font("Roboto-Bold.ttf", 50)
 
-        # Dark teal, matching the template's own text/wordmark color
+        # Text color matches whichever card template is active: dark teal for
+        # the regular card, dark gold/bronze (sampled from the Golden Tier
+        # template) for top-5 players, and the brighter legendary gold
+        # (sampled from that template, since its background is much darker)
+        # for owner-granted Legendary Tier cards.
         TEAL = (7, 48, 54, 255)
+        GOLD = (91, 52, 0, 255)
+        LEGENDARY_GOLD = (187, 154, 86, 255)
+        JERSEY_GREEN = (10, 70, 60, 255)     # basic tier jersey (green/white template)
+        JERSEY_GOLD = (137, 95, 7, 255)      # golden tier jersey (gold/white template)
+        JERSEY_LEGENDARY_GREEN = (10, 60, 50, 255)  # legendary tier jersey text: green, matching the jersey's own collar/panel color
+        if is_legendary:
+            INK = LEGENDARY_GOLD
+            JERSEY_COLOR = JERSEY_LEGENDARY_GREEN
+        elif is_top5:
+            INK = GOLD
+            JERSEY_COLOR = JERSEY_GOLD
+        else:
+            INK = TEAL
+            JERSEY_COLOR = JERSEY_GREEN
 
-        def _center_text(cx, cy, text, font, fill=TEAL, stroke=2):
+        def _center_text(cx, cy, text, font, fill=None, stroke=2):
+            fill = INK if fill is None else fill
             bb = draw.textbbox((0, 0), text, font=font, stroke_width=stroke)
             w = bb[2] - bb[0]
             h = bb[3] - bb[1]
@@ -19306,14 +19461,14 @@ def _render_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Opti
         safe_name = (name or "Player").upper()[:16]
 
         JERSEY_CX = 380  # horizontal center of the shirt back
-        _center_text(JERSEY_CX, 355, safe_name, f_jersey_name, stroke=2)
-        _center_text(JERSEY_CX, 545, jersey_num_str, f_jersey_num, stroke=4)
+        _center_text(JERSEY_CX, 350, safe_name, f_jersey_name, fill=JERSEY_COLOR, stroke=2)
+        _center_text(JERSEY_CX, 540, jersey_num_str, f_jersey_num, fill=JERSEY_COLOR, stroke=3)
 
         # ── CARD (right half, offset +760) ──
         CARD_X = 760
 
-        # 1. Player photo (rounded square box: x 815-1110, y 205-500)
-        box_x0, box_y0, box_x1, box_y1 = CARD_X + 55, 185, CARD_X + 350, 520
+        # 1. Player photo (rounded square box, pixel-measured off the template)
+        box_x0, box_y0, box_x1, box_y1 = 823, 203, 1113, 527
         box_w, box_h = box_x1 - box_x0, box_y1 - box_y0
         hq = 3
         pfp_img = Image.new("RGBA", (box_w * hq, box_h * hq), (210, 210, 210, 255))
@@ -19348,17 +19503,17 @@ def _render_stats_image(user_id: int, name: str, stats: dict, avatar_bytes: Opti
         # 2. Player name (in the blank name bar, nudged left, bold)
         _center_text(CARD_X + 500, 312, (name or "Player")[:18], f_card_name, stroke=1)
 
-        # 3. CCC Ranking (in the wreath gap under PLAYER PROFILE)
-        try:
-            ccc_row = get_player_ccc_rank(user_id)
-        except Exception:
-            ccc_row = None
+        # 3. CCC Ranking (in the wreath gap under PLAYER PROFILE) — ccc_row was
+        # already fetched above to choose the card template.
         if ccc_row:
             _cat_short = {"Batsman": "BAT", "Bowler": "BOWL", "All-Rounder": "AR"}.get(ccc_row.get("category", "Batsman"), "BAT")
-            rank_str = f"#{ccc_row.get('cat_rank', ccc_row['rank'])} ({_cat_short})"
+            rank_str = str(ccc_row.get('cat_rank', ccc_row['rank']))
         else:
             rank_str = "Unranked"
-        _center_text(CARD_X + 370, 675, rank_str, f_rank, stroke=3)
+            _cat_short = ""
+        _center_text(CARD_X + 370, 655, rank_str, f_rank, stroke=2)
+        if _cat_short:
+            _center_text(CARD_X + 370, 712, _cat_short, f_rank_cat, stroke=1)
 
         # 5. Matches / Runs / Wickets values, centered in the stats section box
         stat_cols = [
@@ -25735,7 +25890,7 @@ async def handle_group_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     if chat_id not in active_matches: return
     match = active_matches[chat_id]
-    match.last_activity = time.time()
+    _touch_match_activity(match)
 
     # ── Pause/Timeout guard ──
     if getattr(match, 'is_paused', False):
@@ -29427,7 +29582,9 @@ async def fantasy_equiptitle_callback(update: Update, context: ContextTypes.DEFA
 CCC_MIN_MATCHES = 5
 
 def classify_player_category(runs: int, wickets: int, matches: int, balls_faced: int, balls_bowled: int) -> str:
-    """Classify a player as Batsman, Bowler, or All-Rounder based on per-match stats."""
+    """Fallback single-player classifier (used only when a pool-wide classification
+    isn't available, e.g. a tiny player base). Prefer classify_players_pool for the
+    real target composition of ~45% Batsman / 35% Bowler / 20% All-Rounder."""
     if matches < CCC_MIN_MATCHES:
         return "Batsman"  # default for unqualified
     runs_per_match = runs / max(matches, 1)
@@ -29443,57 +29600,182 @@ def classify_player_category(runs: int, wickets: int, matches: int, balls_faced:
         return "Bowler"
     return "Batsman"
 
+
+# 🎯 Target composition across the whole qualified player pool. Real games tend to
+# have way fewer genuine bowlers/all-rounders than batsmen, so instead of fixed
+# absolute thresholds (which used to let too many people qualify as All-Rounder
+# and starve the Bowler category), we rank the WHOLE pool by batting vs bowling
+# strength and slice it into these target shares — e.g. for 100 qualified players:
+# 45 Batsman, 35 Bowler, 20 All-Rounder.
+CCC_TARGET_SHARE_BAT = 0.45
+CCC_TARGET_SHARE_BOWL = 0.35
+CCC_TARGET_SHARE_AR = 0.20
+
+
+def classify_players_pool(rows: list) -> dict:
+    """
+    Classify an entire pool of qualified players into Batsman / Bowler / All-Rounder
+    at once, targeting the CCC_TARGET_SHARE_* composition (roughly 45/35/20).
+
+    rows: list of dicts each containing user_id, matches, runs, wickets,
+          balls_faced, balls_bowled (only qualified players, matches >= CCC_MIN_MATCHES).
+
+    Returns: {user_id: category_str}
+    """
+    if not rows:
+        return {}
+
+    n = len(rows)
+
+    # Too small a pool for percentile slicing to mean anything → fall back to the
+    # simple per-player threshold classifier so a 2-3 player group still gets a
+    # sensible category each.
+    if n < 8:
+        return {
+            r["user_id"]: classify_player_category(
+                r.get("runs", 0), r.get("wickets", 0), r.get("matches", 0),
+                r.get("balls_faced", 0), r.get("balls_bowled", 0)
+            )
+            for r in rows
+        }
+
+    enriched = []
+    for r in rows:
+        matches = max(r.get("matches", 0), 1)
+        bat_score = r.get("runs", 0) / matches
+        bowl_score = r.get("wickets", 0) / matches
+        enriched.append({**r, "bat_score": bat_score, "bowl_score": bowl_score})
+
+    def _norm(vals):
+        lo, hi = min(vals), max(vals)
+        span = (hi - lo) or 1.0
+        return [(v - lo) / span for v in vals]
+
+    bat_norm = _norm([e["bat_score"] for e in enriched])
+    bowl_norm = _norm([e["bowl_score"] for e in enriched])
+    for e, bn, wn in zip(enriched, bat_norm, bowl_norm):
+        e["bat_norm"] = bn
+        e["bowl_norm"] = wn
+        # "All-rounder-ness" = how strong they are in whichever of the two
+        # disciplines they're WEAKER in — a true all-rounder needs both.
+        e["ar_score"] = min(bn, wn)
+
+    ar_target = max(round(n * CCC_TARGET_SHARE_AR), 0)
+    enriched_by_ar = sorted(enriched, key=lambda e: (-e["ar_score"], -e["matches"], e["user_id"]))
+    ar_ids = {e["user_id"] for e in enriched_by_ar[:ar_target]}
+
+    remaining = [e for e in enriched if e["user_id"] not in ar_ids]
+    bat_target = max(round(n * CCC_TARGET_SHARE_BAT), 0)
+
+    remaining_sorted = sorted(remaining, key=lambda e: (-(e["bat_norm"] - e["bowl_norm"]), -e["matches"], e["user_id"]))
+    bat_ids = {e["user_id"] for e in remaining_sorted[:bat_target]}
+
+    result = {}
+    for e in enriched:
+        if e["user_id"] in ar_ids:
+            result[e["user_id"]] = "All-Rounder"
+        elif e["user_id"] in bat_ids:
+            result[e["user_id"]] = "Batsman"
+        else:
+            result[e["user_id"]] = "Bowler"
+    return result
+
+def resolve_player_name(user_id: int, fallback_name: Optional[str] = None) -> str:
+    """Always get real first_name from user_data if available, never default to 'Player' if user_data has a name."""
+    try:
+        uid_int = int(user_id)
+    except (ValueError, TypeError):
+        return fallback_name or "Player"
+    u_info = user_data.get(uid_int) or user_data.get(str(uid_int)) or {}
+    fn = u_info.get("first_name")
+    if fn and fn.strip() and fn.strip().lower() != "player":
+        return fn.strip()
+    if fallback_name and fallback_name.strip() and fallback_name.strip().lower() != "player":
+        return fallback_name.strip()
+    return f"Player_{uid_int}" if uid_int else "Player"
+
+
+def resolve_player_username(user_id: int, fallback_username: Optional[str] = None) -> Optional[str]:
+    """Get real username from user_data."""
+    try:
+        uid_int = int(user_id)
+    except (ValueError, TypeError):
+        return fallback_username
+    u_info = user_data.get(uid_int) or user_data.get(str(uid_int)) or {}
+    un = u_info.get("username")
+    if un and un.strip():
+        return un.strip()
+    if fallback_username and fallback_username.strip() and fallback_username.strip() != "-":
+        return fallback_username.strip()
+    return None
+
+
 def sync_legacy_player_stats_to_ccc():
-    """🔧 FIX: 'purane stats' (old solo/team stats stored only in the
-    JSON-backed player_stats dict, from before per-match SQL sync existed
-    or from matches that only ever updated player_stats) were invisible to
-    CCC ranking because get_ccc_rankings_with_trend()/_lb_query() read only
-    the user_stats SQL table. This walks player_stats once and folds each
-    user's solo+team totals into user_stats, taking the MAX of existing vs
-    legacy values per column so it only ever backfills gaps — it never
-    overwrites newer/larger numbers already recorded in SQL."""
-    if not player_stats:
-        return
+    """🔧 Sync legacy player_stats dict AND user_data names into user_stats SQL table."""
     try:
         conn = db_connect(DB_PATH)
         c = conn.cursor()
-        for uid, stats in player_stats.items():
-            solo = stats.get("solo", {}) or {}
-            team = stats.get("team", {}) or {}
 
-            legacy = {
-                "matches_played": solo.get("matches", 0),
-                "matches_won": solo.get("wins", 0),
-                "total_runs": solo.get("runs", 0),
-                "total_balls_faced": solo.get("balls", 0),
-                "total_wickets": solo.get("wickets", 0),
-                "total_sixes": solo.get("sixes", 0),
-                "total_fours": solo.get("fours", 0),
-                "total_ducks": solo.get("ducks", 0),
-                "highest_score": solo.get("highest", solo.get("high_score", 0)),
-                "total_hundreds": solo.get("centuries", 0),
-                "total_fifties": solo.get("fifties", 0),
-                "team_matches_played": team.get("matches_played", team.get("matches", 0)),
-                "team_matches_won": team.get("wins", 0),
-                "team_total_runs": team.get("runs", 0),
-                "team_total_wickets": team.get("wickets", 0),
-                "team_total_sixes": team.get("sixes", 0),
-                "team_total_fours": team.get("fours", 0),
-                "team_total_ducks": team.get("ducks", 0),
-                "team_highest_score": team.get("highest", 0),
-                "team_total_hundreds": team.get("centuries", 0),
-                "team_total_fifties": team.get("fifties", 0),
-            }
-
-            if not any(legacy.values()):
+        # 1. Sync names from user_data into user_stats for all known users
+        for uid, data in user_data.items():
+            try:
+                uid_int = int(uid)
+            except (ValueError, TypeError):
                 continue
-
-            c.execute("SELECT user_id FROM user_stats WHERE user_id = ?", (uid,))
+            fn = data.get("first_name")
+            un = data.get("username")
+            c.execute("SELECT user_id FROM user_stats WHERE user_id = ?", (uid_int,))
             if not c.fetchone():
-                c.execute("INSERT INTO user_stats (user_id) VALUES (?)", (uid,))
+                c.execute("INSERT INTO user_stats (user_id, first_name, username) VALUES (?, ?, ?)", (uid_int, fn or "Player", un))
+            else:
+                if fn:
+                    c.execute("UPDATE user_stats SET first_name = ? WHERE user_id = ? AND (first_name IS NULL OR first_name = '' OR first_name = 'Player')", (fn, uid_int))
+                if un:
+                    c.execute("UPDATE user_stats SET username = ? WHERE user_id = ? AND (username IS NULL OR username = '')", (un, uid_int))
 
-            for col, val in legacy.items():
-                c.execute(f"UPDATE user_stats SET {col} = MAX(COALESCE({col},0), ?) WHERE user_id = ?", (val, uid))
+        # 2. Sync numerical stats from player_stats dict (solo and team) into user_stats
+        if player_stats:
+            for uid, stats in player_stats.items():
+                try:
+                    uid_int = int(uid)
+                except (ValueError, TypeError):
+                    continue
+                solo = stats.get("solo", {}) or {}
+                team = stats.get("team", {}) or {}
+
+                legacy = {
+                    "matches_played": solo.get("matches", 0),
+                    "matches_won": solo.get("wins", 0),
+                    "total_runs": solo.get("runs", 0),
+                    "total_balls_faced": solo.get("balls", 0),
+                    "total_wickets": solo.get("wickets", 0),
+                    "total_sixes": solo.get("sixes", 0),
+                    "total_fours": solo.get("fours", 0),
+                    "total_ducks": solo.get("ducks", 0),
+                    "highest_score": solo.get("highest", solo.get("high_score", 0)),
+                    "total_hundreds": solo.get("centuries", 0),
+                    "total_fifties": solo.get("fifties", 0),
+                    "team_matches_played": team.get("matches_played", team.get("matches", 0)),
+                    "team_matches_won": team.get("wins", 0),
+                    "team_total_runs": team.get("runs", 0),
+                    "team_total_wickets": team.get("wickets", 0),
+                    "team_total_sixes": team.get("sixes", 0),
+                    "team_total_fours": team.get("fours", 0),
+                    "team_total_ducks": team.get("ducks", 0),
+                    "team_highest_score": team.get("highest", 0),
+                    "team_total_hundreds": team.get("centuries", 0),
+                    "team_total_fifties": team.get("fifties", 0),
+                }
+
+                if not any(legacy.values()):
+                    continue
+
+                c.execute("SELECT user_id FROM user_stats WHERE user_id = ?", (uid_int,))
+                if not c.fetchone():
+                    c.execute("INSERT INTO user_stats (user_id) VALUES (?)", (uid_int,))
+
+                for col, val in legacy.items():
+                    c.execute(f"UPDATE user_stats SET {col} = MAX(COALESCE({col},0), ?) WHERE user_id = ?", (val, uid_int))
 
         conn.commit()
         conn.close()
@@ -29587,15 +29869,24 @@ def _compute_ccc_ranking_rows():
 
         prelim.append({
             "user_id": user_id,
-            "first_name": first_name or "Player",
+            "first_name": resolve_player_name(user_id, first_name),
             "matches": matches,
             "wins": wins,
             "points": points,
-            "category": classify_player_category(runs, wickets, matches, balls_faced, balls_bowled),
+            "runs": runs,
+            "wickets": wickets,
+            "balls_faced": balls_faced,
+            "balls_bowled": balls_bowled,
         })
 
     if not prelim:
         return []
+
+    # 🎯 Classify the WHOLE qualified pool at once → ~45% Batsman / 35% Bowler /
+    # 20% All-Rounder composition, instead of each player being judged in isolation.
+    _category_by_id = classify_players_pool(prelim)
+    for p in prelim:
+        p["category"] = _category_by_id.get(p["user_id"], "Batsman")
 
     # League baseline = average points-per-match across all qualified players
     baseline = sum(p["points"] / p["matches"] for p in prelim) / len(prelim)
@@ -29841,11 +30132,7 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
-    # 🔧 FIX: user_stats lives in DB_PATH (resume1.db), not TOURNAMENT_DB_PATH
-    # (tournament.db). Connecting to the tournament DB here caused
-    # "no such table: user_stats" for every leaderboard tab except CCC
-    # (which already correctly used DB_PATH), so runs/wickets/wins/
-    # winrate/fours/sixes/mom never showed any rows.
+    sync_legacy_player_stats_to_ccc()  # Ensure all legacy stats & names are synced to user_stats table
     conn= db_connect(DB_PATH)
     c = conn.cursor()
 
@@ -29860,8 +30147,6 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
         """)
         all_rows = c.fetchall()
         title = "CRICOVERSE TOP RUN-GETTERS"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
     elif metric == "wickets":
         c.execute("""
             SELECT user_id, first_name, username,
@@ -29874,8 +30159,6 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
         """)
         all_rows = c.fetchall()
         title = "CRICOVERSE TOP WICKET-TAKERS"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
     elif metric == "fours":
         c.execute("""
             SELECT user_id, first_name, username,
@@ -29888,8 +30171,6 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
         """)
         all_rows = c.fetchall()
         title = "CRICOVERSE MOST FOURS"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
     elif metric == "sixes":
         c.execute("""
             SELECT user_id, first_name, username,
@@ -29902,8 +30183,6 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
         """)
         all_rows = c.fetchall()
         title = "CRICOVERSE MOST SIXES"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
     elif metric == "wins":
         c.execute("""
             SELECT user_id, first_name, username,
@@ -29915,8 +30194,6 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
         """)
         all_rows = c.fetchall()
         title = "CRICOVERSE MOST MATCH WINS"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
     elif metric == "winrate":
         c.execute("""
             SELECT user_id, first_name, username,
@@ -29928,8 +30205,6 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
         """)
         all_rows = c.fetchall()
         title = "CRICOVERSE BEST WIN RATE"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
     elif metric == "mom":
         c.execute("""
             SELECT user_id, first_name, username, COALESCE(player_of_match_count,0) AS mom
@@ -29939,12 +30214,22 @@ def _lb_query(metric: str, offset: int = 0, page_size: int = 10):
         """)
         all_rows = c.fetchall()
         title = "CRICOVERSE MOST MAN OF MATCH"
-        total = len(all_rows)
-        rows = all_rows[offset:offset+page_size]
     else:
-        title, rows, total = "", [], 0
+        title, all_rows = "", []
 
     conn.close()
+
+    # Resolve real player names & usernames from user_data
+    resolved_all = []
+    for r in all_rows:
+        uid = r[0]
+        fn = resolve_player_name(uid, r[1])
+        un = resolve_player_username(uid, r[2])
+        resolved_all.append((uid, fn, un) + r[3:])
+    all_rows = resolved_all
+    total = len(all_rows)
+    rows = all_rows[offset:offset+page_size]
+
     return title, rows, total
 
 
@@ -31485,6 +31770,43 @@ async def _send_user_notice(update: Update, title: str, body: str, action: str =
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
+async def upgrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔱 Owner-only: /upgrade <user_id> → forces that player's /mystats card to
+    always render with the Legendary Tier template + gold theme, regardless of
+    their CCC rank. /upgrade <user_id> off removes it again."""
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Only the bot owner can use /upgrade!")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚙️ <b>Usage:</b> <code>/upgrade [user_id]</code>\n"
+            "Forces that player's /mystats card to the Legendary Tier look.\n"
+            "Use <code>/upgrade [user_id] off</code> to remove it.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Please give a valid numeric user ID.")
+        return
+
+    remove = len(context.args) > 1 and context.args[1].lower() == "off"
+
+    target_data = user_data.setdefault(target_id, {})
+    if remove:
+        target_data.pop("manual_tier", None)
+        await update.message.reply_text(f"✅ Legendary Tier removed for user <code>{target_id}</code>.", parse_mode=ParseMode.HTML)
+    else:
+        target_data["manual_tier"] = "legendary"
+        await update.message.reply_text(f"🔱 User <code>{target_id}</code> upgraded to Legendary Tier! Their /mystats card will now show the Legendary card.", parse_mode=ParseMode.HTML)
+
+    save_data()
+
+
 async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Polished game menu with safer messaging."""
     try:
@@ -31872,6 +32194,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
 
     # ================== MATCH COMMANDS ==================
+    application.add_handler(CommandHandler("upgrade", upgrade_command))
     application.add_handler(CommandHandler("game", game_command))
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CommandHandler("endmatch", endmatch_command))

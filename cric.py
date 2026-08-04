@@ -1306,7 +1306,17 @@ def db_connect(path):
             _tournament_db_ready = True
     except Exception:
         logger.exception(f"db_connect: schema init check failed for {path}")
-    return sqlite3.connect(path)
+    # check_same_thread=False: db_connect() is routinely invoked via
+    # `await asyncio.to_thread(db_connect, ...)`, which creates the
+    # connection on a threadpool worker thread while the caller then
+    # runs c.execute()/commit() back on the main event-loop thread (or
+    # a different worker thread on a later to_thread call). SQLite's
+    # default check_same_thread=True raises "SQLite objects created in
+    # a thread can only be used in that same thread" in exactly that
+    # situation. We only ever touch a given connection sequentially
+    # (never concurrently from two threads at once), so disabling the
+    # same-thread check is safe here.
+    return sqlite3.connect(path, check_same_thread=False)
 
 
 def init_db():
@@ -1368,6 +1378,7 @@ def init_db():
         ("team_matches_won", "INTEGER DEFAULT 0"),
         ("team_total_runs", "INTEGER DEFAULT 0"),
         ("team_total_wickets", "INTEGER DEFAULT 0"),
+        ("team_total_runs_conceded", "INTEGER DEFAULT 0"),
         ("team_highest_score", "INTEGER DEFAULT 0"),
         ("team_total_sixes", "INTEGER DEFAULT 0"),
         ("team_total_fours", "INTEGER DEFAULT 0"),
@@ -2617,6 +2628,29 @@ class Match:
 
         # Game mode (for TEAM/SOLO distinction, default TEAM)
         self.game_mode = "TEAM"
+
+        # ═══════════════════════════════════════════════════════════
+        # 🏏 REAL CRICKET MODE (team mode only)
+        # ═══════════════════════════════════════════════════════════
+        self.is_real_cricket: bool = False
+        # boundary balls (4s/6s) bowled so far in the CURRENT powerplay,
+        # keyed by innings so each innings tracks its own count.
+        # reset to 0 whenever a new powerplay starts.
+        self.real_pp_boundary_count: Dict[int, int] = {1: 0, 2: 0}
+        # which powerplay number (1/2/3) each innings is currently in,
+        # 0 = not started / not applicable (real cricket off)
+        self.real_pp_current: Dict[int, int] = {1: 0, 2: 0}
+        # drinks-break overs already triggered this innings, so we never
+        # fire the same break twice (e.g. {1: {7}, 2: {7, 16}})
+        self.real_drinks_done: Dict[int, Set[int]] = {1: set(), 2: set()}
+        # per-bowler overs bowled count this innings AND which bowler
+        # bowled the immediately-preceding over (for no-consecutive-overs
+        # + max-overs-per-bowler enforcement). Keyed by innings.
+        self.real_bowler_overs: Dict[int, Dict[int, int]] = {1: {}, 2: {}}
+        self.real_last_over_bowler: Dict[int, Optional[int]] = {1: None, 2: None}
+        # set True while a powerplay/drinks-break GIF+pause is being shown,
+        # so ball input is ignored during the break window
+        self.real_break_in_progress: bool = False
 
         # ── RESUME / /regame FEATURE ──
         # Unique 8-char code assigned at match creation. If the match gets
@@ -4762,6 +4796,59 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     if query.data == "mode_team":
         await start_team_mode(query, context, chat, user)
 
+    elif query.data == "mode_real_cricket":
+        rules_text = (
+            "🏏 <b>REAL CRICKET MODE — RULES</b>\n"
+            "─────────────────\n"
+            "Team Mode ke normal rules (spam-wide, offline auto-removal) "
+            "yahan bhi lagu rahenge, extra:\n\n"
+            "🎯 <b>Powerplay Boundary Caps</b>\n"
+            "10 overs → PP1 (1-3): max 3 boundaries │ PP2 (4-6): max 4 │ PP3 (7-10): max 5\n"
+            "20 overs → PP1 (1-4): max 3 boundaries │ PP2 (5-15): max 4 │ PP3 (16-20): max 5\n"
+            "<i>Cap paar hui toh ball automatically No Ball ban jaayegi.</i>\n\n"
+            "🥤 <b>Drinks Break</b>\n"
+            "10 overs → after Over 7 (30s)\n"
+            "20 overs → after Over 7 & Over 16 (30s each)\n\n"
+            "🎳 <b>Bowler Limits</b>\n"
+            "10 overs → max 2 overs/bowler │ 20 overs → max 4 overs/bowler\n"
+            "<i>Ek bowler consecutive overs nahi daal sakta.</i>\n\n"
+            "Ready to play by these rules?"
+        )
+        keyboard = [
+            [styled_button("✅ Accept", callback_data="realcric_accept"),
+             styled_button("❌ Decline", callback_data="realcric_decline")]
+        ]
+        try:
+            await query.message.edit_caption(
+                caption=rules_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=chat.id, text=rules_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.HTML
+            )
+
+    elif query.data == "realcric_decline":
+        try:
+            await query.message.edit_caption(
+                caption="❌ <b>Real Cricket Mode declined.</b> Use /game to pick a mode again.",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+    elif query.data == "realcric_accept":
+        # Hands off into the exact same team-formation flow as normal
+        # Team Mode — start_team_mode() creates the Match object, so we
+        # flag it real-cricket right after.
+        await start_team_mode(query, context, chat, user)
+        _m = active_matches.get(chat.id)
+        if _m:
+            _m.is_real_cricket = True
+
     elif query.data == "mode_solo":
         # ... (Same code as before) ...
         match = Match(chat.id, chat.title)
@@ -4802,31 +4889,24 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
             await query.answer("🚫 Only group admins can access Tournament Mode!", show_alert=True)
             return
 
-        # Show tournament 5-button menu
+        # 🏆 TOURNAMENT HUB — Auction / Registration / Tour Management now
+        # live under one Tournament Mode entry point instead of being
+        # separate top-level /game buttons.
         keyboard = [
-            [styled_button("🏏 Start Match", callback_data="tour_start_match")],
-            [styled_button("📊 Points Table", callback_data="tour_points_table"),
-             styled_button("📋 Fixtures", callback_data="tour_fixtures")],
-            [styled_button("✏️ Edit Team", callback_data="tour_edit_team"),
-             styled_button("🔙 Back", callback_data="back_to_modes")],
-            [styled_button("🛑 End Tour", callback_data="tour_end_confirm")]
+            [styled_button("📝 Registration", callback_data="tour_registration_mode"),
+             styled_button("🏦 Auction", callback_data="tour_auction_mode")],
+            [styled_button("🛠️ Tour Management", callback_data="tour_management")],
+            [styled_button("🔙 Back", callback_data="back_to_modes")]
         ]
-
         caption = (
-            "╭━━ 🏆 TOURNAMENT CONTROL CENTER ━━🏅\n"
-            "┃ 🎯 Manage your championship league!\n"
+            "╭━━ 🏆 TOURNAMENT MODE ━━🏅\n"
+            "┃ Pick what you want to do:\n"
             "┃\n"
-            "┃ 📋 MANAGEMENT COMMANDS\n"
-            "┃ ├ /teamcreate [name]         ➔ Create franchise\n"
-            "┃ ├ /teamadd [name] @user      ➔ Add squad member\n"
-            "┃ ├ /teamremove [name] @user   ➔ Bench squad member\n"
-            "┃ └ /teamdelete [name]         ➔ Dissolve franchise\n"
-            "┃\n"
-            "┃ 👇 Use the controls below to navigate!\n"
+            "┃ 📝 Registration → open player sign-ups\n"
+            "┃ 🏦 Auction → run the player auction\n"
+            "┃ 🛠️ Tour Management → teams, fixtures, matches\n"
             "╰━━━━━━━━"
         )
-
-
         try:
             await query.message.edit_caption(
                 caption=caption,
@@ -4836,21 +4916,14 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
         except Exception:
             try:
                 photo = MEDIA_ASSETS.get("tournament_mode")
-                await context.bot.send_photo(
-                    chat_id=chat.id,
-                    photo=photo,
-                    caption=caption,
+                await query.message.reply_photo(
+                    photo=photo, caption=caption,
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode=ParseMode.HTML
                 )
-            except Exception as e:
-                logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 4829)")
-                await query.message.reply_text(
-                    caption,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=ParseMode.HTML
-                )
-    
+            except Exception:
+                await query.message.reply_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
     elif query.data == "mode_ai":
         # AI Mode - Play vs Bot in DM
         await query.answer("🤖 Opening AI Mode in your DM...", show_alert=True)
@@ -4985,6 +5058,57 @@ async def tournament_mode_callback(update: Update, context: ContextTypes.DEFAULT
     chat = query.message.chat
     user = query.from_user
     group_id = chat.id
+
+    if query.data == "tour_management":
+        if chat.id not in TOURNAMENT_APPROVED_GROUPS:
+            await query.answer("🚫 Tournament not approved for this group!", show_alert=True)
+            text, notice_markup = await _build_not_approved_notice(context, chat.id)
+            await query.message.reply_text(text, reply_markup=notice_markup, parse_mode=ParseMode.HTML)
+            return
+
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        if member.status not in ["administrator", "creator"]:
+            await query.answer("🚫 Only group admins can access Tournament Mode!", show_alert=True)
+            return
+
+        keyboard = [
+            [styled_button("🏏 Start Match", callback_data="tour_start_match")],
+            [styled_button("📊 Points Table", callback_data="tour_points_table"),
+             styled_button("📋 Fixtures", callback_data="tour_fixtures")],
+            [styled_button("✏️ Edit Team", callback_data="tour_edit_team"),
+             styled_button("🔙 Back", callback_data="mode_tournament")],
+            [styled_button("🛑 End Tour", callback_data="tour_end_confirm")]
+        ]
+        caption = (
+            "╭━━ 🏆 TOURNAMENT CONTROL CENTER ━━🏅\n"
+            "┃ 🎯 Manage your championship league!\n"
+            "┃\n"
+            "┃ 📋 MANAGEMENT COMMANDS\n"
+            "┃ ├ /teamcreate [name]         ➔ Create franchise\n"
+            "┃ ├ /teamadd [name] @user      ➔ Add squad member\n"
+            "┃ ├ /teamremove [name] @user   ➔ Bench squad member\n"
+            "┃ └ /teamdelete [name]         ➔ Dissolve franchise\n"
+            "┃\n"
+            "┃ 👇 Use the controls below to navigate!\n"
+            "╰━━━━━━━━"
+        )
+        try:
+            await query.message.edit_caption(
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            try:
+                photo = MEDIA_ASSETS.get("tournament_mode")
+                await context.bot.send_photo(
+                    chat_id=chat.id, photo=photo, caption=caption,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                await query.message.reply_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+        return
 
     # 🛑 END TOUR — bot owner ONLY (bypasses the group-admin gate below on purpose)
     if query.data in ("tour_end_confirm", "tour_end_yes", "tour_end_no"):
@@ -8020,6 +8144,10 @@ async def start_match(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
     # 🔕 "MATCH HAS BEGUN" text message removed per request — go straight to the prediction poll.
     # ✅ CREATE PREDICTION POLL
     await create_prediction_poll(context, group_id, match)
+
+    # 🏏 REAL CRICKET: Powerplay 1 GIF + 5s pause before the first ball
+    if match.is_real_cricket:
+        await real_cricket_maybe_powerplay_transition(context, group_id, match, 1)
     
     # Wait 3 seconds for effect
     await asyncio.sleep(3)
@@ -8867,6 +8995,14 @@ async def bowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     
     logger.info(f"✅ Consecutive over check passed")
+
+    # 🏏 REAL CRICKET: max-overs-per-bowler cap (consecutive-over rule above
+    # already covers the no-back-to-back requirement for this mode too)
+    if match.is_real_cricket:
+        _rc_reason = real_cricket_bowler_eligible(match, bowler.user_id)
+        if _rc_reason:
+            await update.message.reply_text(_rc_reason, parse_mode=ParseMode.HTML)
+            return
 
     # ✅ SET BOWLER
     match.current_bowling_team.current_bowler_idx = bowler_idx
@@ -10598,6 +10734,28 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     # ============================================
     else:
         runs = batsman_num
+
+        # 🏏 REAL CRICKET: powerplay boundary cap → convert to No Ball
+        if match.is_real_cricket and real_cricket_register_boundary(match, runs):
+            extra = 1
+            bat_team.score += extra
+            bowler.runs_conceded += extra
+            match.current_over_runs = getattr(match, 'current_over_runs', 0) + extra
+            match.is_free_hit = True  # No Ball => next legal delivery is a free hit
+            msg = themed("🚧 NO BALL — POWERPLAY CAP!", [
+                f"⚠️ Boundary limit for Powerplay {match.real_pp_current[match.innings]} already reached.",
+                f"🏃 <b>+{extra} run</b> (No Ball) — next ball is a <b>Free Hit</b>!",
+                f"📊 Score: <b>{bat_team.score}/{bat_team.wickets}</b>",
+            ], "🚧")
+            try:
+                await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
+            except Exception:
+                logger.exception("real cricket no-ball message failed")
+            match.current_ball_data = {}
+            await asyncio.sleep(2)
+            await execute_ball(context, group_id, match)  # replay the ball, over/ball-count unchanged
+            return
+
         bat_team.score += runs
         striker.runs += runs
         striker.balls_faced += 1
@@ -11498,6 +11656,154 @@ async def check_drinks_break(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
         )
 
 
+def real_cricket_powerplay_for_over(match: Match, over_num_1indexed: int) -> int:
+    """Returns which powerplay (1/2/3) the given (1-indexed) over falls in,
+    for the match's total_overs format. Only meaningful when
+    match.is_real_cricket is True."""
+    if match.total_overs == 10:
+        if over_num_1indexed <= 3:
+            return 1
+        elif over_num_1indexed <= 6:
+            return 2
+        else:
+            return 3
+    elif match.total_overs == 20:
+        if over_num_1indexed <= 4:
+            return 1
+        elif over_num_1indexed <= 15:
+            return 2
+        else:
+            return 3
+    return 0
+
+
+def real_cricket_boundary_cap(pp_number: int) -> int:
+    """Max boundary (4/6) balls allowed within a powerplay."""
+    return {1: 3, 2: 4, 3: 5}.get(pp_number, 999)
+
+
+def real_cricket_max_overs_per_bowler(match: Match) -> int:
+    return 2 if match.total_overs == 10 else 4
+
+
+def real_cricket_drinks_break_overs(match: Match) -> List[int]:
+    """Over numbers (completed-overs count) after which a drinks break fires."""
+    return [7] if match.total_overs == 10 else [7, 16]
+
+
+async def _real_cricket_send_gif(context: ContextTypes.DEFAULT_TYPE, group_id: int, filename: str, caption: str):
+    """Sends a LOCAL gif file that lives in the same folder as this script
+    (e.g. powerplay.gif, drinks_break.gif — just drop the renamed file next
+    to cric.py). Falls back to text-only if the file isn't found so the
+    bot never crashes because a gif is missing."""
+    gif_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    try:
+        if os.path.isfile(gif_path):
+            with open(gif_path, "rb") as f:
+                await context.bot.send_animation(chat_id=group_id, animation=f, caption=caption, parse_mode=ParseMode.HTML)
+        else:
+            logger.warning(f"Real Cricket gif not found at {gif_path}, sending text only")
+            await context.bot.send_message(chat_id=group_id, text=caption, parse_mode=ParseMode.HTML)
+    except Exception:
+        logger.exception(f"_real_cricket_send_gif failed for {filename}")
+        try:
+            await context.bot.send_message(chat_id=group_id, text=caption, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+
+async def real_cricket_maybe_send_powerplay_gif(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, pp_number: int):
+    """Sends the powerplay-start GIF + rules reminder, pauses 5s, then
+    lets play resume. Call this the moment a new powerplay begins."""
+    cap = real_cricket_boundary_cap(pp_number)
+    match.real_break_in_progress = True
+    caption = (
+        f"⚡ <b>POWERPLAY {pp_number} ACTIVE!</b>\n"
+        f"🎯 Max <b>{cap} boundary balls</b> allowed this powerplay.\n"
+        f"<i>Cross the cap and the ball becomes a No Ball!</i>"
+    )
+    await _real_cricket_send_gif(context, group_id, "powerplay.gif", caption)
+    await asyncio.sleep(5)
+    match.real_break_in_progress = False
+
+
+async def real_cricket_maybe_drinks_break(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, completed_over: int):
+    """Call right after an over finishes. Fires a 30s auto drinks break
+    if completed_over matches this format's break point(s)."""
+    if not match.is_real_cricket:
+        return
+    if completed_over not in real_cricket_drinks_break_overs(match):
+        return
+    if completed_over in match.real_drinks_done[match.innings]:
+        return
+    match.real_drinks_done[match.innings].add(completed_over)
+
+    match.real_break_in_progress = True
+    await _real_cricket_send_gif(context, group_id, "drinks_break.gif", "🥤 <b>DRINKS BREAK!</b>\nResuming in 30 seconds...")
+
+    await asyncio.sleep(30)
+
+    await _real_cricket_send_gif(context, group_id, "drinks_break.gif", "▶️ <b>Match resumed!</b>")
+
+    match.real_break_in_progress = False
+
+
+async def real_cricket_maybe_powerplay_transition(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, next_over_1indexed: int):
+    """Call right before the NEXT over starts (i.e. after over-complete
+    housekeeping). Detects a powerplay boundary and fires the GIF+5s pause
+    if this over begins a new powerplay."""
+    if not match.is_real_cricket:
+        return
+    new_pp = real_cricket_powerplay_for_over(match, next_over_1indexed)
+    if new_pp == 0:
+        return
+    if match.real_pp_current[match.innings] != new_pp:
+        match.real_pp_current[match.innings] = new_pp
+        match.real_pp_boundary_count[match.innings] = 0  # reset cap counter for the new powerplay
+        await real_cricket_maybe_send_powerplay_gif(context, group_id, match, new_pp)
+
+
+def real_cricket_register_boundary(match: Match, runs: int) -> bool:
+    """Call when a legal delivery scores runs, BEFORE committing them to the
+    scorecard. Returns True if this ball should be converted to a No Ball
+    (i.e. the powerplay's boundary cap was already reached), else False.
+    If it returns False and runs was a 4/6, the boundary count is incremented."""
+    if not match.is_real_cricket:
+        return False
+    pp = match.real_pp_current.get(match.innings, 0)
+    if pp == 0 or runs not in (4, 6):
+        return False
+    cap = real_cricket_boundary_cap(pp)
+    current = match.real_pp_boundary_count.get(match.innings, 0)
+    if current >= cap:
+        return True  # cap breached -> caller should treat this ball as a no-ball instead
+    match.real_pp_boundary_count[match.innings] = current + 1
+    return False
+
+
+def real_cricket_bowler_eligible(match: Match, bowler_id: int) -> Optional[str]:
+    """Returns None if the bowler CAN bowl the next over, or a short reason
+    string if they can't (max-overs reached / consecutive-over rule)."""
+    if not match.is_real_cricket:
+        return None
+    overs_bowled = match.real_bowler_overs[match.innings].get(bowler_id, 0)
+    if overs_bowled >= real_cricket_max_overs_per_bowler(match):
+        return f"⚠️ Max {real_cricket_max_overs_per_bowler(match)} overs/bowler reached in Real Cricket Mode."
+    if match.real_last_over_bowler.get(match.innings) == bowler_id:
+        return "⚠️ Same bowler can't bowl consecutive overs in Real Cricket Mode."
+    return None
+
+
+def real_cricket_record_over_bowled(match: Match, bowler_id: int):
+    """Call once per completed over, from check_over_complete, to update
+    per-bowler over counts and the last-bowler tracker."""
+    if not match.is_real_cricket:
+        return
+    d = match.real_bowler_overs[match.innings]
+    d[bowler_id] = d.get(bowler_id, 0) + 1
+    match.real_last_over_bowler[match.innings] = bowler_id
+
+
 async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
     """
     🏁 End of Over: Show Mini Scorecard, Swap Batsmen, Request New Bowler
@@ -11517,6 +11823,7 @@ async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         bowler = bowl_team.players[bowl_team.current_bowler_idx]
         bowl_team.bowler_history.append(bowl_team.current_bowler_idx)
         logger.info(f"✅ Bowler {bowler.first_name} added to history")
+        real_cricket_record_over_bowled(match, bowler.user_id)
     else:
         bowler = type("obj", (object,), {"first_name": "Unknown", "wickets": 0, "runs_conceded": 0})
         logger.error("🚫 No bowler found at over complete!")
@@ -11651,7 +11958,14 @@ async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     logger.info("⏸️ Match state set to waiting_for_bowler=True")
     
     await asyncio.sleep(2)
-    
+
+    # 🏏 REAL CRICKET: drinks break (if this over triggers one), then
+    # powerplay transition GIF+pause for the over about to start.
+    if match.is_real_cricket:
+        completed_over_num = bat_team.balls // 6
+        await real_cricket_maybe_drinks_break(context, group_id, match, completed_over_num)
+        await real_cricket_maybe_powerplay_transition(context, group_id, match, completed_over_num + 1)
+
     # ✅ STEP 5: REQUEST NEW BOWLER (CRITICAL)
     logger.info("📢 Calling request_bowler_selection...")
     await request_bowler_selection(context, group_id, match)
@@ -14548,6 +14862,10 @@ async def end_innings(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: 
             match.current_batting_team.current_non_striker_idx = None
             match.current_bowling_team.current_bowler_idx = None
             match.current_batting_team.out_players_indices = set()
+
+            # 🏏 REAL CRICKET: Powerplay 1 GIF + 5s pause for the 2nd innings
+            if match.is_real_cricket:
+                await real_cricket_maybe_powerplay_transition(context, group_id, match, 1)
         
             chase_team = match.current_batting_team
             runs_needed = match.target
@@ -18835,7 +19153,7 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current is not None:
             await update.message.reply_text(
                 f"🎽 <b>Your Jersey Number:</b> #{current}\n"
-                f"<i>Use /jersey <number> (0-999) to change it.</i>",
+                f"<i>Use /jersey &lt;number&gt; (0-999) to change it.</i>",
                 parse_mode=ParseMode.HTML
             )
         else:
@@ -25735,9 +26053,24 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error while handling RetryAfter flood: {e}")
         return
 
+    # ── Filter out known-benign Telegram noise so owner DMs aren't spammed ──
+    # These happen routinely (stale callback buttons, race conditions on
+    # edits, unescaped user-supplied text in a caption) and are already
+    # harmless no-ops from Telegram's side — they don't need a DM per hit.
+    _err_str = str(context.error)
+    _benign_markers = (
+        "Query is too old",                      # stale inline-button tap, nothing to fix
+        "Message is not modified",                # duplicate edit_message_text with identical content
+        "message is not modified",
+        "Can't parse entities",                   # unescaped '<'/'>'/'&' in HTML-mode text — see note below
+    )
+    if any(marker in _err_str for marker in _benign_markers):
+        logger.warning(f"Suppressed benign Telegram error (not DMing owner): {_err_str}")
+        return
+
     # Notify owner about error
     try:
-        error_text = f"An error occurred:\n\n{str(context.error)}"
+        error_text = f"An error occurred:\n\n{_err_str}"
         await context.bot.send_message(
             chat_id=OWNER_ID,
             text=error_text
@@ -31857,9 +32190,8 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [styled_button("⚔️ Solo Mode", callback_data="mode_solo"),
              styled_button("🤖 AI Mode (DM)", callback_data="mode_ai")],
-            [styled_button("👥 Team Mode", callback_data="mode_team")],
-            [styled_button("📝 Registration", callback_data="tour_registration_mode"),
-             styled_button("🏦 Auction", callback_data="tour_auction_mode")],
+            [styled_button("👥 Team Mode", callback_data="mode_team"),
+             styled_button("🏏 Real Cricket", callback_data="mode_real_cricket")],
             [styled_button("🏆 Tournament Mode", callback_data="mode_tournament")]
         ]
 
@@ -32386,6 +32718,9 @@ def main():
     application.add_handler(CallbackQueryHandler(drs_callback, pattern="^drs_(take|reject)$"))
     application.add_handler(
         CallbackQueryHandler(mode_selection_callback, pattern="^mode_")
+    )
+    application.add_handler(
+        CallbackQueryHandler(mode_selection_callback, pattern="^realcric_")
     )
     application.add_handler(
         CallbackQueryHandler(help_callback, pattern="^help_")

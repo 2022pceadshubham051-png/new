@@ -22002,7 +22002,7 @@ async def shift_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_team_edit_message(context, chat.id, match)
 
 
-
+async def remove_player_team_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle team selection for /remove [serial] command."""
     query = update.callback_query
     await query.answer()

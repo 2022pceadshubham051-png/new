@@ -8,6 +8,7 @@ Fixed version - No circular imports
 # STEP 1: Import all standard libraries first
 # ═══════════════════════════════════════════════════════════════
 import logging
+import re
 import asyncio
 import random
 import math
@@ -18621,6 +18622,40 @@ def compute_player_role(user_id: int) -> str:
     return "Rookie 🌟"
 
 
+def _safe_truncate_html(text: str, limit: int = 1024, suffix: str = "…") -> str:
+    """Truncate HTML text to `limit` chars WITHOUT breaking an open tag (e.g.
+    <blockquote>...</blockquote>). Cuts on a full tag boundary and re-closes
+    any tags still open at the cut point, so Telegram never rejects the
+    caption with 'unclosed start tag' errors."""
+    if len(text) <= limit:
+        return text
+
+    budget = max(limit - len(suffix), 0)
+    cut = text[:budget]
+
+    # If we cut in the middle of a tag (an unmatched '<' with no following
+    # '>'), back off to just before that tag starts.
+    last_lt = cut.rfind("<")
+    last_gt = cut.rfind(">")
+    if last_lt > last_gt:
+        cut = cut[:last_lt]
+
+    # Track open/close tags to know what's still unclosed at the cut point.
+    open_stack = []
+    for m in re.finditer(r"<(/?)(\w+)[^>]*>", cut):
+        closing, tag = m.group(1), m.group(2).lower()
+        if tag in ("br", "hr"):
+            continue
+        if closing:
+            if open_stack and open_stack[-1] == tag:
+                open_stack.pop()
+        else:
+            open_stack.append(tag)
+
+    closing_tags = "".join(f"</{t}>" for t in reversed(open_stack))
+    return cut + suffix + closing_tags
+
+
 def build_team_stats_text(user_id: int, user_name: str) -> str:
     """Build the 👥 Team stats section text shown in /mystats (also used as the default view)."""
     SEP = "─────────────────"
@@ -20156,7 +20191,7 @@ async def mystats_command_v2(update: Update, context: ContextTypes.DEFAULT_TYPE)
         avatar_bytes = await fetch_user_avatar_bytes(context, user_id)
         stats_photo = await generate_stats_image(user_id, user_name, stats, avatar_bytes, "team")
         if stats_photo:
-            photo_caption = caption if len(caption) <= 1024 else caption[:1020] + "…"
+            photo_caption = _safe_truncate_html(caption, 1024)
             await update.message.reply_photo(
                 photo=stats_photo,
                 caption=photo_caption,
@@ -20229,7 +20264,7 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [[back_button]]
         try:
-            caption_text = text if len(text) <= 1024 else text[:1020] + "…"
+            caption_text = _safe_truncate_html(text, 1024)
             await query.edit_message_caption(caption=caption_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception as e:
             logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20416)")
@@ -29853,7 +29888,7 @@ async def scorecard_refresh_callback(update: Update, context: ContextTypes.DEFAU
     ]])
 
     # Telegram caption limit is 1024 chars; if longer, truncate with note
-    display_text = text if len(text) <= 1024 else text[:1020] + "\n<i>…use /scorecard for full view</i>"
+    display_text = text if len(text) <= 1024 else _safe_truncate_html(text, 1024, suffix="\n<i>…use /scorecard for full view</i>")
 
     try:
         await query.edit_message_caption(caption=display_text, parse_mode=ParseMode.HTML, reply_markup=refresh_kb)

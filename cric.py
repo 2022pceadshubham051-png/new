@@ -13401,25 +13401,43 @@ async def end_solo_game_logic(context, chat_id, match):
     # ✅ 2. VICTORY GIF WITH DETAILED CARD
     winner_sr = round((winner.runs / winner.balls_faced) * 100, 1) if winner.balls_faced > 0 else 0
     winner_tag = f'<a href=\"tg://user?id={winner.user_id}\">{html.escape(winner.first_name)}</a>'
-    
-    msg = f"🏆 <b>SOLO BATTLE CHAMPION</b> 🏆\n"
-    msg += "─────────────────\n\n"
-    msg += f"👑 <b>WINNER: {winner_tag}</b>\n"
-    msg += f"💥 <b>Score:</b> {winner.runs} ({winner.balls_faced})\n"
-    msg += f"🔥 <b>Strike Rate:</b> {winner_sr}\n"
-    msg += "─────────────────\n\n"
-    
-    msg += "📊 <b>FINAL LEADERBOARD</b>\n"
-    msg += "─────────────────\n"
-    
+    winner_balls_bowled = getattr(winner, "balls_bowled", 0)
+    winner_bowling_line = ""
+    if winner_balls_bowled > 0:
+        winner_econ = round((getattr(winner, "runs_conceded", 0) / winner_balls_bowled) * 6, 2)
+        winner_bowling_line = (
+            f"├ 🎳 Wickets      ➜ {winner.wickets}\n"
+            f"├ 🥎 Bowling Fig. ➜ {winner.wickets}/{getattr(winner, 'runs_conceded', 0)} ({format_overs(winner_balls_bowled)} ov)\n"
+            f"├ 📉 Economy      ➜ {winner_econ}\n"
+        )
+
+    BAR = "────────────────────"
+    msg = f"🏆 𝗦𝗢𝗟𝗢 𝗕𝗔𝗧𝗧𝗟𝗘 𝗖𝗛𝗔𝗠𝗣𝗜𝗢𝗡 🏆\n\n"
+    msg += f"👑 𝗪𝗜𝗡𝗡𝗘𝗥 ➜ {winner_tag}\n"
+    msg += "<blockquote>"
+    msg += f"┌{BAR}\n"
+    msg += f"├ 🏏 Score        ➜ {winner.runs} ({winner.balls_faced}b)\n"
+    msg += f"├ ⚡ Strike Rate  ➜ {winner_sr}\n"
+    msg += winner_bowling_line
+    msg += f"└{BAR}"
+    msg += "</blockquote>\n\n"
+
+    msg += "📊 𝗙𝗜𝗡𝗔𝗟 𝗟𝗘𝗔𝗗𝗘𝗥𝗕𝗢𝗔𝗥𝗗\n"
+    msg += "<blockquote>"
+    msg += f"┌{BAR}\n"
+
     medals = ["🥇", "🥈", "🥉"]  # 🔧 FIX: was undefined here, caused "name 'medals' is not defined"
     for i, p in enumerate(sorted_players):
         rank_icon = medals[i] if i < 3 else f"<b>{i+1}.</b>"
         status = " (Not Out)" if not p.is_out else ""
         sr = round((p.runs / p.balls_faced) * 100, 1) if p.balls_faced > 0 else 0
-        msg += f"{rank_icon} <b>{p.first_name}</b>: {p.runs}({p.balls_faced}) SR: {sr}{status}\n"
-        
-    msg += "─────────────────"
+        p_balls_bowled = getattr(p, "balls_bowled", 0)
+        wkt_txt = f" | 🎳 {p.wickets}/{getattr(p, 'runs_conceded', 0)} ({format_overs(p_balls_bowled)})" if p_balls_bowled > 0 else ""
+        msg += f"├ {rank_icon} <b>{p.first_name}</b>: {p.runs}({p.balls_faced}) SR: {sr}{status}{wkt_txt}\n"
+
+    msg += f"└{BAR}"
+    msg += "</blockquote>"
+    msg = _safe_truncate_html(msg, 1024)
 
     # Try sending with PIL-generated top3 image as champion card
     try:
@@ -18806,7 +18824,6 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
             f"├ 🆔 ID      ➜ {user_id}\n"
             f"├ 👤 Name    ➜ {html.escape(user_name)}\n"
             f"├ 🎽 Jersey  ➜ {jersey_line}\n"
-            f"{role_line}"
             f"{ccc_line}"
             f"└{BAR}"
             f"</blockquote>\n\n"
@@ -18815,10 +18832,8 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
             f"┌{BAR}\n"
             f"├ 🎮 Matches      ➜ {matches}\n"
             f"├ ✅ Wins         ➜ {wins}\n"
-            f"├ ❌ Losses       ➜ {losses}\n"
             f"├ 👑 Captaincy    ➜ {cap_wins}/{cap_matches} ({cap_rate}%)\n"
             f"├ 🏅 MOTM         ➜ {mom}\n"
-            f"├ 🔥 Recent Form  ➜ {form_dots}\n"
             f"└{BAR}"
             f"</blockquote>\n\n"
             f"🏏 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 𝗦𝗧𝗔𝗧𝗦\n"
@@ -18829,8 +18844,6 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
             f"├ 📈 Average      ➜ {bat_avg}\n"
             f"├ ⚡ Strike Rate  ➜ {bat_sr}\n"
             f"├ 🎯 Highest      ➜ {highest}\n"
-            f"├ 💥 Fours        ➜ {fours}\n"
-            f"├ 🚀 Sixes        ➜ {sixes}\n"
             f"├ ✨ Half Cent.   ➜ {fifties}\n"
             f"├ 💯 Centuries    ➜ {hundreds}\n"
             f"└{BAR}"
@@ -18844,13 +18857,11 @@ def build_team_stats_text(user_id: int, user_name: str) -> str:
             f"├ 📊 Average      ➜ {bowl_avg}\n"
             f"├ 💎 Best Figures ➜ {best_bowl}\n"
             f"├ 🎩 Hat-tricks   ➜ {hat_tricks}\n"
-            f"├ 🔥 5-Wickets    ➜ {fifer}\n"
             f"└{BAR}"
             f"</blockquote>\n\n"
             f"🧤 𝗙𝗜𝗘𝗟𝗗𝗜𝗡𝗚 & 𝗗𝗜𝗦𝗠𝗜𝗦𝗦𝗔𝗟𝗦\n"
             f"<blockquote>"
             f"┌{BAR}\n"
-            f"├ 🎯 Bowled Out    ➜ {d_bowled}\n"
             f"├ ☝️ LBW Out       ➜ {d_lbw}\n"
             f"├ 🧤 Caught Out    ➜ {d_caught}\n"
             f"├ 🤲 Catches Taken ➜ {catches_taken}\n"
@@ -20346,8 +20357,6 @@ async def mystats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"├ 🥎 Balls        ➜ {balls}\n"
                 f"├ ⚡ Strike Rate  ➜ {bat_sr}\n"
                 f"├ 🚀 Highest      ➜ {hs}\n"
-                f"├ 4️⃣ Fours        ➜ {fours}\n"
-                f"├ 6️⃣ Sixes        ➜ {sixes}\n"
                 f"├ 💯 100s         ➜ {centuries}\n"
                 f"├ ✨ 50s          ➜ {fifties}\n"
                 f"├ 🦆 Ducks        ➜ {ducks}\n"

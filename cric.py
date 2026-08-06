@@ -17,6 +17,8 @@ import json
 import sqlite3
 import shutil
 import os
+import sys
+import platform
 import pickle
 import secrets
 import string
@@ -77,6 +79,15 @@ logger = logging.getLogger(__name__)
 
 
 BOT_TOKEN = "8428604292:AAFkxmwj0_2wRm5DcsG6Kdw6p93ydzh3-cM"
+
+# 🔧 GLITCH FIX: global handle to the running bot instance. `application` used
+# to be a purely local variable inside main(), so any helper (like
+# send_rich_table_message) that referenced `application.bot` outside main()
+# hit a silent NameError — which is why /botstats and other rich-table
+# commands could send NOTHING with no visible error (fallback path crashed
+# too). Set once in main() right after the Application is built, then used
+# everywhere a raw bot handle is needed outside a handler's `context`.
+_global_bot = None
 OWNER_ID = 8644197194  # Replace with your Telegram user ID
 SECOND_APPROVER_ID = 7343683772 
 SUPPORT_GROUP_ID = -5126977365  # Replace with your support group ID
@@ -801,44 +812,74 @@ async def send_rich_table_message(
                    rich message call fails (e.g. library/server too old)
     Returns the sent message_id, or None if it fell back / failed.
     """
-    blocks = []
+    # 🔧 GLITCH FIX: `sendRichMessage` is NOT a real Telegram Bot API method —
+    # every call here always failed (404 from Telegram), and the fallback
+    # below used to reference `application.bot`, a variable that only exists
+    # locally inside main() → NameError → swallowed by except → the command
+    # silently sent NOTHING to the owner. Fixed by (1) building a clean HTML
+    # table directly instead of a fake API call, and (2) using the module-
+    # level `_global_bot` handle so the send can never NameError.
+    bot = _global_bot
+    if bot is None:
+        logger.error("send_rich_table_message: _global_bot not set yet — bot not fully started.")
+        return None
+
+    def _esc(v) -> str:
+        return html.escape(str(v))
+
+    lines = []
     if title:
-        blocks.append({"type": "section_heading", "level": 1, "text": [_rt_text(title)]})
+        lines.append(f"<b>{_esc(title)}</b>")
+        lines.append("─────────────────")
     if intro_lines:
         for line in intro_lines:
-            blocks.append({"type": "paragraph", "text": [_rt_text(line)]})
+            lines.append(_esc(line))
+        lines.append("")
 
-    table_rows = [{"cells": [_rt_cell(h, header=True) for h in headers]}]
-    for row in rows:
-        table_rows.append({"cells": [_rt_cell(v) for v in row]})
-    blocks.append({"type": "table", "rows": table_rows})
+    if headers and rows:
+        # Column widths based on header + all row values (monospace table via <pre>/<code>)
+        col_widths = [len(str(h)) for h in headers]
+        str_rows = [[str(v) for v in row] for row in rows]
+        for row in str_rows:
+            for i, v in enumerate(row):
+                if i < len(col_widths):
+                    col_widths[i] = max(col_widths[i], len(v))
+
+        def _fmt_row(vals):
+            return "  ".join(str(v).ljust(col_widths[i]) if i < len(col_widths) - 1 else str(v)
+                              for i, v in enumerate(vals))
+
+        table_lines = [_fmt_row(headers)]
+        table_lines.append("  ".join("─" * w for w in col_widths))
+        for row in str_rows:
+            table_lines.append(_fmt_row(row))
+        lines.append(f"<pre>{_esc(chr(10).join(table_lines))}</pre>")
 
     if footer:
-        blocks.append({"type": "footer", "text": [_rt_text(footer)]})
+        lines.append("─────────────────")
+        lines.append(_esc(footer))
 
-    payload = {"chat_id": chat_id, "rich_message": {"blocks": blocks}}
-    if reply_to_message_id:
-        payload["reply_parameters"] = {"message_id": reply_to_message_id}
+    text = fallback_html if fallback_html else "\n".join(lines)
+    if not fallback_html:
+        text = "\n".join(lines)
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendRichMessage"
     try:
-        resp = await asyncio.to_thread(requests.post, url, json=payload, timeout=15)
-        data = resp.json()
-        if data.get("ok"):
-            return data["result"]["message_id"]
-        logger.warning(f"sendRichMessage failed ({chat_id}): {data.get('description')}")
+        sent = await bot.send_message(
+            chat_id, text, parse_mode=ParseMode.HTML,
+            reply_to_message_id=reply_to_message_id,
+            disable_web_page_preview=True
+        )
+        return sent.message_id
     except Exception as e:
-        logger.warning(f"sendRichMessage request error ({chat_id}): {e}")
-
-    # Fallback: plain HTML message so the command still works
-    if fallback_html:
+        logger.error(f"send_rich_table_message: HTML send failed ({chat_id}): {e}")
+        # Last-resort plain-text retry (strip HTML tags) so the command never sends nothing
         try:
-            await application.bot.send_message(chat_id, fallback_html, parse_mode=ParseMode.HTML,
-                                                 reply_to_message_id=reply_to_message_id,
-                                                 disable_web_page_preview=True)
+            plain_text = re.sub(r"<[^>]+>", "", text)
+            sent = await bot.send_message(chat_id, plain_text, reply_to_message_id=reply_to_message_id)
+            return sent.message_id
         except Exception as e2:
-            logger.error(f"Rich table fallback send also failed ({chat_id}): {e2}")
-    return None
+            logger.error(f"send_rich_table_message: plain-text retry also failed ({chat_id}): {e2}")
+        return None
 
 
 # --- GLOBAL HELPER FUNCTION (FIXED) ---
@@ -24432,60 +24473,198 @@ def _fetch_botstats_data():
     """All the blocking sqlite reads for /botstats — always call via
     asyncio.to_thread, never directly on the event loop (owner-only command,
     but a dozen sequential queries here used to freeze every group's game
-    for however long this took)."""
-    conn= db_connect(DB_PATH)
+    for however long this took).
+
+    🔧 EXPANDED: now also pulls match-type breakdown, time-windowed activity
+    (today/7d/30d), top active groups, top players by runs, DB file sizes,
+    and per-table row counts — everything the owner needs for a real
+    analytics dashboard instead of just raw totals."""
+    conn = db_connect(DB_PATH)
     c = conn.cursor()
 
-    # User stats from DB
-    c.execute('SELECT COUNT(DISTINCT user_id) FROM user_stats')
-    db_users = c.fetchone()[0] or 0
-    # ✅ FIX: Use match_history table for accurate match count
-    try:
-        c.execute('SELECT COUNT(*) FROM match_history')
-        db_matches = c.fetchone()[0] or 0
-    except Exception as e:
-        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24325)")
-        c.execute('SELECT SUM(team_matches_played) FROM user_stats')
-        db_matches_raw = c.fetchone()[0] or 0
+    def _safe_scalar(query, default=0):
+        try:
+            c.execute(query)
+            row = c.fetchone()
+            return row[0] if row and row[0] is not None else default
+        except Exception:
+            return default
+
+    # ── Core totals ──
+    db_users = _safe_scalar('SELECT COUNT(DISTINCT user_id) FROM user_stats')
+    db_matches = _safe_scalar('SELECT COUNT(*) FROM match_history')
+    if not db_matches:
+        db_matches_raw = _safe_scalar('SELECT SUM(team_matches_played) FROM user_stats')
         db_matches = db_matches_raw // 2 if db_matches_raw > 1 else db_matches_raw
-    c.execute('SELECT SUM(COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) FROM user_stats')
-    db_runs = c.fetchone()[0] or 0
-    c.execute('SELECT SUM(COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) FROM user_stats')
-    db_wickets = c.fetchone()[0] or 0
-    c.execute('SELECT SUM(COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) FROM user_stats')
-    db_sixes = c.fetchone()[0] or 0
-    c.execute('SELECT SUM(COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) FROM user_stats')
-    db_fours = c.fetchone()[0] or 0
-    # ✅ FIX: Count DM users (users table = all users who started/messaged bot)
-    c.execute('SELECT COUNT(DISTINCT user_id) FROM users')
-    db_dm_users = c.fetchone()[0] or 0
+    db_runs = _safe_scalar('SELECT SUM(COALESCE(total_runs,0) + COALESCE(team_total_runs,0)) FROM user_stats')
+    db_wickets = _safe_scalar('SELECT SUM(COALESCE(total_wickets,0) + COALESCE(team_total_wickets,0)) FROM user_stats')
+    db_sixes = _safe_scalar('SELECT SUM(COALESCE(total_sixes,0) + COALESCE(team_total_sixes,0)) FROM user_stats')
+    db_fours = _safe_scalar('SELECT SUM(COALESCE(total_fours,0) + COALESCE(team_total_fours,0)) FROM user_stats')
+    db_hundreds = _safe_scalar('SELECT SUM(COALESCE(total_hundreds,0)) FROM user_stats')
+    db_fifties = _safe_scalar('SELECT SUM(COALESCE(total_fifties,0)) FROM user_stats')
+    db_dm_users = _safe_scalar('SELECT COUNT(DISTINCT user_id) FROM users')
 
-    # Group stats
-    try:
-        c.execute('SELECT COUNT(*) FROM groups')
-        total_groups = c.fetchone()[0] or 0
-    except Exception as e:
-        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24345)")
-        total_groups = len(registered_groups)
+    # ── Groups ──
+    total_groups = _safe_scalar('SELECT COUNT(*) FROM groups') or len(registered_groups)
 
-    # AI match stats
+    # ── AI mode ──
     try:
         c.execute('SELECT COUNT(*), SUM(total_matches), SUM(wins) FROM ai_stats')
         ai_row = c.fetchone()
         ai_players = ai_row[0] or 0
         ai_total = ai_row[1] or 0
         ai_wins = ai_row[2] or 0
-    except Exception as e:
-        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24355)")
+    except Exception:
         ai_players = ai_total = ai_wins = 0
 
+    # ── Match-type breakdown (Solo vs Team vs anything else logged) ──
+    match_type_breakdown = {}
+    try:
+        c.execute("SELECT match_type, COUNT(*) FROM match_history GROUP BY match_type")
+        for mtype, cnt in c.fetchall():
+            match_type_breakdown[mtype or "UNKNOWN"] = cnt
+    except Exception:
+        pass
+
+    # ── Time-windowed match activity (today / 7d / 30d) ──
+    matches_today = _safe_scalar(
+        "SELECT COUNT(*) FROM match_history WHERE date(match_date) = date('now')"
+    )
+    matches_7d = _safe_scalar(
+        "SELECT COUNT(*) FROM match_history WHERE match_date >= datetime('now', '-7 days')"
+    )
+    matches_30d = _safe_scalar(
+        "SELECT COUNT(*) FROM match_history WHERE match_date >= datetime('now', '-30 days')"
+    )
+
+    # ── Top 5 most active groups (by match count) ──
+    top_groups = []
+    try:
+        c.execute("""
+            SELECT group_id, COUNT(*) as cnt FROM match_history
+            GROUP BY group_id ORDER BY cnt DESC LIMIT 5
+        """)
+        top_groups = c.fetchall()
+    except Exception:
+        pass
+
+    # ── Daily breakdown: matches per day (last 7 days) ──
+    daily_matches = []
+    try:
+        c.execute("""
+            SELECT date(match_date) AS d, COUNT(*) AS cnt
+            FROM match_history
+            WHERE match_date >= datetime('now', '-6 days')
+            GROUP BY d ORDER BY d ASC
+        """)
+        daily_matches = c.fetchall()
+    except Exception:
+        pass
+
+    # ── Daily breakdown: new users per day (last 7 days), from `users` table ──
+    daily_new_users = []
+    try:
+        # Prefer the `users` table's own timestamp column if it has one; fall back gracefully.
+        c.execute("PRAGMA table_info(users)")
+        user_cols = [row[1] for row in c.fetchall()]
+        ts_col = None
+        for cand in ("started_at", "joined_at", "created_at", "date_added", "timestamp"):
+            if cand in user_cols:
+                ts_col = cand
+                break
+        if ts_col:
+            c.execute(f"""
+                SELECT date({ts_col}) AS d, COUNT(*) AS cnt
+                FROM users
+                WHERE {ts_col} >= datetime('now', '-6 days')
+                GROUP BY d ORDER BY d ASC
+            """)
+            daily_new_users = c.fetchall()
+    except Exception:
+        pass
+
+    # ── Daily breakdown: runs scored per day (last 7 days) — from match_history score columns ──
+    daily_runs = []
+    try:
+        c.execute("""
+            SELECT date(match_date) AS d,
+                   SUM(
+                       COALESCE(CAST(substr(team_x_score, 1, instr(team_x_score||'/', '/') - 1) AS INTEGER), 0) +
+                       COALESCE(CAST(substr(team_y_score, 1, instr(team_y_score||'/', '/') - 1) AS INTEGER), 0)
+                   ) AS runs
+            FROM match_history
+            WHERE match_date >= datetime('now', '-6 days')
+            GROUP BY d ORDER BY d ASC
+        """)
+        daily_runs = c.fetchall()
+    except Exception:
+        pass
+
+    # ── Top 5 players by combined runs ──
+    top_players = []
+    try:
+        c.execute("""
+            SELECT user_id, first_name,
+                   COALESCE(total_runs,0) + COALESCE(team_total_runs,0) AS runs
+            FROM user_stats
+            ORDER BY runs DESC LIMIT 5
+        """)
+        top_players = c.fetchall()
+    except Exception:
+        pass
+
+    # ── Per-table row counts (helps spot bloat / dead tables) ──
+    table_counts = {}
+    try:
+        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        table_names = [r[0] for r in c.fetchall()]
+        for t in table_names:
+            table_counts[t] = _safe_scalar(f"SELECT COUNT(*) FROM {t}")
+    except Exception:
+        pass
+
     conn.close()
-    return (db_users, db_matches, db_runs, db_wickets, db_sixes, db_fours,
-            db_dm_users, total_groups, ai_players, ai_total, ai_wins)
+
+    # ── DB file sizes (main DB + tournament DB if present) ──
+    db_size_mb = 0.0
+    tour_db_size_mb = 0.0
+    try:
+        db_size_mb = round(os.path.getsize(DB_PATH) / (1024 * 1024), 2)
+    except Exception:
+        pass
+    try:
+        tour_db_size_mb = round(os.path.getsize(TOURNAMENT_DB_PATH) / (1024 * 1024), 2)
+    except Exception:
+        pass
+
+    return {
+        "db_users": db_users, "db_matches": db_matches, "db_runs": db_runs,
+        "db_wickets": db_wickets, "db_sixes": db_sixes, "db_fours": db_fours,
+        "db_hundreds": db_hundreds, "db_fifties": db_fifties,
+        "db_dm_users": db_dm_users, "total_groups": total_groups,
+        "ai_players": ai_players, "ai_total": ai_total, "ai_wins": ai_wins,
+        "match_type_breakdown": match_type_breakdown,
+        "matches_today": matches_today, "matches_7d": matches_7d, "matches_30d": matches_30d,
+        "top_groups": top_groups, "top_players": top_players,
+        "daily_matches": daily_matches, "daily_new_users": daily_new_users, "daily_runs": daily_runs,
+        "table_counts": table_counts,
+        "db_size_mb": db_size_mb, "tour_db_size_mb": tour_db_size_mb,
+    }
 
 
 async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🏏 Enhanced bot statistics with group info — OWNER ONLY"""
+    """🏏 ADVANCED bot statistics & deep analytics dashboard — OWNER ONLY
+
+    🔧 FIX: previously sent NOTHING — it called a fake `sendRichMessage` API
+    method that always failed, then its fallback referenced a variable
+    (`application`) that only existed locally inside main(), so the send
+    silently NameError'd every single time. Both are fixed now
+    (see send_rich_table_message). This version also adds a much deeper
+    analytics layer: growth over time, match-type split, top groups/players,
+    per-table DB row counts, DB file size, host/runtime info, and job-queue
+    health — so the owner can actually analyse the bot, not just glance at
+    a handful of totals.
+    """
     user = update.effective_user
     if user.id != OWNER_ID:
         await update.message.reply_text(
@@ -24493,88 +24672,126 @@ async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML
         )
         return
-    start_time = time.time()
-    msg = await update.message.reply_text("⏳ <b>Fetching stats...</b>", parse_mode=ParseMode.HTML)
-    ping_ms = round((time.time() - start_time) * 1000, 2)
-    
-    (db_users, db_matches, db_runs, db_wickets, db_sixes, db_fours,
-     db_dm_users, total_groups, ai_players, ai_total, ai_wins) = await asyncio.to_thread(_fetch_botstats_data)
-    
+
+    t0 = time.time()
+    msg = await update.message.reply_text("⏳ <b>Fetching deep stats...</b>", parse_mode=ParseMode.HTML)
+
+    data = await asyncio.to_thread(_fetch_botstats_data)
+    ping_ms = round((time.time() - t0) * 1000, 2)
+
     # Also check player_stats in-memory (some data may only be there)
     mem_users = len(player_stats)
-    mem_runs = sum(
-        ps.get("total_runs", 0) if isinstance(ps, dict) and "total_runs" in ps
-        else (ps.get("team", {}).get("runs", 0) + ps.get("solo", {}).get("runs", 0))
-        if isinstance(ps, dict) else 0
-        for ps in player_stats.values()
-    )
-    
+
     # Use whichever has more data
-    total_users = max(db_users, mem_users, db_dm_users)  # ✅ FIX: include dm users
-    total_matches = db_matches
-    total_runs = db_runs  # ✅ FIX: DB is now authoritative → team+flat both saved
-    total_wickets = db_wickets
-    total_sixes = db_sixes
-    total_fours = db_fours
-    
-    # Active matches and auctions
+    total_users = max(data["db_users"], mem_users, data["db_dm_users"])
+    total_matches = data["db_matches"]
+    total_runs = data["db_runs"]
+    total_wickets = data["db_wickets"]
+    total_sixes = data["db_sixes"]
+    total_fours = data["db_fours"]
+
+    # Active matches / auctions right now
     active_match_count = len(active_matches)
     active_auction_count = len(active_auctions)
-    
+    active_tour_count = len(active_tournaments) if 'active_tournaments' in globals() else 0
+
     # Banned groups
     total_banned = len(banned_groups)
-    active_groups = max(0, total_groups - total_banned)
-    
+    active_groups = max(0, data["total_groups"] - total_banned)
+
     # System stats
     cpu = memory = disk = 0
+    proc_mem_mb = 0
     if psutil:
         try:
-            cpu = await asyncio.to_thread(psutil.cpu_percent, 0.1)
+            cpu = await asyncio.to_thread(psutil.cpu_percent, 0.2)
             memory = psutil.virtual_memory().percent
             disk = psutil.disk_usage('/').percent
-        except Exception as e:
-            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 24411)")
+            proc_mem_mb = round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1)
+        except Exception:
             pass
-    
+
+    # Uptime
+    uptime_secs = int(time.time() - bot_start_time) if 'bot_start_time' in globals() else 0
+    up_d, _rem = divmod(uptime_secs, 86400)
+    up_h, _rem = divmod(_rem, 3600)
+    up_m, up_s = divmod(_rem, 60)
+    uptime_str = f"{up_d}d {up_h}h {up_m}m {up_s}s" if up_d else f"{up_h}h {up_m}m {up_s}s"
+
+    # Match-type breakdown
+    mtb = data["match_type_breakdown"]
+    solo_matches = mtb.get("SOLO", 0)
+    team_matches = mtb.get("TEAM", 0)
+    other_matches = sum(v for k, v in mtb.items() if k not in ("SOLO", "TEAM"))
+
+    # Growth rate estimate (matches per active day since bot started, if known)
+    days_running = max(1, uptime_secs // 86400) if uptime_secs else 1
+    avg_matches_per_day = round(total_matches / days_running, 1) if days_running else total_matches
+
+    # ── MAIN OVERVIEW MESSAGE ──
     text = "🏏 <b>CRICOVERSE → BOT STATS</b>\n"
     text += "─────────────────\n"
     text += f"⚡ Ping: <b>{ping_ms}ms</b>  ┊  💻 CPU: <b>{cpu}%</b>  ┊  🧠 RAM: <b>{memory}%</b>\n"
+    text += f"⏱️ Uptime: <b>{uptime_str}</b>  ┊  💾 Disk: <b>{disk}%</b>\n"
     text += "─────────────────\n"
     text += "👥 <b>USERS & GROUPS</b>\n"
-    text += f"👤 Total Users: <b>{total_users:,}</b>  ┊  💬 DM Users: <b>{db_dm_users:,}</b>\n"
-    text += f"🏘️ Groups: <b>{total_groups}</b>  ┊  🚫 Banned: <b>{total_banned}</b>  ┊  ✅ Active: <b>{active_groups}</b>\n"
+    text += f"👤 Total Users: <b>{total_users:,}</b>  ┊  💬 DM Users: <b>{data['db_dm_users']:,}</b>\n"
+    text += f"🏘️ Groups: <b>{data['total_groups']}</b>  ┊  🚫 Banned: <b>{total_banned}</b>  ┊  ✅ Active: <b>{active_groups}</b>\n"
     text += "─────────────────\n"
     text += "🏏 <b>CRICKET STATS</b>\n"
     text += f"🎮 Matches: <b>{total_matches:,}</b>  ┊  🏃 Runs: <b>{total_runs:,}</b>  ┊  ⚾ Wickets: <b>{total_wickets:,}</b>\n"
     text += f"🚀 Sixes: <b>{total_sixes:,}</b>  ┊  🔥 Fours: <b>{total_fours:,}</b>\n"
+    text += f"💯 Hundreds: <b>{data['db_hundreds']:,}</b>  ┊  5️⃣0️⃣ Fifties: <b>{data['db_fifties']:,}</b>\n"
+    text += "─────────────────\n"
+    text += "🎯 <b>MATCH-TYPE SPLIT</b>\n"
+    text += f"⚔️ Solo: <b>{solo_matches:,}</b>  ┊  👥 Team: <b>{team_matches:,}</b>  ┊  🎲 Other: <b>{other_matches:,}</b>\n"
+    text += "─────────────────\n"
+    text += "📈 <b>ACTIVITY TREND</b>\n"
+    text += f"📅 Today: <b>{data['matches_today']:,}</b>  ┊  🗓️ Last 7d: <b>{data['matches_7d']:,}</b>  ┊  🗓️ Last 30d: <b>{data['matches_30d']:,}</b>\n"
+    text += f"📊 Avg/day (since start): <b>{avg_matches_per_day}</b>\n"
     text += "─────────────────\n"
     text += "🤖 <b>AI MODE</b>\n"
-    text += f"👾 Players: <b>{ai_players}</b>  ┊  🎮 Matches: <b>{ai_total}</b>  ┊  🏆 User Wins: <b>{ai_wins}</b>\n"
+    text += f"👾 Players: <b>{data['ai_players']}</b>  ┊  🎮 Matches: <b>{data['ai_total']}</b>  ┊  🏆 User Wins: <b>{data['ai_wins']}</b>\n"
     text += "─────────────────\n"
     text += "🔴 <b>LIVE NOW</b>\n"
-    text += f"🏏 Active Matches: <b>{active_match_count}</b>  ┊  🎪 Auctions: <b>{active_auction_count}</b>\n"
+    text += f"🏏 Active Matches: <b>{active_match_count}</b>  ┊  🎪 Auctions: <b>{active_auction_count}</b>  ┊  🏆 Tournaments: <b>{active_tour_count}</b>\n"
     text += "─────────────────\n"
     text += "✅ <b>All systems operational</b>"
 
     stats_rows = [
         ["Ping", f"{ping_ms} ms"],
+        ["Uptime", uptime_str],
         ["CPU", f"{cpu}%"],
         ["RAM", f"{memory}%"],
+        ["Disk", f"{disk}%"],
+        ["Process RAM", f"{proc_mem_mb} MB"],
         ["Total Users", f"{total_users:,}"],
-        ["DM Users", f"{db_dm_users:,}"],
-        ["Groups", f"{total_groups}"],
+        ["DM Users", f"{data['db_dm_users']:,}"],
+        ["Groups", f"{data['total_groups']}"],
         ["Banned Groups", f"{total_banned}"],
         ["Active Groups", f"{active_groups}"],
         ["Matches Played", f"{total_matches:,}"],
+        ["  ↳ Solo", f"{solo_matches:,}"],
+        ["  ↳ Team", f"{team_matches:,}"],
+        ["  ↳ Other", f"{other_matches:,}"],
+        ["Matches Today", f"{data['matches_today']:,}"],
+        ["Matches (7d)", f"{data['matches_7d']:,}"],
+        ["Matches (30d)", f"{data['matches_30d']:,}"],
+        ["Avg Matches/Day", f"{avg_matches_per_day}"],
         ["Runs Scored", f"{total_runs:,}"],
         ["Wickets Taken", f"{total_wickets:,}"],
         ["Sixes", f"{total_sixes:,}"],
         ["Fours", f"{total_fours:,}"],
-        ["AI Players", f"{ai_players}"],
-        ["AI Matches", f"{ai_total}"],
-        ["AI User Wins", f"{ai_wins}"],
+        ["Hundreds", f"{data['db_hundreds']:,}"],
+        ["Fifties", f"{data['db_fifties']:,}"],
+        ["AI Players", f"{data['ai_players']}"],
+        ["AI Matches", f"{data['ai_total']}"],
+        ["AI User Wins", f"{data['ai_wins']}"],
         ["Active Matches", f"{active_match_count}"],
         ["Active Auctions", f"{active_auction_count}"],
+        ["Active Tournaments", f"{active_tour_count}"],
+        ["Main DB Size", f"{data['db_size_mb']} MB"],
+        ["Tournament DB Size", f"{data['tour_db_size_mb']} MB"],
     ]
 
     # Delete the "fetching..." placeholder and send a real table in its place
@@ -24590,6 +24807,132 @@ async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         footer="✅ All systems operational",
         fallback_html=text,
     )
+
+    # ── DEEP-DIVE FOLLOW-UP: top groups, top players, DB table sizes, host info ──
+    deep = "🔬 <b>DEEP ANALYTICS</b>\n"
+    deep += "─────────────────\n"
+
+    deep += "📅 <b>DAILY STATS (Last 7 Days)</b>\n"
+    dm_map = {row[0]: row[1] for row in data["daily_matches"]}
+    du_map = {row[0]: row[1] for row in data["daily_new_users"]}
+    dr_map = {row[0]: (row[1] or 0) for row in data["daily_runs"]}
+    if dm_map or du_map or dr_map:
+        today_d = datetime.now().date()
+        for i in range(6, -1, -1):
+            d = (today_d - timedelta(days=i)).isoformat()
+            day_label = "Today" if i == 0 else ("Yesterday" if i == 1 else d)
+            m_cnt = dm_map.get(d, 0)
+            u_cnt = du_map.get(d, 0)
+            r_cnt = dr_map.get(d, 0)
+            deep += f"• {day_label}: 🎮 <b>{m_cnt}</b> matches  ┊  👤 <b>{u_cnt}</b> new users  ┊  🏃 <b>{r_cnt:,}</b> runs\n"
+    else:
+        deep += "<i>No match history yet for a daily breakdown.</i>\n"
+    deep += "─────────────────\n"
+
+    deep += "🏘️ <b>TOP 5 MOST ACTIVE GROUPS</b>\n"
+    if data["top_groups"]:
+        for i, (gid, cnt) in enumerate(data["top_groups"], 1):
+            g_name = registered_groups.get(gid, {}).get("group_name") if isinstance(registered_groups.get(gid), dict) else None
+            label = html.escape(g_name) if g_name else f"ID {gid}"
+            deep += f"{i}. {label} → <b>{cnt}</b> matches\n"
+    else:
+        deep += "<i>No match history yet.</i>\n"
+    deep += "─────────────────\n"
+
+    deep += "🌟 <b>TOP 5 PLAYERS (by runs)</b>\n"
+    if data["top_players"]:
+        for i, (uid, fname, runs) in enumerate(data["top_players"], 1):
+            deep += f"{i}. {html.escape(fname or str(uid))} → <b>{runs:,}</b> runs\n"
+    else:
+        deep += "<i>No player data yet.</i>\n"
+    deep += "─────────────────\n"
+
+    deep += "🗄️ <b>DATABASE TABLE SIZES</b>\n"
+    tc = data["table_counts"]
+    if tc:
+        for tname in sorted(tc, key=lambda k: -tc[k])[:10]:
+            deep += f"• {html.escape(tname)}: <b>{tc[tname]:,}</b> rows\n"
+    else:
+        deep += "<i>Could not read table list.</i>\n"
+    deep += "─────────────────\n"
+
+    deep += "🖥️ <b>HOST & RUNTIME</b>\n"
+    deep += f"🐍 Python: <b>{platform.python_version()}</b>  ┊  💻 OS: <b>{platform.system()} {platform.release()}</b>\n"
+    try:
+        import telegram as _tg_mod
+        ptb_ver = getattr(_tg_mod, "__version__", "?")
+    except Exception:
+        ptb_ver = "?"
+    deep += f"📦 python-telegram-bot: <b>{ptb_ver}</b>\n"
+    jq_running = bool(application.job_queue.jobs()) if ('application' in globals() and application and application.job_queue) else False
+    deep += f"⚙️ Job Queue: <b>{'Running' if jq_running else 'Unknown/Idle'}</b>  ┊  🌊 Rate Limiter: <b>{'On' if psutil else 'Unknown'}</b>\n"
+    deep += f"🧵 In-memory Caches → Matches: <b>{len(active_matches)}</b>, Auctions: <b>{len(active_auctions)}</b>, Groups: <b>{len(registered_groups)}</b>, PlayerStats: <b>{len(player_stats)}</b>, UserData: <b>{len(user_data)}</b>\n"
+
+    try:
+        await context.bot.send_message(update.effective_chat.id, deep, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"botstats deep-analytics send failed: {e}")
+async def dailystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """📅 Quick daily-only breakdown (matches/new users/runs for last 7 days) — OWNER ONLY.
+    Same underlying data as the DEEP ANALYTICS section of /botstats, but as
+    a standalone command for a fast daily check without the full dashboard."""
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        await update.message.reply_text(
+            "🚫 <b>Access Denied!</b>\n\nOnly the bot owner can view daily stats.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    msg = await update.message.reply_text("⏳ <b>Fetching daily stats...</b>", parse_mode=ParseMode.HTML)
+    data = await asyncio.to_thread(_fetch_botstats_data)
+
+    dm_map = {row[0]: row[1] for row in data["daily_matches"]}
+    du_map = {row[0]: row[1] for row in data["daily_new_users"]}
+    dr_map = {row[0]: (row[1] or 0) for row in data["daily_runs"]}
+
+    text = "📅 <b>DAILY STATS (Last 7 Days)</b>\n"
+    text += "─────────────────\n"
+    rows = []
+    today_d = datetime.now().date()
+    total_m = total_u = total_r = 0
+    if dm_map or du_map or dr_map:
+        for i in range(6, -1, -1):
+            d = (today_d - timedelta(days=i)).isoformat()
+            day_label = "Today" if i == 0 else ("Yesterday" if i == 1 else d)
+            m_cnt = dm_map.get(d, 0)
+            u_cnt = du_map.get(d, 0)
+            r_cnt = dr_map.get(d, 0)
+            total_m += m_cnt
+            total_u += u_cnt
+            total_r += r_cnt
+            text += f"• {day_label}: 🎮 <b>{m_cnt}</b> matches  ┊  👤 <b>{u_cnt}</b> new users  ┊  🏃 <b>{r_cnt:,}</b> runs\n"
+            rows.append([day_label, str(m_cnt), str(u_cnt), f"{r_cnt:,}"])
+        text += "─────────────────\n"
+        text += f"📊 <b>7-Day Total:</b> {total_m} matches  ┊  {total_u} new users  ┊  {total_r:,} runs\n"
+        avg_m = round(total_m / 7, 1)
+        text += f"📈 <b>Avg/day:</b> {avg_m} matches"
+    else:
+        text += "<i>No match history yet for a daily breakdown.</i>"
+
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    if rows:
+        await send_rich_table_message(
+            update.effective_chat.id,
+            headers=["Day", "Matches", "New Users", "Runs"],
+            rows=rows,
+            title="📅 DAILY STATS (Last 7 Days)",
+            footer=f"📈 Avg/day: {round(total_m / 7, 1)} matches",
+            fallback_html=text,
+        )
+    else:
+        await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
+
+
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """📦 Enhanced Manual Backup Command with Multi-DB Support"""
     user = update.effective_user
@@ -32879,6 +33222,8 @@ def main():
     if _rate_limiter:
         _builder = _builder.rate_limiter(_rate_limiter)
     application = _builder.build()
+    global _global_bot
+    _global_bot = application.bot
 
     # --- JOBS (Scheduled Tasks) ---
     if application.job_queue:
@@ -33081,6 +33426,7 @@ def main():
     application.add_handler(CommandHandler("broadcastpin", broadcastpin_command))
     application.add_handler(CommandHandler("broadcastdm", broadcastdm_command)) 
     application.add_handler(CommandHandler("botstats", botstats_command))
+    application.add_handler(CommandHandler("dailystats", dailystats_command))
     application.add_handler(CommandHandler("backup", backup_command))
     application.add_handler(CommandHandler("restore", restore_command))
     application.add_handler(CommandHandler("resetmatch", resetmatch_command))

@@ -3913,7 +3913,7 @@ async def game_timer(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: M
         await asyncio.sleep(30)
         
         # Warning
-        await context.bot.send_message(group_id, f"╭━━ ⏳ HURRY UP! ━━━━━━⚡\n┃ ⚠️ {html.escape(player_name)}, only 15s left!\n┃ ⚙ Play your ball now!\n╰━━━━━━━━", parse_mode=ParseMode.HTML)
+        await context.bot.send_message(group_id, f"┌─❰ ⏳ HURRY UP! ❱\n│ ⚠️ {html.escape(player_name)}, only 15s left!\n│ ⚙️ Play your ball now!\n└──────────────", parse_mode=ParseMode.HTML)
         
         # Wait remaining 15 seconds
         await asyncio.sleep(15)
@@ -3962,10 +3962,12 @@ async def handle_timeout_penalties(context: ContextTypes.DEFAULT_TYPE, group_id:
             bat_team.extras += 1
             match.is_free_hit = True # Activate Free Hit
             
-            msg = f"⏰ <b>BOWLER TIMEOUT!</b> ({bowler.bowling_timeouts}/2)\n"
-            msg += "─────────────────\n"
-            msg += "🚫 <b>Result:</b> NO BALL! (+1 Run)\n"
-            msg += "⚡ <b>Next ball is a FREE HIT!</b>\n"
+            msg = "⏰ <b>BOWLER TIMEOUT!</b>\n"
+            msg += "<blockquote>"
+            msg += f"⏱ Count: {bowler.bowling_timeouts}/2\n"
+            msg += "🚫 Result: NO BALL! (+1 Run)\n"
+            msg += "⚡ Next ball is a FREE HIT!"
+            msg += "</blockquote>"
 
             await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
             
@@ -3998,10 +4000,12 @@ async def handle_timeout_penalties(context: ContextTypes.DEFAULT_TYPE, group_id:
             # Update current_over_runs for graph accuracy
             match.current_over_runs = max(0, getattr(match, 'current_over_runs', 0) - 6)
             
-            msg = f"⏰ <b>BATSMAN TIMEOUT!</b> ({striker.batting_timeouts}/2)\n"
-            msg += "─────────────────\n"
-            msg += "📉 <b>Penalty:</b> -6 Runs!\n"
-            msg += f"📊 <b>Score:</b> {bat_team.score}/{bat_team.wickets}\n"
+            msg = "⏰ <b>BATSMAN TIMEOUT!</b>\n"
+            msg += "<blockquote>"
+            msg += f"⏱ Count: {striker.batting_timeouts}/2\n"
+            msg += "📉 Penalty: -6 Runs!\n"
+            msg += f"📊 Score: {bat_team.score}/{bat_team.wickets}"
+            msg += "</blockquote>"
 
             await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
             
@@ -4113,7 +4117,7 @@ async def solo_game_timer(context, chat_id, match, player_type, player_name, seq
         try:
             await context.bot.send_message(
                 chat_id, 
-                f"⏳ <b>Hurry Up {player_name}!</b>\n─────────────────\n⚠️ Only <b>15 seconds</b> left → play your ball!", 
+                f"⏳ <b>Hurry Up {player_name}!</b>\n<blockquote>⚠️ Only 15 seconds left → play your ball!</blockquote>", 
                 parse_mode=ParseMode.HTML
             )
         except: pass
@@ -4161,10 +4165,12 @@ async def handle_solo_timeout(context, chat_id, match, player_type):
             batter.runs -= penalty
             if batter.runs < 0: batter.runs = 0
             
-            msg = f"⏰ <b>TIMEOUT WARNING!</b> ({batter.batting_timeouts}/2)\n"
-            msg = f"─────────────────\n"
-            msg += f"📉 <b>Penalty:</b> -6 Runs deducted!\n"
-            msg += f"📊 <b>Current Score:</b> {batter.runs}"
+            msg = "⏰ <b>TIMEOUT WARNING!</b>\n"
+            msg += "<blockquote>"
+            msg += f"⏱ Count: {batter.batting_timeouts}/2\n"
+            msg += "📉 Penalty: -6 Runs deducted!\n"
+            msg += f"📊 Current Score: {batter.runs}"
+            msg += "</blockquote>"
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
             
             batter.balls_faced += 1
@@ -4191,11 +4197,13 @@ async def handle_solo_timeout(context, chat_id, match, player_type):
             batter.runs += 1
             match.is_free_hit = True
             
-            msg = f"⏰ <b>BOWLER TIMEOUT!</b> ({bowler.bowling_timeouts}/2)\n"
-            msg = "─────────────────\n"
-            msg += "🚫 <b>Result:</b> DEAD BALL! (+1 Run)\n"
-            msg += "⚡ <b>Next ball is a NORMAL BALL!</b>\n"
-            msg += "🔄 <i>Bowler must bowl again!</i>"
+            msg = "⏰ <b>BOWLER TIMEOUT!</b>\n"
+            msg += "<blockquote>"
+            msg += f"⏱ Count: {bowler.bowling_timeouts}/2\n"
+            msg += "🚫 Result: DEAD BALL! (+1 Run)\n"
+            msg += "⚡ Next ball is a NORMAL BALL!\n"
+            msg += "🔄 Bowler must bowl again!"
+            msg += "</blockquote>"
             await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
             
             match.ball_timeout_task = asyncio.create_task(
@@ -4238,7 +4246,7 @@ async def rotate_solo_bowler(context, chat_id, match, force_new_bowler=False):
                 return
 
         new_bowler = match.solo_players[match.current_solo_bowl_idx]
-        await context.bot.send_message(chat_id, f"🔄 <b>New Bowler:</b> {new_bowler.first_name}", parse_mode=ParseMode.HTML)
+        await context.bot.send_message(chat_id, f"🔄 <b>New Bowler!</b>\n<blockquote>⚾ {new_bowler.first_name} comes into the attack.</blockquote>", parse_mode=ParseMode.HTML)
 
     await trigger_solo_ball(context, chat_id, match)
 
@@ -8871,8 +8879,9 @@ async def bowler_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id:
         captain = match.get_captain(match.current_bowling_team)
         captain_tag = get_user_tag(captain) if captain else match.current_bowling_team.name
         reminder_msg = (
-            f"⚾ {captain_tag} → pick your bowler now!\n"
-            f"⌨️ <code>/bowling [number]</code>  ·  ⏳ <b>2 min</b> left!"
+            f"⚾ <b>Bowler Selection!</b>\n"
+            f"<blockquote>{captain_tag} → pick your bowler now!\n"
+            f"⌨️ <code>/bowling [number]</code>  ·  ⏳ 2 min left!</blockquote>"
         )
         await context.bot.send_message(
             chat_id=group_id,
@@ -8898,10 +8907,9 @@ async def bowler_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id:
                 
                 penalty_msg = (
                     f"🚨 <b>BOWLER BANNED → TIMEOUT!</b>\n"
-                    f"─────────────────\n"
-                    f"⛔ <b>{bowler.first_name}</b> timed out 3× → BANNED from bowling!\n"
+                    f"<blockquote>⛔ {bowler.first_name} timed out 3× → BANNED from bowling!\n"
                     f"📌 NO BALL  ·  ➕ +1 Run  ·  ⚡ FREE HIT next!\n"
-                    f"⌨️ Select another: <code>/bowling [number]</code>"
+                    f"⌨️ Select another: <code>/bowling [number]</code></blockquote>"
                 )
                 
                 # Add no ball
@@ -8917,10 +8925,9 @@ async def bowler_selection_timeout(context: ContextTypes.DEFAULT_TYPE, group_id:
             else:
                 penalty_msg = (
                     f"⏱️ <b>BOWLER TIMEOUT!</b>  <code>{timeout_count}/3</code>\n"
-                    f"─────────────────\n"
-                    f"⚠️ <b>{bowler.first_name}</b> didn't bowl in time!\n"
+                    f"<blockquote>⚠️ {bowler.first_name} didn't bowl in time!\n"
                     f"📌 NO BALL  ·  ➕ +1 Run  ·  ⚡ FREE HIT!\n"
-                    f"⌨️ <code>/bowling [number]</code> → select bowler!"
+                    f"⌨️ <code>/bowling [number]</code> → select bowler!</blockquote>"
                 )
                 
                 # Add no ball
@@ -9492,10 +9499,11 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
     crr_str = f"{crr:.2f}"
 
     text = (
-        f"╭━━ 🔴 LIVE ━━━━━━\n"
-        f"┃ 🔹 Over: {overs_str}  |  🔹 RR: {crr_str}\n"
-        f"┃ 🥎 {bowler_tag} is charging in to bowl...\n"
-        f"╰━━━━━━━"
+        f"🔴 <b>LIVE</b>\n"
+        f"┌─❰ ⚾ BOWLING TIME ❱\n"
+        f"│ 🔹 Over: {overs_str}  |  🔹 RR: {crr_str}\n"
+        f"│ 🥎 {bowler_tag} is charging in to bowl...\n"
+        f"└──────────────"
     )
     if equation:
         text += f"\n{equation.strip()}"
@@ -9665,22 +9673,20 @@ async def handle_bowler_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: in
         bowler.is_bowling_banned = True
         
         penalty_text = f"🚨 <b>BOWLER TIMEOUT → BANNED!</b>\n"
-        penalty_text += f"─────────────────\n"
-        penalty_text += f"⛔ <b>{bowler.first_name}</b> timed out 3 times → BANNED from bowling!\n"
-        penalty_text += f"─────────────────\n"
+        penalty_text += "<blockquote>"
+        penalty_text += f"⛔ {bowler.first_name} timed out 3 times → BANNED from bowling!\n"
         penalty_text += f"📌 NO BALL  ·  ➕ +1 Run  ·  ⚡ FREE HIT next ball!\n"
         penalty_text += f"💬 <i>{commentary}</i>\n"
-        penalty_text += f"─────────────────\n"
-        penalty_text += f"📊 Score: <b>{match.current_batting_team.score}/{match.current_batting_team.wickets}</b>"
+        penalty_text += f"📊 Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}"
+        penalty_text += "</blockquote>"
     else:
         penalty_text = f"⏱️ <b>BOWLER TIMEOUT!</b>  <code>{timeout_count}/3</code>\n"
-        penalty_text += f"─────────────────\n"
-        penalty_text += f"⚠️ <b>{bowler.first_name}</b> didn't bowl in time!\n"
-        penalty_text += f"─────────────────\n"
+        penalty_text += "<blockquote>"
+        penalty_text += f"⚠️ {bowler.first_name} didn't bowl in time!\n"
         penalty_text += f"📌 NO BALL  ·  ➕ +1 Run  ·  ⚡ FREE HIT!\n"
         penalty_text += f"💬 <i>{commentary}</i>\n"
-        penalty_text += f"─────────────────\n"
-        penalty_text += f"📊 Score: <b>{match.current_batting_team.score}/{match.current_batting_team.wickets}</b>"
+        penalty_text += f"📊 Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}"
+        penalty_text += "</blockquote>"
     
     try:
         if gif_url:
@@ -10471,10 +10477,11 @@ async def request_batsman_number(context: ContextTypes.DEFAULT_TYPE, group_id: i
     
     sr_live = round((batsman.runs / batsman.balls_faced) * 100, 1) if batsman.balls_faced > 0 else 0.0
     text = (
-        f"╭━━ 🔴 LIVE ━━━\n"
-        f"┃ 📊 {batsman_tag} ➜ {batsman.runs} ({batsman.balls_faced}) | ⚡ SR: {sr_live}\n"
-        f"┃🏏 {html.escape(batsman.first_name)}, play your shot\n"
-        f"╰━━━━━━━"
+        f"🔴 <b>LIVE</b>\n"
+        f"┌─❰ 🏏 BATTING TIME ❱\n"
+        f"│ 📊 {batsman_tag} ➜ {batsman.runs} ({batsman.balls_faced}) | ⚡ SR: {sr_live}\n"
+        f"│ 🏏 {html.escape(batsman.first_name)}, play your shot\n"
+        f"└──────────────"
     )
     
     # ✅ FIX: Add GIF
@@ -10580,13 +10587,12 @@ async def handle_batsman_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: i
         
         gif_url = get_random_gif(MatchEvent.WICKET)
         
-        penalty_text = f"╭━━ 📊 Cricoverse ━━━━━━\n"
-        penalty_text += f"┃ ⏳ BATSMAN TIMEOUT! (3/3)\n"
-        penalty_text += f"┃ ─────────────────\n"
-        penalty_text += f"┃ 🚨 Penalty: -6 Runs! → OUT!\n"
-        penalty_text += f"┃ 🏏 Updated Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
-        penalty_text += f"┃ ⚠ {html.escape(batsman.first_name)} timed out 3× → Wicket!\n"
-        penalty_text += f"╰━━━━━━━━\n"
+        penalty_text = f"⏰ <b>BATSMAN TIMEOUT!</b> (3/3)\n"
+        penalty_text += f"┌─❰ 📊 CRICOVERSE ❱\n"
+        penalty_text += f"│ 🚨 Penalty: -6 Runs! → OUT!\n"
+        penalty_text += f"│ 🏏 Updated Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
+        penalty_text += f"│ ⚠️ {html.escape(batsman.first_name)} timed out 3× → Wicket!\n"
+        penalty_text += f"└──────────────\n"
         
         try:
             if gif_url:
@@ -10627,13 +10633,12 @@ async def handle_batsman_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: i
             match.waiting_for_batsman = True
             await request_batsman_selection(context, group_id, match)
     else:
-        penalty_text = f"╭━━ 📊 Cricoverse ━━━━━━\n"
-        penalty_text += f"┃ ⏳ BATSMAN TIMEOUT! ({timeout_count}/3)\n"
-        penalty_text += f"┃ ─────────────────\n"
-        penalty_text += f"┃ 🚨 Penalty: -6 Runs!\n"
-        penalty_text += f"┃ 🏏 Updated Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
-        penalty_text += f"┃ ⚠ Avoid delays to prevent further penalties.\n"
-        penalty_text += f"╰━━━━━━━━\n"
+        penalty_text = f"⏰ <b>BATSMAN TIMEOUT!</b> ({timeout_count}/3)\n"
+        penalty_text += f"┌─❰ 📊 CRICOVERSE ❱\n"
+        penalty_text += f"│ 🚨 Penalty: -6 Runs!\n"
+        penalty_text += f"│ 🏏 Updated Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
+        penalty_text += f"│ ⚠️ Avoid delays to prevent further penalties.\n"
+        penalty_text += f"└──────────────\n"
         
         await context.bot.send_message(
             chat_id=group_id,
@@ -11576,13 +11581,11 @@ async def handle_noball_and_continue(context: ContextTypes.DEFAULT_TYPE, group_i
     
     nb_gif = get_random_gif(MatchEvent.NO_BALL)
     nb_msg = (
-        f"🚫 <b>NO BALL!</b> 🚫\n"
-        f"─────────────────\n"
-        f"⚾ {bowler_tag} oversteps!\n"
-        f"➕ <b>+1 Extra</b>  ·  ⚡ <b>FREE HIT</b> next ball!\n"
-        f"📊 Score: <b>{bat_team.score}/{bat_team.wickets}</b>\n"
-        f"─────────────────\n"
-        f"🔁 <i>Ball does NOT count → bowling again!</i>"
+        f"🚫 <b>NO BALL!</b>\n"
+        f"<blockquote>⚾ {bowler_tag} oversteps!\n"
+        f"➕ +1 Extra  ·  ⚡ FREE HIT next ball!\n"
+        f"📊 Score: {bat_team.score}/{bat_team.wickets}\n"
+        f"🔁 Ball does NOT count → bowling again!</blockquote>"
     )
     
     try:
@@ -12745,20 +12748,21 @@ async def start_solo_mechanics(context, chat_id, match):
     match.solo_balls_this_spell = 0
     
     # Announce Order
-    order_msg = "╭━━ 🎲 BATTING ORDER ━━━━━━🏏\n"
-    order_msg += f"┃ 🎙️ Host: {html.escape(match.host_name or 'Host')}\n"
-    order_msg += f"┃ 🔑 Code: {match.resume_code}\n"
-    order_msg += "┃ 🔀 The order has been shuffled!\n"
-    order_msg += "┃\n"
+    order_msg = "🎲 <b>BATTING ORDER!</b>\n"
+    order_msg += "┌─❰ 🏏 SOLO MATCH ❱\n"
+    order_msg += f"│ 🎙️ Host: {html.escape(match.host_name or 'Host')}\n"
+    order_msg += f"│ 🔑 Code: {match.resume_code}\n"
+    order_msg += "│ 🔀 The order has been shuffled!\n"
+    order_msg += "│\n"
     
     for i, p in enumerate(match.solo_players, 1):
         ptag = f'<a href=\"tg://user?id={p.user_id}\">{p.first_name}</a>'
         role = " (🏏 Striker)" if i == 1 else " (⚾ Bowler)" if i == 2 else ""
-        order_msg += f"<code>{i}.</code> <b>{ptag}</b>{role}\n"
+        order_msg += f"│ <code>{i}.</code> <b>{ptag}</b>{role}\n"
     
-    order_msg += "┃\n"
-    order_msg += "┃ 🔥 Match Starting in 5 seconds...\n"
-    order_msg += "╰━━━━━━━━"
+    order_msg += "│\n"
+    order_msg += "│ 🔥 Match Starting in 5 seconds...\n"
+    order_msg += "└──────────────"
     
     # Send with Toss/Squad Image
     await context.bot.send_photo(
@@ -12924,11 +12928,12 @@ async def process_solo_turn_result(context, chat_id, match):
         sr = round((batter.runs / max(batter.balls_faced, 1)) * 100, 1)
         
         msg = f"❌ <b>OUT! {batter.first_name} is gone!</b>\n"
-        msg += "─────────────────\n"
+        msg += "<blockquote>"
         if magic_msg:
-            msg += f"🔮 {magic_msg}\n─────────────────\n"
-        msg += f"🏏 <b>Final Score:</b> {batter.runs} ({batter.balls_faced})\n"
+            msg += f"🔮 {magic_msg}\n"
+        msg += f"🏏 Final Score: {batter.runs} ({batter.balls_faced})\n"
         msg += f"💬 <i>{commentary}</i>"
+        msg += "</blockquote>"
 
         try:
             if gif: await context.bot.send_animation(chat_id, gif, caption=msg, parse_mode=ParseMode.HTML)
@@ -13007,14 +13012,14 @@ async def process_solo_turn_result(context, chat_id, match):
         sr = round((batter.runs / batter.balls_faced) * 100, 1)
 
         msg = f"🔴 <b>LIVE</b>\n"
-        msg += "─────────────────\n"
+        msg += "<blockquote>"
         if magic_msg:
-            msg += f"🔮 {magic_msg}\n─────────────────\n"
-        msg += f"🏏 <b>{runs} RUN{'S' if runs != 1 else ''}!</b>\n"
+            msg += f"🔮 {magic_msg}\n"
+        msg += f"🏏 {runs} RUN{'S' if runs != 1 else ''}!\n"
         msg += f"💬 <i>{commentary}</i>\n"
-        msg += "─────────────────\n"
-        msg += f"📊 <b>{batter.first_name}:</b> {batter.runs} ({batter.balls_faced})\n"
-        msg += f"⚡ <b>Strike Rate:</b> {sr}"
+        msg += f"📊 {batter.first_name}: {batter.runs} ({batter.balls_faced})\n"
+        msg += f"⚡ Strike Rate: {sr}"
+        msg += "</blockquote>"
 
         try:
             if gif: await context.bot.send_animation(chat_id, gif, caption=msg, parse_mode=ParseMode.HTML)
@@ -13077,7 +13082,7 @@ async def process_solo_turn_result(context, chat_id, match):
             await asyncio.sleep(1)
             await context.bot.send_message(
                 chat_id, 
-                f"🔄 <b>CHANGE OF OVER!</b>\nNew Bowler: <b>{new_bowler.first_name}</b> takes the ball.", 
+                f"🔄 <b>CHANGE OF OVER!</b>\n<blockquote>⚾ New Bowler: {new_bowler.first_name} takes the ball.</blockquote>", 
                 parse_mode=ParseMode.HTML
             )
             await asyncio.sleep(2)
@@ -17697,12 +17702,12 @@ async def send_potm_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, m
         
         # Build MOM group announcement
         msg = f"🌟 <b>MAN OF THE MATCH</b> 🌟\n"
-        msg += "─────────────────\n\n"
+        msg += "<blockquote>"
         msg += f"👑 <b>{player_tag}</b>\n\n"
         
         if best_player.balls_faced > 0:
             sr = best_player.get_strike_rate()
-            msg += f"🏏 <b>BATTING</b>\n"
+            msg += f"🏏 BATTING\n"
             msg += f"   📊 {best_player.runs} ({best_player.balls_faced})\n"
             msg += f"   ⚡ Strike Rate: {sr}\n"
             if best_player.boundaries > 0 or best_player.sixes > 0:
@@ -17711,13 +17716,13 @@ async def send_potm_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, m
         
         if best_player.balls_bowled > 0:
             econ = best_player.get_economy()
-            msg += f"⚾ <b>BOWLING</b>\n"
+            msg += f"⚾ BOWLING\n"
             msg += f"   🎯 {best_player.wickets} Wickets\n"
             msg += f"   📉 {best_player.runs_conceded} Runs ({format_overs(best_player.balls_bowled)})\n"
             msg += f"   📊 Economy: {econ}\n\n"
         
-        msg += "─────────────────\n"
         msg += "👏 <i>Outstanding Performance!</i>"
+        msg += "</blockquote>"
 
         # Bug 4 fix: MOM is now shown in the win message → skip the group announcement here.
         # Only send the DM acceptance speech to the MOM player.
@@ -22287,10 +22292,11 @@ async def mid_game_add_logic(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     team_label = "X" if team == match.team_x else "Y"
     await update.message.reply_text(
-        f"╭━━ TEAM {team_label} ━━━━━━\n"
-        f"┃ 👤 Added: {target_tag}\n"
-        f"┃ 👥 Team Size: {len(team.players)}\n"
-        f"╰━━━━━━━━\n"
+        f"✅ <b>PLAYER ADDED!</b>\n"
+        f"┌─❰ TEAM {team_label} ❱\n"
+        f"│ 👤 Added: {target_tag}\n"
+        f"│ 👥 Team Size: {len(team.players)}\n"
+        f"└──────────────\n"
         f"{not_started_warning}",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True
@@ -22384,11 +22390,11 @@ async def mid_game_remove_logic(update: Update, context: ContextTypes.DEFAULT_TY
             return
     team.remove_player(target_user_id)
     await update.message.reply_text(
-        f"❎ <b>PLAYER REMOVED → TEAM {team_name}</b>\n"
-        f"─────────────────\n\n"
-        f"🎯 <b>Player:</b> {player.first_name}\n"
-        f"📊 <b>Team Size:</b> {len(team.players)}\n\n"
-        f"─────────────────\n"
+        f"❎ <b>PLAYER REMOVED!</b>\n"
+        f"┌─❰ TEAM {team_name} ❱\n"
+        f"│ 🎯 Player: {player.first_name}\n"
+        f"│ 📊 Team Size: {len(team.players)}\n"
+        f"└──────────────\n"
         f"<i>Removed by Host mid-game</i>",
         parse_mode=ParseMode.HTML
     )
@@ -26823,9 +26829,9 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     match["ai_penalty_runs"] += 1
                     await update.message.reply_text(
                         "🚫 <b>WIDE BALL!</b>\n"
-                        "⚠️ You spammed the same number 3 times!\n\n"
-                        "📉 <b>Penalty:</b> +1 Run to AI\n"
-                        "🔄 Ball not counted. AI will bowl again.",
+                        "<blockquote>⚠️ You spammed the same number 3 times!\n"
+                        "📉 Penalty: +1 Run to AI\n"
+                        "🔄 Ball not counted. AI will bowl again.</blockquote>",
                         parse_mode=ParseMode.HTML
                     )
                 else:
@@ -26833,10 +26839,10 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     match["ai_score"] += 1
                     await update.message.reply_text(
                         "🚫 <b>WIDE BALL!</b>\n"
-                        "⚠️ You spammed the same number 3 times!\n\n"
-                        "📉 <b>Penalty:</b> +1 Run to AI\n"
-                        f"📊 AI: {match['ai_score']}/{match['ai_wickets']}\n\n"
-                        "🔄 Ball not counted. Bowl again.",
+                        "<blockquote>⚠️ You spammed the same number 3 times!\n"
+                        "📉 Penalty: +1 Run to AI\n"
+                        f"📊 AI: {match['ai_score']}/{match['ai_wickets']}\n"
+                        "🔄 Ball not counted. Bowl again.</blockquote>",
                         parse_mode=ParseMode.HTML
                     )
                     # Check if AI won via wide
@@ -26882,9 +26888,9 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # WIDE BALL - Don't count ball, AI gets 1 free run
                 await update.message.reply_text(
                     "🚫 <b>WIDE BALL!</b>\n"
-                    "⚠️ You spammed the same number 3 times!\n\n"
-                    "📉 <b>Penalty:</b> +1 Run to AI\n"
-                    "🔄 Ball not counted. AI will bowl again.",
+                    "<blockquote>⚠️ You spammed the same number 3 times!\n"
+                    "📉 Penalty: +1 Run to AI\n"
+                    "🔄 Ball not counted. AI will bowl again.</blockquote>",
                     parse_mode=ParseMode.HTML
                 )
                 
@@ -27139,9 +27145,9 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             wide_gif = get_random_gif(MatchEvent.WIDE)
                             await update.message.reply_text(
                                 "🚫 <b>WIDE BALL!</b>\n"
-                                "⚠️ <b>Reason:</b> You spammed the same number 3 times!\n"
-                                "🎲 Ball cancelled. Bowl again with a different number.\n\n"
-                                "📉 <b>Penalty:</b> +1 Run to Batsman's Team.",
+                                "<blockquote>⚠️ Reason: You spammed the same number 3 times!\n"
+                                "🎲 Ball cancelled. Bowl again with a different number.\n"
+                                "📉 Penalty: +1 Run to Batsman's Team.</blockquote>",
                                 parse_mode=ParseMode.HTML
                             )
 
@@ -27150,8 +27156,9 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 batting_player.runs += 1
 
                             wide_group_msg = (
-                                f"🚫 <b>WIDE BALL!</b> {bowler.first_name} bowled the same number 3 times!\n"
-                                f"🔄 <i>Bowler must bowl again with a different number...</i>"
+                                f"🚫 <b>WIDE BALL!</b>\n"
+                                f"<blockquote>{bowler.first_name} bowled the same number 3 times!\n"
+                                f"🔄 Bowler must bowl again with a different number...</blockquote>"
                             )
                             try:
                                 if wide_gif:
@@ -27190,11 +27197,9 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                     await update.message.reply_text(
                         f"🔒 <b>DELIVERY LOCKED!</b>\n"
-                        f"─────────────────\n"
-                        f"🎯 Your number: <b>{num}</b>\n"
-                        f"⏳ <i>Waiting for batsman to play...</i>\n"
-                        f"─────────────────\n"
-                        f"🏟️ <i>Watch the result live in the group!</i>",
+                        f"<blockquote>🎯 Your number: {num}\n"
+                        f"⏳ Waiting for batsman to play...\n"
+                        f"🏟️ Watch the result live in the group!</blockquote>",
                         parse_mode=ParseMode.HTML,
                         reply_markup=_solo_lock_markup
                     )
@@ -27205,10 +27210,11 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         sr = round((batter.runs / max(batter.balls_faced, 1)) * 100, 1)
                         batter_tag = f'<a href=\"tg://user?id={batter.user_id}\">{batter.first_name}</a>'
                         notification_msg = (
-                            f"╭━━ 🔴 LIVE ━━━\n"
-                            f"┃ 📊 {batter_tag} ➜ {batter.runs} ({batter.balls_faced}) | ⚡ SR: {sr}\n"
-                            f"┃🏏 {html.escape(batter.first_name)}, play your shot\n"
-                            f"╰━━━━━━━"
+                            f"🔴 <b>LIVE</b>\n"
+                            f"┌─❰ 🏏 BATTING TIME ❱\n"
+                            f"│ 📊 {batter_tag} ➜ {batter.runs} ({batter.balls_faced}) | ⚡ SR: {sr}\n"
+                            f"│ 🏏 {html.escape(batter.first_name)}, play your shot\n"
+                            f"└──────────────"
                         )
                         try:
                             await context.bot.send_animation(gid, "https://t.me/kyanaamrkhe/7", caption=notification_msg, parse_mode=ParseMode.HTML)
@@ -27292,9 +27298,9 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             wide_gif = get_random_gif(MatchEvent.WIDE)
                             await update.message.reply_text(
                                 "🚫 <b>WIDE BALL!</b>\n"
-                                "⚠️ <b>Reason:</b> You spammed the same number 3 times!\n"
-                                "🎲 Ball cancelled. Bowl again with a different number.\n\n"
-                                "📉 <b>Penalty:</b> +1 Run to Batting Team.",
+                                "<blockquote>⚠️ Reason: You spammed the same number 3 times!\n"
+                                "🎲 Ball cancelled. Bowl again with a different number.\n"
+                                "📉 Penalty: +1 Run to Batting Team.</blockquote>",
                                 parse_mode=ParseMode.HTML
                             )
                             
@@ -27313,9 +27319,10 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             
                             # Notify Group (with GIF)
                             wide_group_msg = (
-                                f"🚫 <b>WIDE BALL!</b> {bowler.first_name} bowled the same number 3 times!\n"
-                                f"📊 <b>Score:</b> {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
-                                f"🔄 <i>Bowler must bowl again with a different number...</i>"
+                                f"🚫 <b>WIDE BALL!</b>\n"
+                                f"<blockquote>{bowler.first_name} bowled the same number 3 times!\n"
+                                f"📊 Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
+                                f"🔄 Bowler must bowl again with a different number...</blockquote>"
                             )
                             try:
                                 if wide_gif:
@@ -27381,10 +27388,11 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             striker_tag = f'<a href=\"tg://user?id={striker.user_id}\">{striker.first_name}</a>'
                             
                             notification_msg = (
-                                f"╭━━ 🔴 LIVE ━━━\n"
-                                f"┃ 📊 {striker_tag} ➜ {striker.runs} ({striker.balls_faced}) | ⚡ SR: {sr}\n"
-                                f"┃🏏 {html.escape(striker.first_name)}, play your shot\n"
-                                f"╰━━━━━━━"
+                                f"🔴 <b>LIVE</b>\n"
+                                f"┌─❰ 🏏 BATTING TIME ❱\n"
+                                f"│ 📊 {striker_tag} ➜ {striker.runs} ({striker.balls_faced}) | ⚡ SR: {sr}\n"
+                                f"│ 🏏 {html.escape(striker.first_name)}, play your shot\n"
+                                f"└──────────────"
                             )
 
                             try:

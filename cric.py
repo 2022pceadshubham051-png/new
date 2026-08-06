@@ -3400,24 +3400,33 @@ async def update_team_edit_message(context: ContextTypes.DEFAULT_TYPE, group_id:
     """Show Team Edit Panel (Final Fixed Version)"""
     
     # 1. Team List Text Generate Karo
-    text = f"╭━━ ⚙️ TEAM SETUP ━━━━━━🏏\n"
-    
+    text = f"⚙️ <b>TEAM SETUP</b> 🏏\n"
+
     text += f"🧊 <b>Team X:</b>\n"
-    for i, p in enumerate(match.team_x.players, 1):
-        text += f"  {i}. {p.first_name}\n"
-    if not match.team_x.players: text += "  (Empty)\n"
-        
-    text += f"\n🔥 <b>Team Y:</b>\n"
-    for i, p in enumerate(match.team_y.players, 1):
-        text += f"  {i}. {p.first_name}\n"
-    if not match.team_y.players: text += "  (Empty)\n"
-    text += "\n"
+    text += "<blockquote>┌───────────────\n"
+    if match.team_x.players:
+        for i, p in enumerate(match.team_x.players, 1):
+            text += f"├ {i}. {p.first_name}\n"
+    else:
+        text += "├ <i>(Empty)</i>\n"
+    text += "└───────────────</blockquote>\n"
+
+    text += f"🔥 <b>Team Y:</b>\n"
+    text += "<blockquote>┌───────────────\n"
+    if match.team_y.players:
+        for i, p in enumerate(match.team_y.players, 1):
+            text += f"├ {i}. {p.first_name}\n"
+    else:
+        text += "├ <i>(Empty)</i>\n"
+    text += "└───────────────</blockquote>\n\n"
 
     # 2. Buttons — direct /add, /remove, /shift now (no Edit X / Edit Y submenu)
-    text += "👉 <code>/add</code> (reply, or @username/user_id) → pick Team X/Y.\n"
-    text += "👉 <code>/remove</code> (serial, or reply/@username/user_id).\n"
-    text += "👉 <code>/shift @username or user_id</code> → auto-swaps them to the other team.\n"
-    text += "👉 Tap <b>Finalize & Start</b> when squads are ready."
+    text += "<blockquote>┌───────────────\n"
+    text += "├ 👉 <code>/add</code> (reply, or @username/user_id) → pick Team X/Y.\n"
+    text += "├ 👉 <code>/remove</code> (serial, or reply/@username/user_id).\n"
+    text += "├ 👉 <code>/shift @username or user_id</code> → auto-swaps them to the other team.\n"
+    text += "├ ✅ Tap <b>Finalize & Start</b> when squads are ready.\n"
+    text += "└───────────────</blockquote>"
     keyboard = [
         [styled_button("✅ Finalize & Start", callback_data="team_edit_done")]
     ]
@@ -6743,7 +6752,7 @@ def _solo_board_render(match):
     msg += f"👥 𝗣𝗹𝗮𝘆𝗲𝗿𝘀 𝗜𝗻 𝗗𝘂𝗴𝗼𝘂𝘁: {count}\n"
     msg += "─────────────────────────\n"
     msg += f"🏏 𝗟𝗜𝗡𝗘-𝗨𝗣 (𝗣𝗟𝗔𝗬𝗜𝗡𝗚 𝗫𝗜) ➔ {count}/{SOLO_LINEUP_SIZE}\n"
-    msg += "┌───────────────────────\n"
+    msg += "<blockquote>┌───────────────────────\n"
     if match.solo_players:
         for i, p in enumerate(match.solo_players, 1):
             jnum = jersey_number_prefix(p.user_id)
@@ -6753,7 +6762,7 @@ def _solo_board_render(match):
             msg += f"├ {emoji} {ptag}{crown}\n"
     else:
         msg += "├ <i>Waiting for players...</i>\n"
-    msg += "└───────────────────────"
+    msg += "└───────────────────────</blockquote>"
     
     # Buttons
     keyboard = [
@@ -6865,10 +6874,10 @@ def get_team_join_message(match: Match) -> str:
         mode_label = "  🔮 <i>Magic Ball Mode!</i>"
     
     msg = "🏟️ <b>𝗖𝗥𝗜𝗖𝗢𝗩𝗘𝗥𝗦𝗘 𝗧𝗘𝗔𝗠 𝗔𝗥𝗘𝗡𝗔</b>\n"
-    msg += "┌──────────────────\n"
+    msg += "<blockquote>┌──────────────────\n"
     msg += f"├ ⏱️ <b>Time Remaining:</b> <code>{minutes:02d}:{seconds:02d}</code>\n"
     msg += f"├ 👥 <b>Players Joined:</b> <code>{total_p}</code>{mode_label}\n"
-    msg += "└──────────────────\n\n"
+    msg += "└──────────────────</blockquote>\n\n"
 
     # Team X List
     msg += "❄️ <b>TEAM ALPHA (X)</b>"
@@ -6876,7 +6885,7 @@ def get_team_join_message(match: Match) -> str:
         cap = match.team_x.get_player(match.team_x.captain_id)
         if cap:
             msg += f"  👑 <i>{cap.first_name}</i>"
-    msg += "\n┌──────────────────\n"
+    msg += "\n<blockquote>┌──────────────────\n"
     if match.team_x.players:
         for i, p in enumerate(match.team_x.players, 1):
             crown = "👑" if p.user_id == match.team_x.captain_id else "🔹"
@@ -6885,7 +6894,7 @@ def get_team_join_message(match: Match) -> str:
             msg += f"├ {crown} <b>{i}.</b> {ptag}\n"
     else:
         msg += "├ ⏳ <i>Waiting for players...</i>\n"
-    msg += "└──────────────────\n"
+    msg += "└──────────────────</blockquote>\n"
 
     # Team Y List
     msg += "\n🔥 <b>TEAM BETA (Y)</b>"
@@ -6893,7 +6902,7 @@ def get_team_join_message(match: Match) -> str:
         cap = match.team_y.get_player(match.team_y.captain_id)
         if cap:
             msg += f"  👑 <i>{cap.first_name}</i>"
-    msg += "\n┌──────────────────\n"
+    msg += "\n<blockquote>┌──────────────────\n"
     if match.team_y.players:
         for i, p in enumerate(match.team_y.players, 1):
             crown = "👑" if p.user_id == match.team_y.captain_id else "🔸"
@@ -6902,7 +6911,7 @@ def get_team_join_message(match: Match) -> str:
             msg += f"├ {crown} <b>{i}.</b> {ptag}\n"
     else:
         msg += "├ ⏳ <i>Waiting for players...</i>\n"
-    msg += "└──────────────────\n"
+    msg += "└──────────────────</blockquote>\n"
 
     msg += "\n📢 <i>Tap the buttons below to lock in your squad!</i>"
 
@@ -7105,12 +7114,14 @@ async def end_team_join_phase(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     host_text = f"🚨 <b>REGISTRATION CLOSED</b> 🚨\n"
-    host_text += "─────────────────\n"
-    host_text += f"👥 <b>Locked In:</b> <code>{total_players} Players</code>\n\n"
+    host_text += "<blockquote>┌─────────────────\n"
+    host_text += f"├ 👥 <b>Locked In:</b> <code>{total_players} Players</code>\n"
+    host_text += "└─────────────────</blockquote>\n\n"
     host_text += "🎙️ <b>Lobby Host Selection:</b>\n"
-    host_text += "<i>• The Host controls match settings, overs, and team edits.</i>\n"
-    host_text += "<i>• Step up if you are ready to moderate this match!</i>\n\n"
-    host_text += "─────────────────\n"
+    host_text += "<blockquote>┌─────────────────\n"
+    host_text += "├ <i>The Host controls match settings, overs, and team edits.</i>\n"
+    host_text += "├ <i>Step up if you are ready to moderate this match!</i>\n"
+    host_text += "└─────────────────</blockquote>\n\n"
     host_text += "👇 <i>Tap below to claim the Host seat:</i>"
 
     
@@ -7244,9 +7255,10 @@ async def host_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     user_tag = get_user_tag(user)
     
     msg = f"🎙 <b>HOST: {user_tag}</b>\n"
-    msg += "─────────────────\n"
-    msg += "Host, please select the number of overs for this match.\n"
-    msg += "Range: <b>1 to 20 Overs</b>"
+    msg += "<blockquote>┌─────────────────\n"
+    msg += "├ 🎯 Host, please select the number of overs for this match.\n"
+    msg += "├ 📏 Range: <b>1 to 20 Overs</b>\n"
+    msg += "└─────────────────</blockquote>"
     
     # Use Safe Refresh Function
     await refresh_game_message(context, chat.id, match, msg, reply_markup, media_key="host")
@@ -8032,13 +8044,13 @@ async def start_toss(query, context: ContextTypes.DEFAULT_TYPE, match: Match):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    toss_text = f"╭━━ 🪙 TOSS TIME ━━━━━━🏏\n"
-    toss_text += f"┃ 🏏 Format: {match.total_overs} Overs\n"
-    toss_text += f"┃ ⏱ Timer: 30 seconds to decide\n"
-    toss_text += f"┃\n"
-    toss_text += f"┃ 👑 {cap_x_name} → it's your call!\n"
-    toss_text += f"┃ ⚙ Choose Heads or Tails below:\n"
-    toss_text += f"╰━━━━━━━━"
+    toss_text = f"🪙 <b>TOSS TIME</b> 🏏\n"
+    toss_text += "<blockquote>┌──────────────\n"
+    toss_text += f"├ 🏏 Format: {match.total_overs} Overs\n"
+    toss_text += f"├ ⏱ Timer: 30 seconds to decide\n"
+    toss_text += f"├ 👑 {cap_x_name} → it's your call!\n"
+    toss_text += f"├ ⚙ Choose Heads or Tails below:\n"
+    toss_text += "└──────────────</blockquote>"
     
     # ✅ FIX: Always use refresh_game_message to switch images safely
     chat_id = match.group_id
@@ -8086,13 +8098,13 @@ async def toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    decision_text = f"╭━━ 🪙 TOSS OUTCOME ━━━━━━🏆\n"
-    decision_text += f"┃ 🎉 {match.toss_winner.name} won the toss!\n"
-    decision_text += f"┃ 🟡 Landed on: {toss_result.upper()}\n"
-    decision_text += f"┃\n"
-    decision_text += f"┃ 👑 Captain {winner_captain.first_name}, choose!\n"
-    decision_text += f"┃ ⏱ Decision Time: 30 seconds\n"
-    decision_text += f"╰━━━━━━━━"
+    decision_text = f"🪙 <b>TOSS OUTCOME</b> 🏆\n"
+    decision_text += "<blockquote>┌──────────────\n"
+    decision_text += f"├ 🎉 {match.toss_winner.name} won the toss!\n"
+    decision_text += f"├ 🟡 Landed on: {toss_result.upper()}\n"
+    decision_text += f"├ 👑 Captain {winner_captain.first_name}, choose!\n"
+    decision_text += f"├ ⏱ Decision Time: 30 seconds\n"
+    decision_text += "└──────────────</blockquote>"
 
     
     # ✅ FIX: Use refresh_game_message instead of edit_message_text
@@ -25480,10 +25492,11 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif phase == GamePhase.TOSS:
             # Rebuild toss message
             toss_text = (
-                f"╭━━ 🪙 TOSS TIME ━━╮\n"
-                f"┃ Host is flipping the coin!\n"
-                f"┃ Waiting for toss decision...\n"
-                f"╰━━━━━━━━╯"
+                f"🪙 <b>TOSS TIME</b>\n"
+                f"<blockquote>┌──────────────\n"
+                f"├ 🎙 Host is flipping the coin!\n"
+                f"├ ⏳ Waiting for toss decision...\n"
+                f"└──────────────</blockquote>"
             )
             keyboard = [
                 [styled_button("🧊 Heads (Team X)", callback_data="toss_heads"),

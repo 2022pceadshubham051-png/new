@@ -749,17 +749,18 @@ MAGIC_BALL_WEIGHTS = {
 # ═══════════════════════════════════════════════════════════════
 def themed(title: str, lines: list, emoji: str = "🏏") -> str:
     """
-    Build a themed bordered message.
-    title  – header text after ╭━━
-    lines  – list of strings; each becomes a ┃ line
-    emoji  – decorative emoji appended to the border title
+    Build a themed bordered message wrapped in a native Telegram quote box
+    (<blockquote>), used for turn notifications (batting/bowling), run-scored
+    updates, and similar alerts — in both GC and DM, solo and team mode.
+    title  – header text shown above the box
+    lines  – list of strings; each becomes a ├ line inside the box
+    emoji  – decorative emoji appended to the header
     Returns a fully-formatted HTML-safe string.
     """
-    dashes = "━" * max(1, 22 - len(title))
-    header = f"╭━━ {title} {dashes} {emoji}"
-    body = "\n".join(f"┃ {l}" for l in lines)
-    footer = "╰" + "━" * 18
-    return f"{header}\n{body}\n{footer}"
+    BAR = "───────────────────"
+    header = f"{emoji} <b>{title}</b>"
+    body = "\n".join(f"├ {l}" for l in lines)
+    return f"{header}\n<blockquote>┌{BAR}\n{body}\n└{BAR}</blockquote>"
 
 
 # ── 📊 RICH TABLE HELPER (Telegram Bot API 10.1+ sendRichMessage) ──────────
@@ -4292,17 +4293,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             )
                             return
                         batter = match.solo_players[match.current_solo_bat_idx] if match.current_solo_bat_idx < len(match.solo_players) else None
-                        dm_text = (
-                            f"⚔️ <b>SOLO MATCH — YOUR TURN TO BOWL!</b>\n"
-                            f"─────────────────\n"
-                        )
+                        dm_text = "⚔️ <b>SOLO MATCH — YOUR TURN TO BOWL!</b>\n<blockquote>"
                         if batter:
                             sr = round((batter.runs / max(batter.balls_faced, 1)) * 100, 1)
-                            dm_text += f"🏏 Batsman: <b>{batter.first_name}</b>  {batter.runs}({batter.balls_faced})  SR {sr}\n"
+                            dm_text += f"├ 🏏 Batsman: <b>{batter.first_name}</b>  {batter.runs}({batter.balls_faced})  SR {sr}\n"
                         dm_text += (
-                            f"─────────────────\n"
-                            f"📩 <b>Send a number (0–6) to bowl!</b>\n"
-                            f"⏱ <i>Timer is running!</i>"
+                            f"├ 📩 Send a number (0–6) to bowl!\n"
+                            f"├ ⏱ Timer is running!"
+                            f"</blockquote>"
                         )
                         await update.message.reply_text(dm_text, parse_mode=ParseMode.HTML, reply_markup=_go_group_markup)
                         return
@@ -4333,20 +4331,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     bat_team = match.current_batting_team
                     striker = bat_team.players[bat_team.current_batsman_idx] if bat_team.current_batsman_idx is not None else None
 
-                    dm_text = f"⚾ <b>YOUR TURN TO BOWL!</b>\n"
-                    dm_text += f"─────────────────\n"
+                    dm_text = "⚾ <b>YOUR TURN TO BOWL!</b>\n<blockquote>"
                     if striker:
-                        dm_text += f"🏏 Batsman: <b>{striker.first_name}</b>  ({striker.runs}/{striker.balls_faced})\n"
-                    dm_text += f"📊 Score: <b>{bat_team.score}/{bat_team.wickets}</b>  ({format_overs(bat_team.balls)} ov)\n"
+                        dm_text += f"├ 🏏 Batsman: <b>{striker.first_name}</b>  ({striker.runs}/{striker.balls_faced})\n"
+                    dm_text += f"├ 📊 Score: <b>{bat_team.score}/{bat_team.wickets}</b>  ({format_overs(bat_team.balls)} ov)\n"
                     if match.innings == 2:
                         runs_needed = match.target - bat_team.score
                         balls_left = (match.total_overs * 6) - bat_team.balls
-                        dm_text += f"🎯 Defend: <b>{runs_needed} runs</b> in <b>{balls_left} balls</b>\n"
+                        dm_text += f"├ 🎯 Defend: <b>{runs_needed} runs</b> in <b>{balls_left} balls</b>\n"
                     if match.is_free_hit:
-                        dm_text += "⚡ <b>FREE HIT!</b> → Batsman cannot be dismissed!\n"
-                    dm_text += f"─────────────────\n"
-                    dm_text += "📩 <b>Send a number (0–6) to bowl!</b>\n"
-                    dm_text += "⏱ <i>Timer is running!</i>"
+                        dm_text += "├ ⚡ FREE HIT! → Batsman cannot be dismissed!\n"
+                    dm_text += "├ 📩 Send a number (0–6) to bowl!\n"
+                    dm_text += "├ ⏱ Timer is running!"
+                    dm_text += "</blockquote>"
 
                     await update.message.reply_text(dm_text, parse_mode=ParseMode.HTML, reply_markup=_go_group_markup)
                     return
@@ -8547,10 +8544,10 @@ async def _build_players_text(match: Match) -> str:
             score_str = f" ➔ {team.score}/{team.wickets} ({format_overs(team.balls)} ov)"
         color_icon = "🧊" if team == match.team_x else "🔥"
         block = f"{color_icon} <b>𝗧𝗘𝗔𝗠 {html.escape(team.name)}</b>{toss_icon}{score_str}\n"
-        block += "┌───────────────────\n"
+        block += "<blockquote>┌───────────────────\n"
         for i, player in enumerate(team.players, 1):
             block += _build_player_row(player, team, i)
-        block += "└───────────────────\n"
+        block += "└───────────────────</blockquote>\n"
         return block
 
     host_tag = f'<a href="tg://user?id={match.host_id}">{html.escape(match.host_name or "Host")}</a>'
@@ -8560,7 +8557,7 @@ async def _build_players_text(match: Match) -> str:
     text += f"⏳ 𝗢𝘃𝗲𝗿𝘀: {overs_info}\n"
     if resume_code_top:
         text += f"🔑 𝗥𝗲𝘀𝘂𝗺𝗲: <code>/regame {resume_code_top}</code>\n"
-    text += "─────────────────\n"
+    text += "\n"
     text += _build_team_block(match.team_x, "❄️", len(match.team_x.players))
     text += _build_team_block(match.team_y, "🔥", len(match.team_y.players))
     ist_now = datetime.utcnow() + timedelta(hours=5, minutes=30)
@@ -8582,8 +8579,9 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if getattr(match, 'game_mode', None) in ["SOLO", "MAGICBALL"] or match.phase in [GamePhase.SOLO_JOINING, GamePhase.SOLO_MATCH]:
         # Solo mode → show player roster
-        msg = "📜 <b>SOLO BATTLE ROSTER</b>\n"
-        msg += "─────────────────\n"
+        msg = "📜 𝗦𝗢𝗟𝗢 𝗕𝗔𝗧𝗧𝗟𝗘 𝗥𝗢𝗦𝗧𝗘𝗥\n"
+        msg += "<blockquote>"
+        lines = []
         for i, p in enumerate(match.solo_players, 1):
             status = "⏳ <i>Waiting</i>"
             if p.is_out: status = "❌ <b>OUT</b>"
@@ -8591,8 +8589,9 @@ async def players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if i-1 == match.current_solo_bat_idx: status = "🏏 <b>BATTING</b>"
                 elif i-1 == match.current_solo_bowl_idx: status = "⚾ <b>BOWLING</b>"
                 elif p.is_bowling_banned: status = "🚫 <b>BANNED (Bowl)</b>"
-            msg += f"<b>{i}. {p.first_name}</b>\n   └ {status} • {p.runs} Runs\n"
-        msg += "─────────────────"
+            lines.append(f"├ <b>{i}. {p.first_name}</b> ➜ {status} • {p.runs} Runs")
+        msg += "\n".join(lines)
+        msg += "</blockquote>"
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
 
@@ -10894,8 +10893,8 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         }
         run_label_clean = run_labels.get(runs, f"+{runs} Runs !")
         
-        # Header line: ╭━━ 🚀 Four ! ━━━━━━━ 🚀
-        header_text = f"╭━━ {run_emoji} {run_label_clean} ━━━━━━━ {run_emoji}"
+        # Header line + quote box: 🚀 Four ! → blockquote body
+        header_text = f"{run_emoji} <b>{run_label_clean}</b>"
         
         freehit_prefix = ""
         if match.is_free_hit:
@@ -10912,13 +10911,12 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         
         msg = f"{freehit_prefix}"
         
-        bat_line = f"┃ 🏏 Score: {bat_team.score}/{bat_team.wickets}"
-        comm_line = f"┃ 🏟️ {commentary}"
+        bat_line = f"├ 🏏 Score: {bat_team.score}/{bat_team.wickets}"
+        comm_line = f"├ 🏟️ {commentary}"
         score_box = (
             f"{header_text}\n"
-            f"{bat_line}\n"
-            f"{comm_line}\n"
-            f"╰━━━━━━━"
+            f"<blockquote>{bat_line}\n"
+            f"{comm_line}</blockquote>"
         )
         
         if magic_ball_result and magic_ball_result.get("magic_type"):
@@ -12821,11 +12819,9 @@ async def trigger_solo_ball(context, chat_id, match):
         sr_batter = round((batter.runs / max(batter.balls_faced, 1)) * 100, 1)
         dm_msg = (
             f"⚔️ <b>SOLO MATCH — YOUR TURN TO BOWL!</b>\n"
-            f"─────────────────\n"
-            f"🏏 Batsman: <b>{batter.first_name}</b>  {batter.runs}({batter.balls_faced})  SR {sr_batter}\n"
-            f"─────────────────\n"
-            f"📩 <b>Send a number (0–6) to bowl!</b>\n"
-            f"⏱ <i>Timer is running!</i>"
+            f"<blockquote>├ 🏏 Batsman: <b>{batter.first_name}</b>  {batter.runs}({batter.balls_faced})  SR {sr_batter}\n"
+            f"├ 📩 Send a number (0–6) to bowl!\n"
+            f"├ ⏱ Timer is running!</blockquote>"
         )
         await context.bot.send_message(bowler.user_id, dm_msg, parse_mode=ParseMode.HTML, reply_markup=_dm_markup)
         

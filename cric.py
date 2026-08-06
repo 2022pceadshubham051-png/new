@@ -1397,6 +1397,23 @@ def init_db():
         ("dismissals_lbw", "INTEGER DEFAULT 0"),
         ("dismissals_caught", "INTEGER DEFAULT 0"),
         ("catches_taken", "INTEGER DEFAULT 0"),
+        ("solo_matches_played", "INTEGER DEFAULT 0"),
+        ("solo_matches_won", "INTEGER DEFAULT 0"),
+        ("solo_total_runs", "INTEGER DEFAULT 0"),
+        ("solo_total_balls_faced", "INTEGER DEFAULT 0"),
+        ("solo_highest_score", "INTEGER DEFAULT 0"),
+        ("solo_total_sixes", "INTEGER DEFAULT 0"),
+        ("solo_total_fours", "INTEGER DEFAULT 0"),
+        ("solo_total_hundreds", "INTEGER DEFAULT 0"),
+        ("solo_total_fifties", "INTEGER DEFAULT 0"),
+        ("solo_total_ducks", "INTEGER DEFAULT 0"),
+        ("solo_top3_finishes", "INTEGER DEFAULT 0"),
+        ("solo_total_wickets", "INTEGER DEFAULT 0"),
+        ("solo_total_balls_bowled", "INTEGER DEFAULT 0"),
+        ("solo_total_runs_conceded", "INTEGER DEFAULT 0"),
+        ("solo_best_bowling_wickets", "INTEGER DEFAULT 0"),
+        ("solo_best_bowling_runs", "INTEGER DEFAULT 0"),
+        ("solo_matches_bowled", "INTEGER DEFAULT 0"),
     ]:
         try:
             c.execute(f"ALTER TABLE user_stats ADD COLUMN {col_name} {col_def}")
@@ -2082,7 +2099,12 @@ def init_player_stats(user_id: int):
         "sixes": 0,
         "fours": 0,
         "centuries": 0,
-        "fifties": 0
+        "fifties": 0,
+        "runs_conceded": 0,
+        "balls_bowled": 0,
+        "best_bowling_wickets": 0,
+        "best_bowling_runs": 0,
+        "matches_bowled": 0
     }
 
 
@@ -2951,39 +2973,39 @@ def generate_mini_scorecard(match: Match, wicket_mode: bool = False) -> str:
     partnership_balls = getattr(match, "current_partnership_balls", 0)
     msg = f"🏏 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚 \n"
     msg += f"┌─────────────────── \n"
-    msg += f"├ 👤 {striker_tag} ➔ {striker_runs} ({striker_balls}) \n"
-    msg += f"├ 📈 𝗖𝗦𝗥: {csr:.2f} \n"
+    msg += f"├ 👤 {striker_tag} ➔ “{striker_runs}” (“{striker_balls}”) \n"
+    msg += f"├ 📈 𝗖𝗦𝗥: “{csr:.2f}” \n"
     msg += f"├ \n"
     if non_striker:
-        msg += f"├ 👤 {non_striker_tag} ➔ {ns_runs} ({ns_balls}) \n"
-        msg += f"├ 📈 𝗖𝗦𝗥: {ns_csr:.2f} \n"
+        msg += f"├ 👤 {non_striker_tag} ➔ “{ns_runs}” (“{ns_balls}”) \n"
+        msg += f"├ 📈 𝗖𝗦𝗥: “{ns_csr:.2f}” \n"
     else:
-        msg += f"├ 👤 - ➔ 0 (0) \n"
-        msg += f"├ 📈 𝗖𝗦𝗥: 0.00 \n"
+        msg += f"├ 👤 - ➔ “0” (“0”) \n"
+        msg += f"├ 📈 𝗖𝗦𝗥: “0.00” \n"
     msg += f"├ \n"
-    msg += f"├ 🤝 𝗣𝗮𝗿𝘁𝗻𝗲𝗿𝘀𝗵𝗶𝗽 ➔ {partnership} ({partnership_balls}) \n"
+    msg += f"├ 🤝 𝗣𝗮𝗿𝘁𝗻𝗲𝗿𝘀𝗵𝗶𝗽 ➔ “{partnership}” (“{partnership_balls}”) \n"
     msg += f"└─────────────────── \n"
     
     msg += f"🥎 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚 \n"
     msg += f"┌─────────────────── \n"
     msg += f"├ 👤 {bowler_tag} \n"
-    msg += f"├ 📊 𝗧𝗵𝗶𝘀 𝗢𝘃𝗲𝗿: {over_str} \n"
+    msg += f"├ 📊 𝗧𝗵𝗶𝘀 𝗢𝘃𝗲𝗿: “{over_str}” \n"
     msg += f"└─────────────────── \n"
     
     msg += f" 🏆 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗\n"
     msg += f"┌─────────────────── \n"
-    msg += f"├ 🔹 𝗧𝗘𝗔𝗠 {html.escape(tx.name)}: {tx.score}/{tx.wickets} ({tx_overs} ov) \n"
-    msg += f"├ ↳ 𝗖𝗥𝗥: {tx_rr:.2f} \n"
+    msg += f"├ 🔹 𝗧𝗘𝗔𝗠 {html.escape(tx.name)}: “{tx.score}/{tx.wickets}” (“{tx_overs}” ov) \n"
+    msg += f"├ ↳ 𝗖𝗥𝗥: “{tx_rr:.2f}” \n"
     msg += f"├ \n"
-    msg += f"├ 🔸 𝗧𝗘𝗔𝗠 {html.escape(ty.name)}: {ty.score}/{ty.wickets} ({ty_overs} ov) \n"
-    msg += f"├ ↳ 𝗖𝗥𝗥: {ty_rr:.2f} \n"
+    msg += f"├ 🔸 𝗧𝗘𝗔𝗠 {html.escape(ty.name)}: “{ty.score}/{ty.wickets}” (“{ty_overs}” ov) \n"
+    msg += f"├ ↳ 𝗖𝗥𝗥: “{ty_rr:.2f}” \n"
     msg += f"└───────────────────\n"
 
     if match.innings == 2:
         runs_needed = match.target - bat_team.score
         balls_left = (match.total_overs * 6) - bat_team.balls
         rrr = round((runs_needed / balls_left) * 6, 2) if balls_left > 0 else 0
-        msg += f"\n🎯 Need <b>{runs_needed}</b> off <b>{balls_left}</b> balls (RRR {rrr})"
+        msg += f"\n🎯 Need <b>“{runs_needed}”</b> off <b>“{balls_left}”</b> balls (RRR “{rrr}”)"
 
     return msg
 def format_overs(balls: int) -> str:
@@ -3393,26 +3415,14 @@ async def update_team_edit_message(context: ContextTypes.DEFAULT_TYPE, group_id:
     if not match.team_y.players: text += "  (Empty)\n"
     text += "\n"
 
-    # 2. Logic: Buttons based on State
-    if match.editing_team:
-        # --- SUB-MENU (Jab Edit Mode ON hai) ---
-        text += f"🟢 <b>EDITING TEAM {match.editing_team}</b>\n"
-        text += f"👉 Reply to user with <code>/add</code> to add.\n"
-        text += f"👉 Reply to user with <code>/remove</code> to remove.\n"
-        text += "👉 Click button below when done."
-        
-        # 'Done' button wapas Main Menu le jayega
-        keyboard = [[styled_button(f"✅ Done with Team {match.editing_team}", callback_data="edit_back")]]
-        
-    else:
-        # --- MAIN MENU (Team Select Karo) ---
-        text += "👇 <b>Select a team to edit:</b>"
-        keyboard = [
-            # Note: Buttons ab 'edit_team_x' use kar rahe hain (no _mode)
-            [styled_button("✏️ Edit Team X", callback_data="edit_team_x"), 
-             styled_button("✏️ Edit Team Y", callback_data="edit_team_y")],
-            [styled_button("✅ Finalize & Start", callback_data="team_edit_done")]
-        ]
+    # 2. Buttons — direct /add, /remove, /shift now (no Edit X / Edit Y submenu)
+    text += "👉 <code>/add</code> (reply, or @username/user_id) → pick Team X/Y.\n"
+    text += "👉 <code>/remove</code> (serial, or reply/@username/user_id).\n"
+    text += "👉 <code>/shift @username or user_id</code> → auto-swaps them to the other team.\n"
+    text += "👉 Tap <b>Finalize & Start</b> when squads are ready."
+    keyboard = [
+        [styled_button("✅ Finalize & Start", callback_data="team_edit_done")]
+    ]
 
     await refresh_game_message(context, group_id, match, text, InlineKeyboardMarkup(keyboard), media_key="squads")
 
@@ -3538,12 +3548,19 @@ def _build_solo_scorecard_html(match) -> str:
 
     bowl_rows = ""
     sno = 0
-    for p in players:
-        if p.balls_bowled <= 0:
+    for i, p in enumerate(players):
+        is_current_bowler = (i == getattr(match, "current_solo_bowl_idx", -1))
+        if p.balls_bowled <= 0 and not is_current_bowler:
             continue
         sno += 1
-        extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
         name = html.escape(p.first_name)
+        if p.balls_bowled <= 0 and is_current_bowler:
+            bowl_rows += (
+                f"<tr><td align='center'>{sno}</td><td>{name}</td>"
+                f"<td colspan='5' align='center'><i>Not yet bowling</i></td></tr>"
+            )
+            continue
+        extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
         bowl_rows += (
             f"<tr><td align='center'>{sno}</td><td>{name}</td><td align='right'>{format_overs(p.balls_bowled)}</td>"
             f"<td align='right'>{p.runs_conceded}</td><td align='right'>{p.wickets}</td>"
@@ -3587,10 +3604,14 @@ def _build_solo_scorecard(match):
     any_bowled = False
     sno = 0
     for i, p in enumerate(players):
-        if p.balls_bowled <= 0:
+        is_current_bowler = (i == getattr(match, "current_solo_bowl_idx", -1))
+        if p.balls_bowled <= 0 and not is_current_bowler:
             continue
         sno += 1
         any_bowled = True
+        if p.balls_bowled <= 0 and is_current_bowler:
+            bowl_table += f"{_solo_pad(sno, 4)}{_solo_pad(p.first_name, 14)}Not yet bowling\n"
+            continue
         extras = getattr(p, "wides", 0) + getattr(p, "no_balls", 0)
         bowl_table += f"{_solo_pad(sno, 4)}{_solo_pad(p.first_name, 14)}{_solo_rpad(format_overs(p.balls_bowled), 6)}{_solo_rpad(p.runs_conceded, 5)}{_solo_rpad(p.wickets, 5)}{_solo_rpad(p.get_economy(), 6)}{_solo_rpad(extras, 5)}\n"
     if not any_bowled:
@@ -3598,9 +3619,9 @@ def _build_solo_scorecard(match):
 
     text = "🏏 <b>SOLO SCORECARD</b>\n─────────────────\n"
     text += "Batting\n"
-    text += f"<pre>{bat_table}</pre>"
+    text += f"<blockquote expandable><pre>{bat_table}</pre></blockquote>"
     text += "Bowling\n"
-    text += f"<pre>{bowl_table}</pre>"
+    text += f"<blockquote expandable><pre>{bowl_table}</pre></blockquote>"
     text += "\n📟 SOLO SCORECARD 🎮"
 
     group_id = getattr(match, "group_id", None) or getattr(match, "chat_id", None)
@@ -4800,18 +4821,18 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
         rules_text = (
             "🏏 <b>REAL CRICKET MODE — RULES</b>\n"
             "─────────────────\n"
-            "Team Mode ke normal rules (spam-wide, offline auto-removal) "
-            "yahan bhi lagu rahenge, extra:\n\n"
+            "All normal Team Mode rules (spam-wide, offline auto-removal) "
+            "still apply here, plus:\n\n"
             "🎯 <b>Powerplay Boundary Caps</b>\n"
             "10 overs → PP1 (1-3): max 3 boundaries │ PP2 (4-6): max 4 │ PP3 (7-10): max 5\n"
             "20 overs → PP1 (1-4): max 3 boundaries │ PP2 (5-15): max 4 │ PP3 (16-20): max 5\n"
-            "<i>Cap paar hui toh ball automatically No Ball ban jaayegi.</i>\n\n"
+            "<i>Once the cap is crossed, the ball automatically becomes a No Ball.</i>\n\n"
             "🥤 <b>Drinks Break</b>\n"
             "10 overs → after Over 7 (30s)\n"
             "20 overs → after Over 7 & Over 16 (30s each)\n\n"
             "🎳 <b>Bowler Limits</b>\n"
             "10 overs → max 2 overs/bowler │ 20 overs → max 4 overs/bowler\n"
-            "<i>Ek bowler consecutive overs nahi daal sakta.</i>\n\n"
+            "<i>A bowler cannot bowl two consecutive overs.</i>\n\n"
             "Ready to play by these rules?"
         )
         keyboard = [
@@ -7397,8 +7418,6 @@ async def start_team_edit_phase(query, context: ContextTypes.DEFAULT_TYPE, match
     cap_y_name = captain_y.first_name if captain_y else "Not Selected"
     
     keyboard = [
-        [styled_button("Edit Team X", callback_data="edit_team_x")],
-        [styled_button("Edit Team Y", callback_data="edit_team_y")],
         [styled_button("✅ Done - Proceed", callback_data="team_edit_done")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -7424,8 +7443,9 @@ async def start_team_edit_phase(query, context: ContextTypes.DEFAULT_TYPE, match
     
     edit_text += "\n─────────────────\n"
     edit_text += "🛠️ <b>Host Admin Panel:</b>\n"
-    edit_text += "• Reply to a user with <code>/add</code> to recruit them.\n"
-    edit_text += "• Reply to a user with <code>/remove</code> to bench them.\n"
+    edit_text += "• <code>/add</code> (reply, or @username/user_id — bulk supported) → bot asks which team, tap Team X/Team Y to add.\n"
+    edit_text += "• <code>/remove</code> (serial number, or reply/@username/user_id — bulk supported) → removes them.\n"
+    edit_text += "• <code>/shift @username or user_id</code> → auto-detects their current team and moves them to the other one.\n"
     edit_text += "• Tap <b>Done</b> below when squads are balanced and ready!"
 
     
@@ -10722,7 +10742,7 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
                 "batsman_number": batsman_num
             }
             
-            if bat_team.drs_remaining > 0 and get_gc_setting(group_id, "drs_enabled", False):
+            if bat_team.drs_remaining > 0 and (getattr(match, "is_real_cricket", False) or get_gc_setting(group_id, "drs_enabled", False)):
                 await offer_drs_to_captain(context, group_id, match)
             else:
                 calculate_momentum_change(match, 0, True, False)
@@ -11659,22 +11679,38 @@ async def check_drinks_break(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
 def real_cricket_powerplay_for_over(match: Match, over_num_1indexed: int) -> int:
     """Returns which powerplay (1/2/3) the given (1-indexed) over falls in,
     for the match's total_overs format. Only meaningful when
-    match.is_real_cricket is True."""
-    if match.total_overs == 10:
+    match.is_real_cricket is True. Works for ANY overs count (1-20), not
+    just the 10/20-over presets — those two keep their exact stated splits,
+    everything else is scaled proportionally to the same ratios."""
+    overs = getattr(match, "total_overs", 0)
+    if overs <= 0:
+        return 0
+    if overs == 10:
         if over_num_1indexed <= 3:
             return 1
         elif over_num_1indexed <= 6:
             return 2
         else:
             return 3
-    elif match.total_overs == 20:
+    elif overs == 20:
         if over_num_1indexed <= 4:
             return 1
         elif over_num_1indexed <= 15:
             return 2
         else:
             return 3
-    return 0
+    else:
+        # 🔧 General formula for any other overs count (e.g. 5, 6, 8, 15...):
+        # PP1 = first ~30% of overs, PP2 = up to ~75%, PP3 = remainder.
+        pp1_end = max(1, round(overs * 0.3))
+        pp2_end = max(pp1_end + 1, round(overs * 0.75))
+        pp2_end = min(pp2_end, overs - 1) if overs > 1 else pp2_end
+        if over_num_1indexed <= pp1_end:
+            return 1
+        elif over_num_1indexed <= pp2_end:
+            return 2
+        else:
+            return 3
 
 
 def real_cricket_boundary_cap(pp_number: int) -> int:
@@ -11683,12 +11719,29 @@ def real_cricket_boundary_cap(pp_number: int) -> int:
 
 
 def real_cricket_max_overs_per_bowler(match: Match) -> int:
-    return 2 if match.total_overs == 10 else 4
+    """Max overs a single bowler can bowl — standard 'max 20% of the
+    innings' cricket rule, so it scales for ANY overs count, not just
+    10/20 (10→2, 20→4, 5→1, 8→2, 15→3, etc)."""
+    overs = getattr(match, "total_overs", 0) or 1
+    return max(1, math.ceil(overs / 5))
 
 
 def real_cricket_drinks_break_overs(match: Match) -> List[int]:
-    """Over numbers (completed-overs count) after which a drinks break fires."""
-    return [7] if match.total_overs == 10 else [7, 16]
+    """Over numbers (completed-overs count) after which a drinks break
+    fires. 10/20-over presets keep their exact stated overs; anything
+    else scales proportionally (~35% for a single break under 14 overs,
+    ~35%/~80% two breaks for longer matches)."""
+    overs = getattr(match, "total_overs", 0)
+    if overs == 10:
+        return [7]
+    elif overs == 20:
+        return [7, 16]
+    elif overs < 6:
+        return []  # too short for a drinks break
+    elif overs < 14:
+        return [max(1, round(overs * 0.7))]
+    else:
+        return [max(1, round(overs * 0.35)), max(2, round(overs * 0.8))]
 
 
 async def _real_cricket_send_gif(context: ContextTypes.DEFAULT_TYPE, group_id: int, filename: str, caption: str):
@@ -13241,6 +13294,19 @@ async def end_solo_game_logic(context, chat_id, match):
             if p.runs == 0 and p.is_out: s["ducks"] += 1
             if p.runs > s.get("highest", 0): s["highest"] = p.runs
             if p.runs > s.get("high_score", 0): s["high_score"] = p.runs
+
+            # 🎳 Bowling stats
+            p_balls_bowled = getattr(p, "balls_bowled", 0)
+            p_runs_conceded = getattr(p, "runs_conceded", 0)
+            s["runs_conceded"] = s.get("runs_conceded", 0) + p_runs_conceded
+            s["balls_bowled"] = s.get("balls_bowled", 0) + p_balls_bowled
+            if p_balls_bowled > 0:
+                s["matches_bowled"] = s.get("matches_bowled", 0) + 1
+                best_w = s.get("best_bowling_wickets", 0)
+                best_r = s.get("best_bowling_runs", 0)
+                if p.wickets > best_w or (p.wickets == best_w and (best_w == 0 or p_runs_conceded < best_r)):
+                    s["best_bowling_wickets"] = p.wickets
+                    s["best_bowling_runs"] = p_runs_conceded
             
             if p.user_id == winner.user_id: 
                 s["wins"] += 1
@@ -13248,6 +13314,74 @@ async def end_solo_game_logic(context, chat_id, match):
                 s["top_3_finishes"] += 1
                 
     save_data()
+
+    # 🗄️ Sync solo stats to DB solo_ columns so mystats solo view has bowling data
+    try:
+        conn_solo = db_connect(DB_PATH)
+        cs2 = conn_solo.cursor()
+        for p in match.solo_players:
+            uid = p.user_id
+            s = player_stats.get(uid, {}).get("solo", {})
+            is_win = 1 if uid == winner.user_id else 0
+            is_top3 = 1 if p in sorted_players[:3] else 0
+            p_balls_bowled = getattr(p, "balls_bowled", 0)
+            p_runs_conceded = getattr(p, "runs_conceded", 0)
+            bowled_this_match = 1 if p_balls_bowled > 0 else 0
+            cs2.execute("""INSERT INTO user_stats
+                (user_id, username, first_name,
+                 solo_matches_played, solo_matches_won,
+                 solo_total_runs, solo_total_balls_faced,
+                 solo_highest_score, solo_total_sixes, solo_total_fours,
+                 solo_total_hundreds, solo_total_fifties, solo_total_ducks,
+                 solo_top3_finishes,
+                 solo_total_wickets, solo_total_balls_bowled, solo_total_runs_conceded,
+                 solo_best_bowling_wickets, solo_best_bowling_runs, solo_matches_bowled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = excluded.username,
+                    first_name = excluded.first_name,
+                    solo_matches_played = solo_matches_played + 1,
+                    solo_matches_won = solo_matches_won + ?,
+                    solo_total_runs = solo_total_runs + ?,
+                    solo_total_balls_faced = solo_total_balls_faced + ?,
+                    solo_highest_score = MAX(solo_highest_score, ?),
+                    solo_total_sixes = solo_total_sixes + ?,
+                    solo_total_fours = solo_total_fours + ?,
+                    solo_total_hundreds = solo_total_hundreds + ?,
+                    solo_total_fifties = solo_total_fifties + ?,
+                    solo_total_ducks = solo_total_ducks + ?,
+                    solo_top3_finishes = solo_top3_finishes + ?,
+                    solo_total_wickets = solo_total_wickets + ?,
+                    solo_total_balls_bowled = solo_total_balls_bowled + ?,
+                    solo_total_runs_conceded = solo_total_runs_conceded + ?,
+                    solo_best_bowling_wickets = ?,
+                    solo_best_bowling_runs = ?,
+                    solo_matches_bowled = solo_matches_bowled + ?
+            """, (
+                uid, p.username or "", p.first_name,
+                1, is_win,
+                p.runs, p.balls_faced,
+                p.runs, getattr(p, "sixes", 0), getattr(p, "boundaries", 0),
+                1 if p.runs >= 100 else 0,
+                1 if 50 <= p.runs < 100 else 0,
+                1 if (p.runs == 0 and p.is_out) else 0,
+                is_top3,
+                p.wickets, p_balls_bowled, p_runs_conceded,
+                s.get("best_bowling_wickets", 0), s.get("best_bowling_runs", 0), bowled_this_match,
+                # ON CONFLICT UPDATE values
+                is_win, p.runs, p.balls_faced, p.runs,
+                getattr(p, "sixes", 0), getattr(p, "boundaries", 0),
+                1 if p.runs >= 100 else 0,
+                1 if 50 <= p.runs < 100 else 0,
+                1 if (p.runs == 0 and p.is_out) else 0,
+                is_top3,
+                p.wickets, p_balls_bowled, p_runs_conceded,
+                s.get("best_bowling_wickets", 0), s.get("best_bowling_runs", 0), bowled_this_match,
+            ))
+        conn_solo.commit()
+        conn_solo.close()
+    except Exception as solo_db_err:
+        logger.error(f"Solo stats DB sync error: {solo_db_err}")
 
 
     # ✅ 2. VICTORY GIF WITH DETAILED CARD
@@ -15550,9 +15684,9 @@ def build_new_scorecard(match: "Match", group_id: int, result: Optional[dict] = 
             rr_text = f" | RR: {rr}"
         block = f"🏏 <b>{_nsc_team_label(bat_team, letter)} - {bat_team.score}/{bat_team.wickets} ({format_overs(bat_team.balls)})</b>\n"
         block += f"Batting - CRR: {crr}{rr_text}\n"
-        block += f"<pre>{_nsc_batting_table(bat_team)}</pre>"
+        block += f"<blockquote expandable><pre>{_nsc_batting_table(bat_team)}</pre></blockquote>"
         block += "Bowling\n"
-        block += f"<pre>{_nsc_bowling_table(bowl_team)}</pre>"
+        block += f"<blockquote expandable><pre>{_nsc_bowling_table(bowl_team)}</pre></blockquote>"
         return block
 
     result_block = ""
@@ -21423,13 +21557,8 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── EDITING PHASE ──
-    if match.phase == GamePhase.TEAM_EDIT:
-        await add_player_command(update, context)
-        return
-
-    # ── LIVE MATCH ──
-    if match.phase != GamePhase.MATCH_IN_PROGRESS:
+    # ── EDITING PHASE or LIVE MATCH — same bulk add + team-picker flow ──
+    if match.phase not in (GamePhase.TEAM_EDIT, GamePhase.MATCH_IN_PROGRESS):
         await update.message.reply_text("⚠️ Cannot add players in current match phase.", parse_mode=ParseMode.HTML)
         return
 
@@ -21682,13 +21811,8 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── EDITING PHASE ──
-    if match.phase == GamePhase.TEAM_EDIT:
-        await remove_player_command(update, context)
-        return
-
-    # ── LIVE MATCH ──
-    if match.phase != GamePhase.MATCH_IN_PROGRESS:
+    # ── EDITING PHASE or LIVE MATCH — same flow (serial, reply, @username, user_id; bulk supported) ──
+    if match.phase not in (GamePhase.TEAM_EDIT, GamePhase.MATCH_IN_PROGRESS):
         await update.message.reply_text(
             themed("⚠️ WRONG PHASE", ["Cannot remove players in the current match phase."], "⚠️"),
             parse_mode=ParseMode.HTML
@@ -21702,11 +21826,62 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Bulk removal via reply / @username / user_id — no team picker needed,
+    # the player's current team is detected automatically. Small plain numbers
+    # (no @, not from a reply) are treated as a SERIAL NUMBER instead (old
+    # flow below), since real Telegram user IDs are much larger than a
+    # squad's serial numbers ever will be. ──
+    bulk_targets = []
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        ru = update.message.reply_to_message.from_user
+        if not ru.is_bot:
+            bulk_targets.append((ru.id, ru.username or "", ru.first_name or str(ru.id)))
+    for arg in (context.args or []):
+        if arg.startswith("@"):
+            uname = arg[1:].lower()
+            for uid, data in user_data.items():
+                if data.get("username", "").lower() == uname:
+                    bulk_targets.append((uid, data.get("username", ""), data.get("first_name", uname)))
+                    break
+        elif arg.lstrip("-").isdigit() and int(arg) >= 1000:
+            uid_int = int(arg)
+            data = user_data.get(uid_int, {})
+            bulk_targets.append((uid_int, data.get("username", ""), data.get("first_name", str(uid_int))))
+
+    seen = set()
+    bulk_targets = [t for t in bulk_targets if not (t[0] in seen or seen.add(t[0]))]
+
+    if bulk_targets:
+        removed, not_found = [], []
+        for (uid, uname, fname) in bulk_targets:
+            team_letter = None
+            if match.team_x.get_player(uid):
+                team_letter = "X"
+            elif match.team_y.get_player(uid):
+                team_letter = "Y"
+            if team_letter is None:
+                not_found.append(fname)
+                continue
+            team = match.team_x if team_letter == "X" else match.team_y
+            team.remove_player(uid)
+            removed.append(f"{fname} (Team {team_letter})")
+
+        lines = []
+        if removed:
+            lines.append(f"🎯 Removed: {', '.join(removed)}")
+        if not_found:
+            lines.append(f"⚠️ Not found in any team: {', '.join(not_found)}")
+        await update.message.reply_text(
+            themed("➖ REMOVED", lines or ["Nothing to remove."], "➖"),
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     if not context.args:
         await update.message.reply_text(
             themed("📋 REMOVE PLAYER", [
-                "Usage: <code>/remove [serial number]</code>",
-                "Then select the team via the buttons.",
+                "Usage: <code>/remove [serial number]</code> → then pick the team via buttons.",
+                "Or bulk: <code>/remove</code> (reply), <code>/remove @user1 @user2</code>, <code>/remove userid1 userid2</code>",
                 "",
                 "🧊 <b>Team X lineup:</b>",
                 *[f"  {i}. {p.first_name}" for i, p in enumerate(match.team_x.players, 1)],
@@ -21746,7 +21921,88 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def remove_player_team_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def shift_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔀 /shift @username or /shift user_id (or reply) — auto-detects which
+    team a player is currently in and moves them to the OTHER team. Works
+    both during Team Edit (lobby) and mid-game (Team Mode)."""
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat.id not in active_matches:
+        await update.message.reply_text("🚫 No active match!", parse_mode=ParseMode.HTML)
+        return
+    match = active_matches[chat.id]
+
+    if getattr(match, "game_mode", "TEAM") in ("SOLO", "MAGICBALL"):
+        await update.message.reply_text("⚠️ <b>/shift</b> is only for Team Mode (two teams).", parse_mode=ParseMode.HTML)
+        return
+
+    if match.phase not in (GamePhase.TEAM_EDIT, GamePhase.MATCH_IN_PROGRESS):
+        await update.message.reply_text("⚠️ Cannot shift players in the current match phase.", parse_mode=ParseMode.HTML)
+        return
+
+    if user.id != match.host_id:
+        await update.message.reply_text(
+            themed("🚧 HOST ONLY", ["Only the <b>host</b> can shift players between teams."], "🚧"),
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    targets = _collect_add_remove_targets(update, context)
+    if not targets:
+        await update.message.reply_text(
+            "ℹ️ <b>SHIFT PLAYER</b>\n"
+            "─────────────────\n"
+            "<b>Reply to a message:</b>  reply + <code>/shift</code>\n"
+            "<b>By username (bulk):</b>  <code>/shift @user1 @user2 ...</code>\n"
+            "<b>By user ID (bulk):</b>   <code>/shift 12345 67890 ...</code>\n\n"
+            "Bot auto-detects their current team and moves them to the other one.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    shifted, blocked, not_found = [], [], []
+    for (uid, uname, fname) in targets:
+        from_team, other_team, from_letter, other_letter = None, None, None, None
+        if match.team_x.get_player(uid):
+            from_team, other_team, from_letter, other_letter = match.team_x, match.team_y, "X", "Y"
+        elif match.team_y.get_player(uid):
+            from_team, other_team, from_letter, other_letter = match.team_y, match.team_x, "Y", "X"
+
+        if from_team is None:
+            not_found.append(fname)
+            continue
+
+        # Don't shift a player mid-over — they're actively involved right now
+        idx = next((i for i, p in enumerate(from_team.players) if p.user_id == uid), None)
+        if idx is not None and idx in (
+            from_team.current_batsman_idx, from_team.current_non_striker_idx, from_team.current_bowler_idx
+        ):
+            blocked.append(f"{fname} (currently batting/bowling)")
+            continue
+
+        player_obj = from_team.get_player(uid)
+        from_team.remove_player(uid)
+        other_team.add_player(player_obj)
+        shifted.append(f"{fname}: Team {from_letter} → Team {other_letter}")
+
+    lines = []
+    if shifted:
+        lines.append(f"🔀 Shifted: {', '.join(shifted)}")
+    if blocked:
+        lines.append(f"🚧 Skipped (in play right now): {', '.join(blocked)}")
+    if not_found:
+        lines.append(f"⚠️ Not found in any team: {', '.join(not_found)}")
+
+    await update.message.reply_text(
+        themed("🔀 PLAYER(S) SHIFTED", lines or ["Nothing to shift."], "🔀"),
+        parse_mode=ParseMode.HTML
+    )
+
+    if match.phase == GamePhase.TEAM_EDIT:
+        await update_team_edit_message(context, chat.id, match)
+
+
+
     """Handle team selection for /remove [serial] command."""
     query = update.callback_query
     await query.answer()
@@ -23440,8 +23696,25 @@ def _fetch_stats_view_data(target_id: int):
     row = c.fetchone()
     solo_wins = row[0] if row else 0
 
+    # Solo bowling stats (dedicated named-column query — kept separate from the
+    # positional SELECT * above so new solo_* columns never shift that unpack).
+    c.execute("""
+        SELECT solo_total_wickets, solo_total_balls_bowled, solo_total_runs_conceded,
+               solo_best_bowling_wickets, solo_best_bowling_runs, solo_matches_bowled
+        FROM user_stats WHERE user_id = ?
+    """, (target_id,))
+    solo_bowl_row = c.fetchone()
+    solo_bowling = {
+        "wickets": solo_bowl_row[0] if solo_bowl_row else 0,
+        "balls_bowled": solo_bowl_row[1] if solo_bowl_row else 0,
+        "runs_conceded": solo_bowl_row[2] if solo_bowl_row else 0,
+        "best_wickets": solo_bowl_row[3] if solo_bowl_row else 0,
+        "best_runs": solo_bowl_row[4] if solo_bowl_row else 0,
+        "matches_bowled": solo_bowl_row[5] if solo_bowl_row else 0,
+    }
+
     conn.close()
-    return db_stats, solo_matches, solo_wins
+    return db_stats, solo_matches, solo_wins, solo_bowling
 
 
 async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -23460,7 +23733,7 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     # ========== FETCH FROM DATABASE ==========
     # 🔧 SCALE FIX: runs in a background thread so this group's stats lookup
     # never blocks ball-processing/messages in other groups.
-    db_stats, solo_matches, solo_wins = await asyncio.to_thread(_fetch_stats_view_data, target_id)
+    db_stats, solo_matches, solo_wins, solo_bowling = await asyncio.to_thread(_fetch_stats_view_data, target_id)
     
     # Get Player Name
     try:
@@ -23509,6 +23782,18 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         win_rate = round((wins / matches * 100), 2) if matches > 0 else 0.0
         top3 = wins  # Assuming wins = top 3 finishes in solo
 
+        # Bowling stats (now tracked for solo mode)
+        solo_wkts = solo_bowling["wickets"]
+        solo_balls_bowled = solo_bowling["balls_bowled"]
+        solo_runs_conceded = solo_bowling["runs_conceded"]
+        solo_overs_text = format_overs(solo_balls_bowled)
+        solo_economy = round((solo_runs_conceded / solo_balls_bowled) * 6, 2) if solo_balls_bowled > 0 else 0.0
+        solo_bowl_avg = round(solo_runs_conceded / solo_wkts, 2) if solo_wkts > 0 else 0.0
+        solo_best_bowl = (
+            f"{solo_bowling['best_wickets']}/{solo_bowling['best_runs']}"
+            if solo_bowling["matches_bowled"] > 0 else "N/A"
+        )
+
         # Image Data
         img_data = {
             "matches": matches,
@@ -23516,7 +23801,7 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             "average": bat_avg,
             "strike_rate": bat_sr,
             "centuries": centuries,
-            "wickets": wickets,
+            "wickets": solo_wkts,
             "highest": highest
         }
 
@@ -23525,26 +23810,34 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"─────────────────\n"
             f"👤 <b>SOLO CAREER PROFILE</b>\n"
             f"─────────────────\n"
-            f"├ 📛 <b>Player:</b> {name.upper()}\n"
-            f"└ 🆔 <b>ID:</b> <code>{target_id}</code>\n\n"
+            f"├ 📛 <b>Player:</b> “{name.upper()}”\n"
+            f"└ 🆔 <b>ID:</b> “<code>{target_id}</code>”\n\n"
             f"─────────────────\n"
             f"╭━━ 📈 PLAYER RECORD ━━━🥎\n"
-            f"┃ 📊 Matches: {matches}\n"
-            f"┃ ✅ Wins: {wins}\n"
-            f"┃ 📈 Win Rate: {win_rate}%\n"
-            f"┃ 🥉 Top 3 Finishes: {top3}\n"
+            f"┃ 📊 Matches: “{matches}”\n"
+            f"┃ ✅ Wins: “{wins}”\n"
+            f"┃ 📈 Win Rate: “{win_rate}%”\n"
+            f"┃ 🥉 Top 3 Finishes: “{top3}”\n"
             f"╰━━━━━━━━\n"
             f"─────────────────\n"
             f"🏏 <b>BATTING SKILLS</b>\n"
             f"─────────────────\n"
-            f"├ 🏃 <b>Total Runs:</b> {runs}\n"
-            f"├ ⚾ <b>Balls Faced:</b> {balls}\n"
-            f"├ ⚡ <b>Strike Rate:</b> {bat_sr}\n"
-            f"├ 🚀 <b>High Score:</b> {highest}\n"
-            f"├ 4️⃣ <b>Fours:</b> {fours} | 6️⃣ <b>Sixes:</b> {sixes}\n"
-            f"├ 💯 <b>100s:</b> {centuries} | ⁵⁰ <b>50s:</b> {fifties}\n"
-            f"└ 🦆 <b>Ducks:</b> {ducks}\n\n"
-            f"<i>⚠️ Solo mode doesn't count wickets.</i>"
+            f"├ 🏃 <b>Total Runs:</b> “{runs}”\n"
+            f"├ ⚾ <b>Balls Faced:</b> “{balls}”\n"
+            f"├ ⚡ <b>Strike Rate:</b> “{bat_sr}”\n"
+            f"├ 🚀 <b>High Score:</b> “{highest}”\n"
+            f"├ 4️⃣ <b>Fours:</b> “{fours}” | 6️⃣ <b>Sixes:</b> “{sixes}”\n"
+            f"├ 💯 <b>100s:</b> “{centuries}” | ⁵⁰ <b>50s:</b> “{fifties}”\n"
+            f"└ 🦆 <b>Ducks:</b> “{ducks}”\n\n"
+            f"─────────────────\n"
+            f"⚾ <b>BOWLING SKILLS</b>\n"
+            f"─────────────────\n"
+            f"├ 🎳 <b>Wickets:</b> “{solo_wkts}”\n"
+            f"├ 🎯 <b>Overs Bowled:</b> “{solo_overs_text}”\n"
+            f"├ 🏏 <b>Runs Conceded:</b> “{solo_runs_conceded}”\n"
+            f"├ 💰 <b>Economy:</b> “{solo_economy}”\n"
+            f"├ 📉 <b>Bowling Avg:</b> “{solo_bowl_avg if solo_wkts > 0 else 'N/A'}”\n"
+            f"└ 🏆 <b>Best Bowling:</b> “{solo_best_bowl}”"
         )
 
     elif mode == "team":
@@ -23600,29 +23893,29 @@ async def stats_view_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"─────────────────\n"
             f"👥 <b>TEAM CAREER PROFILE</b>\n"
             f"─────────────────\n"
-            f"├ 📛 <b>Player:</b> {name.upper()}\n"
-            f"└ 🆔 <b>ID:</b> <code>{target_id}</code>\n\n"
+            f"├ 📛 <b>Player:</b> “{name.upper()}”\n"
+            f"└ 🆔 <b>ID:</b> “<code>{target_id}</code>”\n\n"
             f"╭━━ 📈 PLAYER RECORD ━━━🥎\n"
-            f"┃ 📊 Matches: {matches}\n"
-            f"┃ ✅ Wins: {wins} | ❌ Losses: {matches - wins}\n"
-            f"┃ 👑 Captaincy: {cap_wins}/{cap_matches} Wins ({cap_rate}%)\n"
-            f"┃ 🏅 Man of Match: {mom}\n"
+            f"┃ 📊 Matches: “{matches}”\n"
+            f"┃ ✅ Wins: “{wins}” | ❌ Losses: “{matches - wins}”\n"
+            f"┃ 👑 Captaincy: “{cap_wins}/{cap_matches}” Wins (“{cap_rate}%”)\n"
+            f"┃ 🏅 Man of Match: “{mom}”\n"
             f"╰━━━━━━━━\n"
             f"╭━━ 🏏 BATTING ARSENAL ━🥎\n"
-            f"┃ 🏏 Runs: {runs} | 🥎 Balls: {balls}\n"
-            f"┃ 📈 Average: {bat_avg}\n"
-            f"┃ ⚡ Strike Rate: {bat_sr}\n"
-            f"┃ 🔝 Highest Score: {highest}\n"
-            f"┃ 💥 Fours: {fours} | 🚀 Sixes: {sixes}\n"
-            f"┃ 💯 100s: {centuries} | ✨ 50s: {fifties}\n"
+            f"┃ 🏏 Runs: “{runs}” | 🥎 Balls: “{balls}”\n"
+            f"┃ 📈 Average: “{bat_avg}”\n"
+            f"┃ ⚡ Strike Rate: “{bat_sr}”\n"
+            f"┃ 🔝 Highest Score: “{highest}”\n"
+            f"┃ 💥 Fours: “{fours}” | 🚀 Sixes: “{sixes}”\n"
+            f"┃ 💯 100s: “{centuries}” | ✨ 50s: “{fifties}”\n"
             f"╰━━━━━━━━\n"
             f"╭━━ 🥎 BOWLING ATTACK ━━🥎\n"
-            f"┃ 🎯 Wickets: {wickets}\n"
-            f"┃ ⏳ Overs: {overs_text} | 📉 Economy: {economy}\n"
-            f"┃ 📊 Average: {bowl_avg}\n"
-            f"┃ 💎 Best Figures: {best_bowl}\n"
-            f"┃ 🎩 Hat-tricks: {hat_tricks}\n"
-            f"┃ 🔥 5-Wickets: {five_wkts}\n"
+            f"┃ 🎯 Wickets: “{wickets}”\n"
+            f"┃ ⏳ Overs: “{overs_text}” | 📉 Economy: “{economy}”\n"
+            f"┃ 📊 Average: “{bowl_avg}”\n"
+            f"┃ 💎 Best Figures: “{best_bowl}”\n"
+            f"┃ 🎩 Hat-tricks: “{hat_tricks}”\n"
+            f"┃ 🔥 5-Wickets: “{five_wkts}”\n"
             f"╰━━━━━━━━"
         )
 
@@ -30394,12 +30687,14 @@ def _build_ccc_fallback_text() -> str:
         if not players:
             text += f"<i>No qualified players yet → play {CCC_MIN_MATCHES}+ matches!</i>\n"
             return text
+        rows = ""
         for i, p in enumerate(players):
             name = html.escape((p.get('first_name') or 'Player')[:16])
-            text += (
+            rows += (
                 f"{i+1}. <b>{name}</b> · "
                 f"⭐ {p['rating']} · {p['matches']}M · {p.get('trend', '🆕')}\n"
             )
+        text += f"<blockquote expandable>{rows}</blockquote>"
         return text
 
     text = "🏅 <b>CCC RANKING</b> · CricoVerse Career Rating\n"
@@ -32538,6 +32833,7 @@ def main():
     application.add_handler(CommandHandler("join", join_command))
     application.add_handler(CallbackQueryHandler(mid_game_join_callback, pattern="^midjoin_"))
     application.add_handler(CommandHandler("remove", remove_command))
+    application.add_handler(CommandHandler("shift", shift_command))
 
     application.add_handler(CommandHandler("batting", batting_command))
     application.add_handler(CommandHandler("bowling", bowling_command))

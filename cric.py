@@ -2931,40 +2931,40 @@ def generate_mini_scorecard(match: Match, wicket_mode: bool = False) -> str:
         msg += "🏏 𝗟𝗜𝗩𝗘 𝗕𝗔𝗧𝗧𝗜𝗡𝗚\n"
         msg += "┌───────────────────\n"
         if striker_tag:
-            msg += f"├ 👤 {striker_tag} ➔ {striker_runs} ({striker_balls}b)\n"
-            msg += f"├ 📊 SR: {csr:.2f}\n"
+            msg += f"├ 👤 {striker_tag} ➔ “{striker_runs}” (“{striker_balls}b”)\n"
+            msg += f"├ 📊 SR: “{csr:.2f}”\n"
         else:
             msg += "├ 👤 Waiting for Striker *\n"
-            msg += "├ 📊 SR: -\n"
+            msg += "├ 📊 SR: “-”\n"
         msg += "│\n"
         if non_striker:
-            msg += f"├ 👤 {non_striker_tag} ➔ {ns_runs} ({ns_balls}b)\n"
-            msg += f"├ 📊 SR: {ns_csr:.2f}\n"
+            msg += f"├ 👤 {non_striker_tag} ➔ “{ns_runs}” (“{ns_balls}b”)\n"
+            msg += f"├ 📊 SR: “{ns_csr:.2f}”\n"
         else:
-            msg += "├ 👤 - ➔ 0 (0b)\n"
-            msg += "├ 📊 SR: -\n"
+            msg += "├ 👤 - ➔ “0” (“0b”)\n"
+            msg += "├ 📊 SR: “-”\n"
         msg += "└───────────────────\n"
 
         msg += "🎯 𝗟𝗜𝗩𝗘 𝗕𝗢𝗪𝗟𝗜𝗡𝗚\n"
         msg += "┌───────────────────\n"
         msg += f"├ 👤 {bowler_tag}\n"
-        msg += f"├ 🍿 Over:  {over_str}\n"
+        msg += f"├ 🍿 Over:  “{over_str}”\n"
         msg += "└───────────────────\n"
 
         msg += "📊 𝗠𝗔𝗧𝗖𝗛 𝗦𝗖𝗢𝗥𝗘𝗕𝗢𝗔𝗥𝗗\n"
         msg += "┌───────────────────\n"
-        msg += f"├ 🔹 {html.escape(tx.name)}: {tx.score}/{tx.wickets} ({tx_overs} ov)\n"
-        msg += f"├ ↳ CRR: {tx_rr:.2f}\n"
+        msg += f"├ 🔹 {html.escape(tx.name)}: “{tx.score}/{tx.wickets}” (“{tx_overs} ov”)\n"
+        msg += f"├ ↳ CRR: “{tx_rr:.2f}”\n"
         msg += "│\n"
-        msg += f"├ 🔸 {html.escape(ty.name)}: {ty.score}/{ty.wickets} ({ty_overs} ov)\n"
-        msg += f"├ ↳ CRR: {ty_rr:.2f}\n"
+        msg += f"├ 🔸 {html.escape(ty.name)}: “{ty.score}/{ty.wickets}” (“{ty_overs} ov”)\n"
+        msg += f"├ ↳ CRR: “{ty_rr:.2f}”\n"
         msg += "└───────────────────\n"
 
         if match.innings == 2:
             runs_needed = match.target - bat_team.score
             balls_left = (match.total_overs * 6) - bat_team.balls
             rrr = round((runs_needed / balls_left) * 6, 2) if balls_left > 0 else 0
-            msg += f"\n⚠️ Target: Need {max(runs_needed,0)} runs in {max(balls_left,0)} balls (RRR: {rrr})"
+            msg += f"\n⚠️ Target: Need “{max(runs_needed,0)}” runs in “{max(balls_left,0)}” balls (RRR: “{rrr}”)"
 
         return msg
 
@@ -3648,7 +3648,17 @@ async def soloscore_refresh_callback(update: Update, context: ContextTypes.DEFAU
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e:
-        logger.error(f"soloscore_refresh_callback edit error: {e}")
+        # The message being refreshed may be a native rich card (sendRichMessage),
+        # which can't be edited through the normal editMessageText call — send an
+        # updated rich card instead so Refresh still works from that message.
+        logger.info(f"soloscore_refresh_callback plain edit failed ({e}), sending fresh rich card")
+        try:
+            html_solo = _build_solo_scorecard_html(match)
+            ok = await _tg_send_rich_message(group_id, html_solo, reply_markup=kb)
+            if not ok:
+                await context.bot.send_message(group_id, text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception as e2:
+            logger.error(f"soloscore_refresh_callback fallback send error: {e2}")
 
 
 async def soloscore_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3681,7 +3691,13 @@ async def soloscore_back_callback(update: Update, context: ContextTypes.DEFAULT_
     try:
         await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e:
-        logger.error(f"soloscore_back_callback edit error: {e}")
+        # Original message may be a native rich card that can't be edited via
+        # editMessageText — send the leaderboard as a fresh message instead.
+        logger.info(f"soloscore_back_callback plain edit failed ({e}), sending fresh message")
+        try:
+            await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception as e2:
+            logger.error(f"soloscore_back_callback fallback send error: {e2}")
 
 
 async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3698,15 +3714,16 @@ async def scorecard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, kb = _build_solo_scorecard(match)
         try:
             html_solo = _build_solo_scorecard_html(match)
-            ok = await _tg_send_rich_message(group_id, html_solo)
+            # Attach Refresh/Back buttons directly to the rich card itself,
+            # so they sit right below the scorecard instead of arriving as a
+            # separate message.
+            ok = await _tg_send_rich_message(group_id, html_solo, reply_markup=kb)
         except Exception as solo_rt_e:
             logger.warning(f"Solo scorecard rich table error: {solo_rt_e}")
             ok = False
-        if ok:
-            await update.message.reply_text(
-                "🔄 Refresh / ◀ Back", reply_markup=kb, disable_notification=True
-            )
-        else:
+        if not ok:
+            # Fallback: plain-text scorecard (already has expandable batting/
+            # bowling blockquotes) with the same Refresh/Back buttons attached.
             await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
@@ -15822,8 +15839,10 @@ def build_new_scorecard_html(match: "Match", group_id: int, result: Optional[dic
 
 _RICH_MESSAGE_SUPPORTED = True  # Enabled for Telegram Bot API 10.1+ native rich tables & dropdowns
 
-async def _tg_send_rich_message(chat_id: int, html_content: str) -> bool:
-    """Call Bot API 10.1's sendRichMessage for native tables and expandable dropdown sections."""
+async def _tg_send_rich_message(chat_id: int, html_content: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> bool:
+    """Call Bot API 10.1's sendRichMessage for native tables and expandable dropdown sections.
+    Pass `reply_markup` to attach inline buttons (e.g. Refresh/Back) directly under the
+    rich card instead of sending them as a separate follow-up message."""
     global _RICH_MESSAGE_SUPPORTED
     if _RICH_MESSAGE_SUPPORTED is False:
         return False
@@ -15831,9 +15850,12 @@ async def _tg_send_rich_message(chat_id: int, html_content: str) -> bool:
     def _do_request():
         global _RICH_MESSAGE_SUPPORTED
         try:
+            payload = {"chat_id": chat_id, "rich_message": {"html": html_content}}
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup.to_dict()
             resp = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendRichMessage",
-                json={"chat_id": chat_id, "rich_message": {"html": html_content}},
+                json=payload,
                 timeout=5.0,
             )
             data = resp.json()

@@ -24661,54 +24661,103 @@ def _fetch_botstats_data():
 
 _BOTSTATS_SESSIONS: Dict[int, dict] = {}   # message_id -> {"pages": [...], "idx": int, "owner": user_id}
 
-def _mpl_dark_ax(figsize):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=figsize, dpi=170)
-    fig.patch.set_facecolor("#0d1220")
-    ax.set_facecolor("#0d1220")
-    for spine in ax.spines.values():
-        spine.set_color("#2a3350")
-    ax.tick_params(colors="#c8d0e8", labelsize=9)
-    return plt, fig, ax
+BG = (13, 18, 32)
+GRID = (42, 51, 80)
+TEXT = (232, 236, 255)
+MUTED = (136, 146, 184)
+GOLD = (255, 210, 63)
+BLUE = (59, 167, 255)
+ORANGE = (255, 176, 32)
+PURPLE = (168, 85, 247)
+RED = (255, 84, 112)
 
+def _chart_canvas(w=900, h=650):
+    img = Image.new("RGB", (w, h), BG)
+    draw = ImageDraw.Draw(img)
+    return img, draw
 
-def _render_pie_chart(match_type_breakdown: dict) -> BytesIO:
-    """🥧 PIE CHART — Solo vs Team vs Other match-type split."""
-    labels_all = {"SOLO": ("⚔️ Solo", "#3ba7ff"), "TEAM": ("👥 Team", "#ffb020"),
-                  "MAGICBALL": ("🔮 Magic Ball", "#a855f7")}
-    solo = match_type_breakdown.get("SOLO", 0)
-    team = match_type_breakdown.get("TEAM", 0)
-    other = sum(v for k, v in match_type_breakdown.items() if k not in ("SOLO", "TEAM"))
+def _text_w(draw, text, font):
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0]
+    except Exception:
+        return len(text) * (font.size // 2)
 
-    values, labels, colors = [], [], []
-    for val, lab, col in [(solo, "⚔️ Solo", "#3ba7ff"), (team, "👥 Team", "#ffb020"), (other, "🎲 Other", "#a855f7")]:
-        if val > 0:
-            values.append(val); labels.append(lab); colors.append(col)
-    if not values:
-        values, labels, colors = [1], ["No data yet"], ["#3a4266"]
+def _chart_title(draw, w, title):
+    f = _get_font(True, 30)
+    tw = _text_w(draw, title, f)
+    draw.text(((w - tw) // 2, 22), title, font=f, fill=GOLD)
 
-    plt, fig, ax = _mpl_dark_ax((5.2, 4.4))
-    wedges, texts, autotexts = ax.pie(
-        values, labels=labels, colors=colors, autopct=lambda p: f"{p:.1f}%" if p > 0 else "",
-        startangle=90, pctdistance=0.75, textprops={"color": "#e8ecff", "fontsize": 10, "fontweight": "bold"},
-        wedgeprops={"edgecolor": "#0d1220", "linewidth": 2}
-    )
-    centre = plt.Circle((0, 0), 0.45, fc="#0d1220", ec="#2a3350")
-    fig.gca().add_artist(centre)
-    ax.set_title("🎯 Match-Type Split", color="#ffd23f", fontsize=13, fontweight="bold", pad=14)
-    ax.axis("equal")
+def _to_buf(img):
     buf = BytesIO()
-    plt.tight_layout()
-    plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
-    plt.close(fig)
+    img.save(buf, format="PNG")
     buf.seek(0)
     return buf
 
 
+def _render_pie_chart(match_type_breakdown: dict) -> BytesIO:
+    """PIE CHART — Solo vs Team vs Other match-type split."""
+    solo = match_type_breakdown.get("SOLO", 0)
+    team = match_type_breakdown.get("TEAM", 0)
+    other = sum(v for k, v in match_type_breakdown.items() if k not in ("SOLO", "TEAM"))
+
+    segs = [(v, l, c) for v, l, c in
+            [(solo, "Solo", BLUE), (team, "Team", ORANGE), (other, "Other", PURPLE)] if v > 0]
+    total = sum(v for v, _, _ in segs)
+
+    w, h = 900, 650
+    img, draw = _chart_canvas(w, h)
+    _chart_title(draw, w, "Match-Type Split")
+
+    cx, cy, r = 300, 360, 190
+    bbox = [cx - r, cy - r, cx + r, cy + r]
+
+    if not segs or total == 0:
+        draw.ellipse(bbox, fill=(58, 66, 102))
+        f = _get_font(False, 22)
+        msg = "No data yet"
+        tw = _text_w(draw, msg, f)
+        draw.text((cx - tw // 2, cy - 12), msg, font=f, fill=MUTED)
+    else:
+        start = -90
+        f_pct = _get_font(True, 20)
+        for val, label, color in segs:
+            sweep = 360 * val / total
+            end = start + sweep
+            draw.pieslice(bbox, start=start, end=end, fill=color, outline=BG, width=3)
+            mid = math.radians((start + end) / 2)
+            lx = cx + int((r * 0.62) * math.cos(mid))
+            ly = cy + int((r * 0.62) * math.sin(mid))
+            pct_txt = f"{val/total*100:.1f}%"
+            tw = _text_w(draw, pct_txt, f_pct)
+            draw.text((lx - tw // 2, ly - 10), pct_txt, font=f_pct, fill=(20, 24, 40))
+            start = end
+        draw.ellipse([cx - r * 0.45, cy - r * 0.45, cx + r * 0.45, cy + r * 0.45], fill=BG, outline=GRID, width=2)
+        f_tot = _get_font(True, 26)
+        tot_txt = f"{total:,}"
+        tw = _text_w(draw, tot_txt, f_tot)
+        draw.text((cx - tw // 2, cy - 26), tot_txt, font=f_tot, fill=TEXT)
+        f_sub = _get_font(False, 15)
+        sub_txt = "matches"
+        tw = _text_w(draw, sub_txt, f_sub)
+        draw.text((cx - tw // 2, cy + 4), sub_txt, font=f_sub, fill=MUTED)
+
+    # Legend
+    f_leg = _get_font(False, 19)
+    ly0 = 240
+    lx0 = 620
+    legend_items = segs if segs else [(0, "No data", (58, 66, 102))]
+    for i, (val, label, color) in enumerate(legend_items):
+        y = ly0 + i * 46
+        draw.rounded_rectangle([lx0, y, lx0 + 26, y + 26], radius=6, fill=color)
+        txt = f"{label}  —  {val:,}" if val else label
+        draw.text((lx0 + 38, y + 3), txt, font=f_leg, fill=TEXT)
+
+    return _to_buf(img)
+
+
 def _render_worm_chart(daily_matches: list, daily_new_users: list) -> BytesIO:
-    """🪱 WORM CHART — classic cricket-style cumulative growth curve (matches & users), last 14 days."""
+    """WORM CHART — cumulative growth curve (matches & new users), last 14 days."""
     dm_map = {row[0]: row[1] for row in daily_matches}
     du_map = {row[0]: row[1] for row in daily_new_users}
     today_d = datetime.now().date()
@@ -24722,89 +24771,160 @@ def _render_worm_chart(daily_matches: list, daily_new_users: list) -> BytesIO:
         m_cum.append(m_run)
         u_cum.append(u_run)
 
-    plt, fig, ax = _mpl_dark_ax((6.6, 4.3))
-    x = list(range(len(days)))
+    w, h = 980, 650
+    img, draw = _chart_canvas(w, h)
+    _chart_title(draw, w, "Growth Worm — 14 Day Cumulative Trend")
 
-    ax.plot(x, m_cum, color="#3ba7ff", linewidth=2.6, marker="o", markersize=4, label="🎮 Cumulative Matches", zorder=3)
-    ax.fill_between(x, m_cum, color="#3ba7ff", alpha=0.18, zorder=1)
+    pad_l, pad_r, pad_t, pad_b = 70, 40, 90, 90
+    plot_w = w - pad_l - pad_r
+    plot_h = h - pad_t - pad_b
+    max_m = max(m_cum) if m_cum and max(m_cum) > 0 else 1
+    max_u = max(u_cum) if u_cum and max(u_cum) > 0 else 1
+    max_val = max(max_m, max_u)
 
-    ax2 = ax.twinx()
-    ax2.plot(x, u_cum, color="#ffd23f", linewidth=2.2, marker="^", markersize=4, linestyle="--",
-              label="👤 Cumulative New Users", zorder=3)
-    ax2.tick_params(colors="#ffd23f", labelsize=9)
-    ax2.set_facecolor("none")
-    for spine in ax2.spines.values():
-        spine.set_color("#2a3350")
+    f_axis = _get_font(False, 14)
+    f_val = _get_font(True, 16)
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(days, color="#c8d0e8", fontsize=8, rotation=45, ha="right")
-    ax.grid(color="#2a3350", linewidth=0.6, alpha=0.6, zorder=0)
-    ax.set_title("🪱 Growth Worm — 14 Day Cumulative Trend", color="#ffd23f", fontsize=13, fontweight="bold", pad=12)
-    if m_cum:
-        ax.annotate(f"{m_cum[-1]:,}", (x[-1], m_cum[-1]), color="#3ba7ff", fontsize=10, fontweight="bold",
-                    xytext=(6, 4), textcoords="offset points")
-    if u_cum:
-        ax2.annotate(f"{u_cum[-1]:,}", (x[-1], u_cum[-1]), color="#ffd23f", fontsize=10, fontweight="bold",
-                     xytext=(6, -10), textcoords="offset points")
+    # gridlines + y labels
+    for gi in range(5):
+        gy = pad_t + plot_h - (plot_h * gi / 4)
+        draw.line([(pad_l, gy), (w - pad_r, gy)], fill=GRID, width=1)
+        val_lbl = str(int(max_val * gi / 4))
+        draw.text((pad_l - 8 - _text_w(draw, val_lbl, f_axis), gy - 7), val_lbl, font=f_axis, fill=MUTED)
 
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", facecolor="#161d33",
-              edgecolor="#2a3350", labelcolor="#e8ecff", fontsize=8.5)
+    n = len(days)
+    step = plot_w / max(1, n - 1)
 
-    buf = BytesIO()
-    plt.tight_layout()
-    plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    def pt(i, val):
+        x = pad_l + i * step
+        y = pad_t + plot_h - (plot_h * val / max_val if max_val else 0)
+        return x, y
+
+    m_pts = [pt(i, v) for i, v in enumerate(m_cum)]
+    u_pts = [pt(i, v) for i, v in enumerate(u_cum)]
+
+    # filled area under matches curve
+    if len(m_pts) > 1:
+        poly = m_pts + [(m_pts[-1][0], pad_t + plot_h), (m_pts[0][0], pad_t + plot_h)]
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        odraw = ImageDraw.Draw(overlay)
+        odraw.polygon(poly, fill=(59, 167, 255, 45))
+        img.paste(Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"))
+        draw = ImageDraw.Draw(img)
+
+    # lines
+    if len(m_pts) > 1:
+        draw.line(m_pts, fill=BLUE, width=4, joint="curve")
+    if len(u_pts) > 1:
+        # dashed line for users
+        for i in range(len(u_pts) - 1):
+            x1, y1 = u_pts[i]
+            x2, y2 = u_pts[i + 1]
+            segs_n = 6
+            for s in range(segs_n):
+                if s % 2 == 0:
+                    sx1 = x1 + (x2 - x1) * s / segs_n
+                    sy1 = y1 + (y2 - y1) * s / segs_n
+                    sx2 = x1 + (x2 - x1) * (s + 1) / segs_n
+                    sy2 = y1 + (y2 - y1) * (s + 1) / segs_n
+                    draw.line([(sx1, sy1), (sx2, sy2)], fill=GOLD, width=3)
+
+    # markers
+    for x, y in m_pts:
+        draw.ellipse([x - 4, y - 4, x + 4, y + 4], fill=BLUE, outline=BG)
+    for x, y in u_pts:
+        draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=GOLD, outline=BG)
+
+    # end-value annotations
+    if m_pts:
+        draw.text((m_pts[-1][0] + 8, m_pts[-1][1] - 20), f"{m_cum[-1]:,}", font=f_val, fill=BLUE)
+    if u_pts:
+        draw.text((u_pts[-1][0] + 8, u_pts[-1][1] + 4), f"{u_cum[-1]:,}", font=f_val, fill=GOLD)
+
+    # x labels (every 2nd day to avoid crowding)
+    for i, (x, _) in enumerate(m_pts):
+        if i % 2 == 0 or i == n - 1:
+            lbl = days[i]
+            tw = _text_w(draw, lbl, f_axis)
+            draw.text((x - tw / 2, pad_t + plot_h + 10), lbl, font=f_axis, fill=MUTED)
+
+    # legend
+    f_leg = _get_font(False, 16)
+    draw.rounded_rectangle([pad_l, 58, pad_l + 22, 76], radius=4, fill=BLUE)
+    draw.text((pad_l + 30, 56), "Cumulative Matches", font=f_leg, fill=TEXT)
+    lx2 = pad_l + 30 + _text_w(draw, "Cumulative Matches", f_leg) + 40
+    draw.rounded_rectangle([lx2, 58, lx2 + 22, 76], radius=4, fill=GOLD)
+    draw.text((lx2 + 30, 56), "Cumulative New Users", font=f_leg, fill=TEXT)
+
+    return _to_buf(img)
 
 
 def _render_compare_chart(top_players: list) -> BytesIO:
-    """⚔️ GROUPED COMPARISON BAR CHART — Top players compared across Runs / Wickets×10 / Sixes×5."""
-    plt, fig, ax = _mpl_dark_ax((6.6, 4.3))
+    """GROUPED COMPARISON BAR CHART — Top 5 players compared on Runs / Wickets / Sixes."""
+    w, h = 980, 650
+    img, draw = _chart_canvas(w, h)
+    _chart_title(draw, w, "Player Comparison — Top 5")
+
     top5 = top_players[:5] if top_players else []
-    if top5:
-        names = [(fname or str(uid))[:12] for uid, fname, runs in top5]
-        runs_vals = [runs for uid, fname, runs in top5]
-        wkts_vals = []
-        sixes_vals = []
-        for uid, fname, runs in top5:
-            ps = player_stats.get(uid, {}) if 'player_stats' in globals() else {}
-            team_stats = ps.get("team", {}) if isinstance(ps, dict) else {}
-            solo_stats = ps.get("solo", {}) if isinstance(ps, dict) else {}
-            wkts = (team_stats.get("wickets", 0) or 0) + (solo_stats.get("wickets", 0) or 0)
-            sixes = (team_stats.get("sixes", 0) or 0) + (solo_stats.get("sixes", 0) or 0)
-            wkts_vals.append(wkts)
-            sixes_vals.append(sixes)
+    pad_l, pad_r, pad_t, pad_b = 70, 40, 100, 110
+    plot_w = w - pad_l - pad_r
+    plot_h = h - pad_t - pad_b
+    f_axis = _get_font(False, 14)
+    f_name = _get_font(True, 15)
+    f_val = _get_font(True, 13)
 
-        x = list(range(len(names)))
-        w = 0.26
-        b1 = ax.bar([i - w for i in x], runs_vals, width=w, color="#3ba7ff", label="🏃 Runs", zorder=2)
-        b2 = ax.bar(x, wkts_vals, width=w, color="#ff5470", label="⚾ Wickets", zorder=2)
-        b3 = ax.bar([i + w for i in x], sixes_vals, width=w, color="#ffd23f", label="🚀 Sixes", zorder=2)
+    if not top5:
+        f = _get_font(False, 22)
+        msg = "No player data yet"
+        tw = _text_w(draw, msg, f)
+        draw.text(((w - tw) // 2, h // 2), msg, font=f, fill=MUTED)
+        return _to_buf(img)
 
-        for bars in (b1, b2, b3):
-            for b in bars:
-                h = b.get_height()
-                if h > 0:
-                    ax.text(b.get_x() + b.get_width() / 2, h, f"{int(h):,}", ha="center", va="bottom",
-                             color="#e8ecff", fontsize=7.5, fontweight="bold")
+    rows = []
+    for uid, fname, runs in top5:
+        ps = player_stats.get(uid, {}) if 'player_stats' in globals() else {}
+        team_s = ps.get("team", {}) if isinstance(ps, dict) else {}
+        solo_s = ps.get("solo", {}) if isinstance(ps, dict) else {}
+        wkts = (team_s.get("wickets", 0) or 0) + (solo_s.get("wickets", 0) or 0)
+        sixes = (team_s.get("sixes", 0) or 0) + (solo_s.get("sixes", 0) or 0)
+        rows.append(((fname or str(uid))[:12], runs, wkts, sixes))
 
-        ax.set_xticks(x)
-        ax.set_xticklabels(names, color="#c8d0e8", fontsize=9, rotation=15, ha="right")
-        ax.legend(loc="upper right", facecolor="#161d33", edgecolor="#2a3350", labelcolor="#e8ecff", fontsize=8.5)
-    else:
-        ax.text(0.5, 0.5, "No player data yet", ha="center", va="center", color="#8892b8",
-                 transform=ax.transAxes, fontsize=11)
-    ax.grid(axis="y", color="#2a3350", linewidth=0.6, alpha=0.6, zorder=0)
-    ax.set_title("⚔️ Player Comparison — Top 5", color="#ffd23f", fontsize=13, fontweight="bold", pad=12)
-    buf = BytesIO()
-    plt.tight_layout()
-    plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    max_val = max([max(r[1], r[2], r[3]) for r in rows] + [1])
+
+    # gridlines
+    for gi in range(5):
+        gy = pad_t + plot_h - (plot_h * gi / 4)
+        draw.line([(pad_l, gy), (w - pad_r, gy)], fill=GRID, width=1)
+        val_lbl = str(int(max_val * gi / 4))
+        draw.text((pad_l - 8 - _text_w(draw, val_lbl, f_axis), gy - 7), val_lbl, font=f_axis, fill=MUTED)
+
+    group_w = plot_w / len(rows)
+    bar_w = group_w / 5.5
+
+    for i, (name, runs, wkts, sixes) in enumerate(rows):
+        gx = pad_l + i * group_w + group_w / 2
+        for j, (val, color) in enumerate([(runs, BLUE), (wkts, RED), (sixes, GOLD)]):
+            bx = gx + (j - 1) * (bar_w + 6)
+            bh = plot_h * (val / max_val) if max_val else 0
+            by = pad_t + plot_h - bh
+            draw.rounded_rectangle([bx - bar_w / 2, by, bx + bar_w / 2, pad_t + plot_h], radius=4, fill=color)
+            if val > 0:
+                vtxt = f"{val:,}"
+                tw = _text_w(draw, vtxt, f_val)
+                draw.text((bx - tw / 2, by - 18), vtxt, font=f_val, fill=TEXT)
+        tw = _text_w(draw, name, f_name)
+        draw.text((gx - tw / 2, pad_t + plot_h + 12), name, font=f_name, fill=TEXT)
+
+    # legend
+    f_leg = _get_font(False, 16)
+    lx = pad_l
+    ly = 58
+    for label, color in [("Runs", BLUE), ("Wickets", RED), ("Sixes", GOLD)]:
+        draw.rounded_rectangle([lx, ly, lx + 22, ly + 18], radius=4, fill=color)
+        draw.text((lx + 30, ly - 2), label, font=f_leg, fill=TEXT)
+        lx += 30 + _text_w(draw, label, f_leg) + 36
+
+    return _to_buf(img)
 
 
 def _botstats_nav_keyboard(idx: int, total: int) -> InlineKeyboardMarkup:

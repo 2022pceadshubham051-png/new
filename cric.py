@@ -24559,7 +24559,7 @@ def _fetch_botstats_data():
         c.execute("""
             SELECT date(match_date) AS d, COUNT(*) AS cnt
             FROM match_history
-            WHERE match_date >= datetime('now', '-6 days')
+            WHERE match_date >= datetime('now', '-13 days')
             GROUP BY d ORDER BY d ASC
         """)
         daily_matches = c.fetchall()
@@ -24581,7 +24581,7 @@ def _fetch_botstats_data():
             c.execute(f"""
                 SELECT date({ts_col}) AS d, COUNT(*) AS cnt
                 FROM users
-                WHERE {ts_col} >= datetime('now', '-6 days')
+                WHERE {ts_col} >= datetime('now', '-13 days')
                 GROUP BY d ORDER BY d ASC
             """)
             daily_new_users = c.fetchall()
@@ -24598,7 +24598,7 @@ def _fetch_botstats_data():
                        COALESCE(CAST(substr(team_y_score, 1, instr(team_y_score||'/', '/') - 1) AS INTEGER), 0)
                    ) AS runs
             FROM match_history
-            WHERE match_date >= datetime('now', '-6 days')
+            WHERE match_date >= datetime('now', '-13 days')
             GROUP BY d ORDER BY d ASC
         """)
         daily_runs = c.fetchall()
@@ -24707,42 +24707,50 @@ def _render_pie_chart(match_type_breakdown: dict) -> BytesIO:
     return buf
 
 
-def _render_activity_chart(daily_matches: list, daily_new_users: list) -> BytesIO:
-    """📈 LINE + BAR CHART — matches played & new users, last 7 days."""
+def _render_worm_chart(daily_matches: list, daily_new_users: list) -> BytesIO:
+    """🪱 WORM CHART — classic cricket-style cumulative growth curve (matches & users), last 14 days."""
     dm_map = {row[0]: row[1] for row in daily_matches}
     du_map = {row[0]: row[1] for row in daily_new_users}
     today_d = datetime.now().date()
-    days, m_vals, u_vals = [], [], []
-    for i in range(6, -1, -1):
+    days, m_cum, u_cum = [], [], []
+    m_run = u_run = 0
+    for i in range(13, -1, -1):
         d = (today_d - timedelta(days=i)).isoformat()
+        m_run += dm_map.get(d, 0)
+        u_run += du_map.get(d, 0)
         days.append("Today" if i == 0 else (today_d - timedelta(days=i)).strftime("%d %b"))
-        m_vals.append(dm_map.get(d, 0))
-        u_vals.append(du_map.get(d, 0))
+        m_cum.append(m_run)
+        u_cum.append(u_run)
 
-    plt, fig, ax = _mpl_dark_ax((6.4, 4.2))
+    plt, fig, ax = _mpl_dark_ax((6.6, 4.3))
     x = list(range(len(days)))
-    bars = ax.bar(x, m_vals, color="#3ba7ff", width=0.55, label="🎮 Matches", zorder=2)
-    for b, v in zip(bars, m_vals):
-        if v > 0:
-            ax.text(b.get_x() + b.get_width() / 2, v, str(v), ha="center", va="bottom",
-                     color="#e8ecff", fontsize=8, fontweight="bold")
+
+    ax.plot(x, m_cum, color="#3ba7ff", linewidth=2.6, marker="o", markersize=4, label="🎮 Cumulative Matches", zorder=3)
+    ax.fill_between(x, m_cum, color="#3ba7ff", alpha=0.18, zorder=1)
 
     ax2 = ax.twinx()
-    ax2.plot(x, u_vals, color="#ffd23f", marker="o", linewidth=2, markersize=5, label="👤 New Users", zorder=3)
+    ax2.plot(x, u_cum, color="#ffd23f", linewidth=2.2, marker="^", markersize=4, linestyle="--",
+              label="👤 Cumulative New Users", zorder=3)
     ax2.tick_params(colors="#ffd23f", labelsize=9)
     ax2.set_facecolor("none")
     for spine in ax2.spines.values():
         spine.set_color("#2a3350")
 
     ax.set_xticks(x)
-    ax.set_xticklabels(days, color="#c8d0e8", fontsize=9)
-    ax.grid(axis="y", color="#2a3350", linewidth=0.6, alpha=0.6, zorder=0)
-    ax.set_title("📈 7-Day Growth Trend", color="#ffd23f", fontsize=13, fontweight="bold", pad=12)
+    ax.set_xticklabels(days, color="#c8d0e8", fontsize=8, rotation=45, ha="right")
+    ax.grid(color="#2a3350", linewidth=0.6, alpha=0.6, zorder=0)
+    ax.set_title("🪱 Growth Worm — 14 Day Cumulative Trend", color="#ffd23f", fontsize=13, fontweight="bold", pad=12)
+    if m_cum:
+        ax.annotate(f"{m_cum[-1]:,}", (x[-1], m_cum[-1]), color="#3ba7ff", fontsize=10, fontweight="bold",
+                    xytext=(6, 4), textcoords="offset points")
+    if u_cum:
+        ax2.annotate(f"{u_cum[-1]:,}", (x[-1], u_cum[-1]), color="#ffd23f", fontsize=10, fontweight="bold",
+                     xytext=(6, -10), textcoords="offset points")
 
     lines1, labels1 = ax.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    leg = ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", facecolor="#161d33",
-                     edgecolor="#2a3350", labelcolor="#e8ecff", fontsize=8.5)
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", facecolor="#161d33",
+              edgecolor="#2a3350", labelcolor="#e8ecff", fontsize=8.5)
 
     buf = BytesIO()
     plt.tight_layout()
@@ -24752,24 +24760,45 @@ def _render_activity_chart(daily_matches: list, daily_new_users: list) -> BytesI
     return buf
 
 
-def _render_topplayers_chart(top_players: list) -> BytesIO:
-    """🏆 HORIZONTAL BAR CHART — Top 5 players by runs."""
-    plt, fig, ax = _mpl_dark_ax((6.2, 4.2))
-    if top_players:
-        names = [ (fname or str(uid))[:14] for uid, fname, runs in top_players][::-1]
-        runs = [runs for uid, fname, runs in top_players][::-1]
-        colors = ["#ffd23f", "#c0c0c0", "#cd7f32", "#3ba7ff", "#3ba7ff"][:len(names)][::-1] if len(names) <= 5 else None
-        bars = ax.barh(names, runs, color="#3ba7ff", zorder=2)
-        for i, b in enumerate(bars):
-            bars[i].set_color(["#3ba7ff", "#3ba7ff", "#cd7f32", "#c0c0c0", "#ffd23f"][::-1][i] if len(bars) <= 5 else "#3ba7ff")
-        for b, v in zip(bars, runs):
-            ax.text(v, b.get_y() + b.get_height() / 2, f"  {v:,}", va="center", color="#e8ecff",
-                     fontsize=9, fontweight="bold")
+def _render_compare_chart(top_players: list) -> BytesIO:
+    """⚔️ GROUPED COMPARISON BAR CHART — Top players compared across Runs / Wickets×10 / Sixes×5."""
+    plt, fig, ax = _mpl_dark_ax((6.6, 4.3))
+    top5 = top_players[:5] if top_players else []
+    if top5:
+        names = [(fname or str(uid))[:12] for uid, fname, runs in top5]
+        runs_vals = [runs for uid, fname, runs in top5]
+        wkts_vals = []
+        sixes_vals = []
+        for uid, fname, runs in top5:
+            ps = player_stats.get(uid, {}) if 'player_stats' in globals() else {}
+            team_stats = ps.get("team", {}) if isinstance(ps, dict) else {}
+            solo_stats = ps.get("solo", {}) if isinstance(ps, dict) else {}
+            wkts = (team_stats.get("wickets", 0) or 0) + (solo_stats.get("wickets", 0) or 0)
+            sixes = (team_stats.get("sixes", 0) or 0) + (solo_stats.get("sixes", 0) or 0)
+            wkts_vals.append(wkts)
+            sixes_vals.append(sixes)
+
+        x = list(range(len(names)))
+        w = 0.26
+        b1 = ax.bar([i - w for i in x], runs_vals, width=w, color="#3ba7ff", label="🏃 Runs", zorder=2)
+        b2 = ax.bar(x, wkts_vals, width=w, color="#ff5470", label="⚾ Wickets", zorder=2)
+        b3 = ax.bar([i + w for i in x], sixes_vals, width=w, color="#ffd23f", label="🚀 Sixes", zorder=2)
+
+        for bars in (b1, b2, b3):
+            for b in bars:
+                h = b.get_height()
+                if h > 0:
+                    ax.text(b.get_x() + b.get_width() / 2, h, f"{int(h):,}", ha="center", va="bottom",
+                             color="#e8ecff", fontsize=7.5, fontweight="bold")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, color="#c8d0e8", fontsize=9, rotation=15, ha="right")
+        ax.legend(loc="upper right", facecolor="#161d33", edgecolor="#2a3350", labelcolor="#e8ecff", fontsize=8.5)
     else:
         ax.text(0.5, 0.5, "No player data yet", ha="center", va="center", color="#8892b8",
                  transform=ax.transAxes, fontsize=11)
-    ax.grid(axis="x", color="#2a3350", linewidth=0.6, alpha=0.6, zorder=0)
-    ax.set_title("🌟 Top 5 Players — Runs", color="#ffd23f", fontsize=13, fontweight="bold", pad=12)
+    ax.grid(axis="y", color="#2a3350", linewidth=0.6, alpha=0.6, zorder=0)
+    ax.set_title("⚔️ Player Comparison — Top 5", color="#ffd23f", fontsize=13, fontweight="bold", pad=12)
     buf = BytesIO()
     plt.tight_layout()
     plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
@@ -24866,17 +24895,17 @@ def _build_botstats_pages(data: dict) -> list:
     p2 += "└──────────────</blockquote>"
     pages.append({"caption": p2, "chart": ("pie", data["match_type_breakdown"])})
 
-    # ── PAGE 3 — ACTIVITY TREND + GROWTH CHART ──
-    p3 = "📈 <b>ACTIVITY & GROWTH TREND</b>\n"
+    # ── PAGE 3 — WORM CHART (CUMULATIVE GROWTH) ──
+    p3 = "🪱 <b>GROWTH WORM (14-Day Cumulative)</b>\n"
     p3 += "<blockquote>┌─❰ 📅 WINDOW ❱\n"
     p3 += f"│ 📅 Today: <b>{data['matches_today']:,}</b>  ┊  🗓️ 7d: <b>{data['matches_7d']:,}</b>  ┊  🗓️ 30d: <b>{data['matches_30d']:,}</b>\n"
     p3 += f"│ 📊 Avg/day: <b>{avg_matches_per_day}</b>\n"
     p3 += "└──────────────</blockquote>\n"
-    p3 += "📉 <i>Bars = matches played · Line = new users, last 7 days</i>"
-    pages.append({"caption": p3, "chart": ("activity", (data["daily_matches"], data["daily_new_users"]))})
+    p3 += "📉 <i>Solid line = cumulative matches · Dashed line = cumulative new users, last 14 days</i>"
+    pages.append({"caption": p3, "chart": ("worm", (data["daily_matches"], data["daily_new_users"]))})
 
-    # ── PAGE 4 — TOP GROUPS & PLAYERS ──
-    p4 = "🌟 <b>TOP GROUPS & PLAYERS</b>\n"
+    # ── PAGE 4 — TOP GROUPS & PLAYER COMPARISON ──
+    p4 = "⚔️ <b>TOP GROUPS & PLAYER COMPARISON</b>\n"
     p4 += "<blockquote>┌─❰ 🏘️ TOP 5 GROUPS ❱\n"
     if data["top_groups"]:
         for i, (gid, cnt) in enumerate(data["top_groups"], 1):
@@ -24886,8 +24915,8 @@ def _build_botstats_pages(data: dict) -> list:
     else:
         p4 += "│ <i>No match history yet.</i>\n"
     p4 += "└──────────────</blockquote>\n"
-    p4 += "📊 <i>Chart below: Top 5 players by runs scored</i>"
-    pages.append({"caption": p4, "chart": ("top", data["top_players"])})
+    p4 += "📊 <i>Chart below: Top 5 players compared on Runs / Wickets / Sixes</i>"
+    pages.append({"caption": p4, "chart": ("compare", data["top_players"])})
 
     # ── PAGE 5 — SYSTEM / DATABASE / HOST ──
     tc = data["table_counts"]
@@ -24925,10 +24954,10 @@ def _render_chart_for_page(page: dict) -> Optional[BytesIO]:
     try:
         if kind == "pie":
             return _render_pie_chart(payload)
-        elif kind == "activity":
-            return _render_activity_chart(payload[0], payload[1])
-        elif kind == "top":
-            return _render_topplayers_chart(payload)
+        elif kind == "worm":
+            return _render_worm_chart(payload[0], payload[1])
+        elif kind == "compare":
+            return _render_compare_chart(payload)
     except Exception as e:
         logger.error(f"botstats chart render failed ({kind}): {e}")
     return None

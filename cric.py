@@ -3954,7 +3954,7 @@ async def game_timer(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: M
         await asyncio.sleep(30)
         
         # Warning
-        await context.bot.send_message(group_id, f"┌─❰ ⏳ HURRY UP! ❱\n│ ⚠️ {html.escape(player_name)}, only 15s left!\n│ ⚙️ Play your ball now!\n└──────────────", parse_mode=ParseMode.HTML)
+        await context.bot.send_message(group_id, f"<blockquote>┌─❰ ⏳ HURRY UP! ❱\n│ ⚠️ {html.escape(player_name)}, only 15s left!\n│ ⚙️ Play your ball now!\n└──────────────</blockquote>", parse_mode=ParseMode.HTML)
         
         # Wait remaining 15 seconds
         await asyncio.sleep(15)
@@ -9541,10 +9541,10 @@ async def execute_ball(context: ContextTypes.DEFAULT_TYPE, group_id: int, match:
 
     text = (
         f"🔴 <b>LIVE</b>\n"
-        f"┌─❰ ⚾ BOWLING TIME ❱\n"
+        f"<blockquote>┌─❰ ⚾ BOWLING TIME ❱\n"
         f"│ 🔹 Over: {overs_str}  |  🔹 RR: {crr_str}\n"
         f"│ 🥎 {bowler_tag} is charging in to bowl...\n"
-        f"└──────────────"
+        f"└──────────────</blockquote>"
     )
     if equation:
         text += f"\n{equation.strip()}"
@@ -9648,7 +9648,7 @@ async def wait_for_bowler_number(context: ContextTypes.DEFAULT_TYPE, group_id: i
             try:
                 await context.bot.send_message(
                     chat_id=bowler.user_id,
-                    text="⏰ <b>30 seconds left!</b>\n⚾ Send your number (0–6) to bowl!",
+                    text="<blockquote>┌─❰ ⏰ 30s LEFT! ❱\n│ ⚾ Send your number (0–6) to bowl!\n└──────────────</blockquote>",
                     parse_mode=ParseMode.HTML
                 )
                 match.current_ball_data["bowler_reminded"] = True
@@ -9663,7 +9663,7 @@ async def wait_for_bowler_number(context: ContextTypes.DEFAULT_TYPE, group_id: i
             try:
                 await context.bot.send_message(
                     chat_id=bowler.user_id,
-                    text="🚨 <b>15 SECONDS!</b> Bowl NOW or it's a NO BALL!",
+                    text="<blockquote>┌─❰ 🚨 15 SECONDS! ❱\n│ ⚾ Bowl NOW or it's a NO BALL!\n└──────────────</blockquote>",
                     parse_mode=ParseMode.HTML
                 )
             except Exception as e:
@@ -9677,7 +9677,7 @@ async def wait_for_bowler_number(context: ContextTypes.DEFAULT_TYPE, group_id: i
             try:
                 await context.bot.send_message(
                     chat_id=bowler.user_id,
-                    text="🔴 <b>5 SECONDS!</b> BOWL NOW!",
+                    text="<blockquote>┌─❰ 🔴 5 SECONDS! ❱\n│ ⚾ BOWL NOW!\n└──────────────</blockquote>",
                     parse_mode=ParseMode.HTML
                 )
             except Exception as e:
@@ -10519,10 +10519,10 @@ async def request_batsman_number(context: ContextTypes.DEFAULT_TYPE, group_id: i
     sr_live = round((batsman.runs / batsman.balls_faced) * 100, 1) if batsman.balls_faced > 0 else 0.0
     text = (
         f"🔴 <b>LIVE</b>\n"
-        f"┌─❰ 🏏 BATTING TIME ❱\n"
+        f"<blockquote>┌─❰ 🏏 BATTING TIME ❱\n"
         f"│ 📊 {batsman_tag} ➜ {batsman.runs} ({batsman.balls_faced}) | ⚡ SR: {sr_live}\n"
         f"│ 🏏 {html.escape(batsman.first_name)}, play your shot\n"
-        f"└──────────────"
+        f"└──────────────</blockquote>"
     )
     
     # ✅ FIX: Add GIF
@@ -10558,7 +10558,7 @@ async def wait_for_batsman_number(context: ContextTypes.DEFAULT_TYPE, group_id: 
             try:
                 await context.bot.send_message(
                     chat_id=batsman.user_id,
-                    text="⏰ <b>30 seconds left!</b>\n🏏 Send your number (0–6) to bat!",
+                    text="<blockquote>┌─❰ ⏰ 30s LEFT! ❱\n│ 🏏 Send your number (0–6) to bat!\n└──────────────</blockquote>",
                     parse_mode=ParseMode.HTML
                 )
             except Exception as e:
@@ -10572,7 +10572,7 @@ async def wait_for_batsman_number(context: ContextTypes.DEFAULT_TYPE, group_id: 
             try:
                 await context.bot.send_message(
                     chat_id=batsman.user_id,
-                    text="🚨 <b>15 SECONDS!</b> Bat NOW or -6 run penalty!",
+                    text="<blockquote>┌─❰ 🚨 15 SECONDS! ❱\n│ 🏏 Bat NOW or -6 run penalty!\n└──────────────</blockquote>",
                     parse_mode=ParseMode.HTML
                 )
             except Exception as e:
@@ -10586,7 +10586,7 @@ async def wait_for_batsman_number(context: ContextTypes.DEFAULT_TYPE, group_id: 
             try:
                 await context.bot.send_message(
                     chat_id=batsman.user_id,
-                    text="🔴 <b>5 SECONDS!</b> HIT NOW!",
+                    text="<blockquote>┌─❰ 🔴 5 SECONDS! ❱\n│ 🏏 HIT NOW!\n└──────────────</blockquote>",
                     parse_mode=ParseMode.HTML
                 )
             except Exception as e:
@@ -10629,29 +10629,32 @@ async def handle_batsman_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: i
         gif_url = get_random_gif(MatchEvent.WICKET)
         
         penalty_text = f"⏰ <b>BATSMAN TIMEOUT!</b> (3/3)\n"
-        penalty_text += f"┌─❰ 📊 CRICOVERSE ❱\n"
+        penalty_text += f"<blockquote>┌─❰ 📊 CRICOVERSE ❱\n"
         penalty_text += f"│ 🚨 Penalty: -6 Runs! → OUT!\n"
         penalty_text += f"│ 🏏 Updated Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
         penalty_text += f"│ ⚠️ {html.escape(batsman.first_name)} timed out 3× → Wicket!\n"
-        penalty_text += f"└──────────────\n"
+        penalty_text += f"└──────────────</blockquote>\n"
         
         try:
             if gif_url:
                 await context.bot.send_animation(
                     chat_id=group_id,
                     animation=gif_url,
-                    caption=penalty_text
+                    caption=penalty_text,
+                    parse_mode=ParseMode.HTML
                 )
             else:
                 await context.bot.send_message(
                     chat_id=group_id,
-                    text=penalty_text
+                    text=penalty_text,
+                    parse_mode=ParseMode.HTML
                 )
         except Exception as e:
             logger.error(f"Error sending timeout wicket message: {e}")
             await context.bot.send_message(
                 chat_id=group_id,
-                text=penalty_text
+                text=penalty_text,
+                parse_mode=ParseMode.HTML
             )
         
         # Log ball
@@ -10675,15 +10678,16 @@ async def handle_batsman_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: i
             await request_batsman_selection(context, group_id, match)
     else:
         penalty_text = f"⏰ <b>BATSMAN TIMEOUT!</b> ({timeout_count}/3)\n"
-        penalty_text += f"┌─❰ 📊 CRICOVERSE ❱\n"
+        penalty_text += f"<blockquote>┌─❰ 📊 CRICOVERSE ❱\n"
         penalty_text += f"│ 🚨 Penalty: -6 Runs!\n"
         penalty_text += f"│ 🏏 Updated Score: {match.current_batting_team.score}/{match.current_batting_team.wickets}\n"
         penalty_text += f"│ ⚠️ Avoid delays to prevent further penalties.\n"
-        penalty_text += f"└──────────────\n"
+        penalty_text += f"└──────────────</blockquote>\n"
         
         await context.bot.send_message(
             chat_id=group_id,
-            text=penalty_text
+            text=penalty_text,
+            parse_mode=ParseMode.HTML
         )
         
         # Reset and wait again
@@ -12790,7 +12794,7 @@ async def start_solo_mechanics(context, chat_id, match):
     
     # Announce Order
     order_msg = "🎲 <b>BATTING ORDER!</b>\n"
-    order_msg += "┌─❰ 🏏 SOLO MATCH ❱\n"
+    order_msg += "<blockquote>┌─❰ 🏏 SOLO MATCH ❱\n"
     order_msg += f"│ 🎙️ Host: {html.escape(match.host_name or 'Host')}\n"
     order_msg += f"│ 🔑 Code: {match.resume_code}\n"
     order_msg += "│ 🔀 The order has been shuffled!\n"
@@ -12803,7 +12807,7 @@ async def start_solo_mechanics(context, chat_id, match):
     
     order_msg += "│\n"
     order_msg += "│ 🔥 Match Starting in 5 seconds...\n"
-    order_msg += "└──────────────"
+    order_msg += "└──────────────</blockquote>"
     
     # Send with Toss/Squad Image
     await context.bot.send_photo(
@@ -12986,9 +12990,9 @@ async def process_solo_turn_result(context, chat_id, match):
         # 🎩 Hat-trick celebration
         if hat_trick:
             ht_msg = (
-                f"🎩〔 <b>HAT-TRICK!</b> 〕🎩\n\n"
-                f"🔥 <b>{bowler.first_name}</b> takes 3 consecutive wickets!\n"
-                f"🏏 <i>Unbelievable bowling display!</i>"
+                f"🎩〔 <b>HAT-TRICK!</b> 〕🎩\n"
+                f"<blockquote>🔥 <b>{bowler.first_name}</b> takes 3 consecutive wickets!\n"
+                f"🏏 <i>Unbelievable bowling display!</i></blockquote>"
             )
             try:
                 ht_gif = get_random_gif(MatchEvent.HAT_TRICK)
@@ -13015,7 +13019,7 @@ async def process_solo_turn_result(context, chat_id, match):
         await asyncio.sleep(2)
         await context.bot.send_message(
             chat_id, 
-            f"⚡ <b>NEXT BATSMAN:</b> {new_bat_tag} walks to the crease!\n<i>Game resuming...</i>", 
+            f"⚡ <b>NEXT BATSMAN:</b>\n<blockquote>🏏 {new_bat_tag} walks to the crease!\n<i>Game resuming...</i></blockquote>", 
             parse_mode=ParseMode.HTML
         )
         
@@ -13078,10 +13082,10 @@ async def process_solo_turn_result(context, chat_id, match):
         if prev_runs < 50 and batter.runs >= 50 and batter.runs < 100:
             fifty_gif = get_random_gif(MatchEvent.FIFTY)
             cel_msg = (
-                f"🌟〔 <b>FIFTY!</b> 〕🌟\n\n"
-                f"🏏 <b>{batter.first_name}</b> reaches <b>50 runs</b>!\n"
+                f"🌟〔 <b>FIFTY!</b> 〕🌟\n"
+                f"<blockquote>🏏 <b>{batter.first_name}</b> reaches <b>50 runs</b>!\n"
                 f"📊 {batter.runs} ({batter.balls_faced})  SR: {sr}\n"
-                f"🎉 <i>Half-century milestone!</i>"
+                f"🎉 <i>Half-century milestone!</i></blockquote>"
             )
             try:
                 if fifty_gif:
@@ -13095,10 +13099,10 @@ async def process_solo_turn_result(context, chat_id, match):
         elif prev_runs < 100 and batter.runs >= 100:
             hundred_gif = get_random_gif(MatchEvent.HUNDRED)
             cel_msg = (
-                f"💯〔 <b>CENTURY!</b> 〕💯\n\n"
-                f"🏏 <b>{batter.first_name}</b> reaches <b>100 runs</b>!\n"
+                f"💯〔 <b>CENTURY!</b> 〕💯\n"
+                f"<blockquote>🏏 <b>{batter.first_name}</b> reaches <b>100 runs</b>!\n"
                 f"📊 {batter.runs} ({batter.balls_faced})  SR: {sr}\n"
-                f"🎊 <i>What a magnificent hundred!</i>"
+                f"🎊 <i>What a magnificent hundred!</i></blockquote>"
             )
             try:
                 if hundred_gif:
@@ -21872,10 +21876,11 @@ async def addpick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.message.edit_text(
         f"✅ <b>ADDED → TEAM {team_letter} ({html.escape(team.name)})</b>\n"
-        f"─────────────────\n"
-        f"🎯 Added: {added_str}{skip_str}\n"
-        f"📊 Team size: <b>{len(team.players)}</b>\n\n"
-        f"<i>Added mid-game by Host</i>",
+        f"<blockquote>┌─────────────────\n"
+        f"│ 🎯 Added: {added_str}{skip_str}\n"
+        f"│ 📊 Team size: <b>{len(team.players)}</b>\n"
+        f"│ <i>Added mid-game by Host</i>\n"
+        f"└─────────────────</blockquote>",
         parse_mode=ParseMode.HTML
     )
 
@@ -22334,10 +22339,10 @@ async def mid_game_add_logic(update: Update, context: ContextTypes.DEFAULT_TYPE,
     team_label = "X" if team == match.team_x else "Y"
     await update.message.reply_text(
         f"✅ <b>PLAYER ADDED!</b>\n"
-        f"┌─❰ TEAM {team_label} ❱\n"
+        f"<blockquote>┌─❰ TEAM {team_label} ❱\n"
         f"│ 👤 Added: {target_tag}\n"
         f"│ 👥 Team Size: {len(team.players)}\n"
-        f"└──────────────\n"
+        f"└──────────────</blockquote>\n"
         f"{not_started_warning}",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True
@@ -22432,11 +22437,11 @@ async def mid_game_remove_logic(update: Update, context: ContextTypes.DEFAULT_TY
     team.remove_player(target_user_id)
     await update.message.reply_text(
         f"❎ <b>PLAYER REMOVED!</b>\n"
-        f"┌─❰ TEAM {team_name} ❱\n"
+        f"<blockquote>┌─❰ TEAM {team_name} ❱\n"
         f"│ 🎯 Player: {player.first_name}\n"
         f"│ 📊 Team Size: {len(team.players)}\n"
-        f"└──────────────\n"
-        f"<i>Removed by Host mid-game</i>",
+        f"│ <i>Removed by Host mid-game</i>\n"
+        f"└──────────────</blockquote>",
         parse_mode=ParseMode.HTML
     )
 
@@ -24652,18 +24657,338 @@ def _fetch_botstats_data():
     }
 
 
-async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🏏 ADVANCED bot statistics & deep analytics dashboard — OWNER ONLY
+# ══════════════════════════ 📊 BOTSTATS CHART HELPERS ══════════════════════════
 
-    🔧 FIX: previously sent NOTHING — it called a fake `sendRichMessage` API
-    method that always failed, then its fallback referenced a variable
-    (`application`) that only existed locally inside main(), so the send
-    silently NameError'd every single time. Both are fixed now
-    (see send_rich_table_message). This version also adds a much deeper
-    analytics layer: growth over time, match-type split, top groups/players,
-    per-table DB row counts, DB file size, host/runtime info, and job-queue
-    health — so the owner can actually analyse the bot, not just glance at
-    a handful of totals.
+_BOTSTATS_SESSIONS: Dict[int, dict] = {}   # message_id -> {"pages": [...], "idx": int, "owner": user_id}
+
+def _mpl_dark_ax(figsize):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=figsize, dpi=170)
+    fig.patch.set_facecolor("#0d1220")
+    ax.set_facecolor("#0d1220")
+    for spine in ax.spines.values():
+        spine.set_color("#2a3350")
+    ax.tick_params(colors="#c8d0e8", labelsize=9)
+    return plt, fig, ax
+
+
+def _render_pie_chart(match_type_breakdown: dict) -> BytesIO:
+    """🥧 PIE CHART — Solo vs Team vs Other match-type split."""
+    labels_all = {"SOLO": ("⚔️ Solo", "#3ba7ff"), "TEAM": ("👥 Team", "#ffb020"),
+                  "MAGICBALL": ("🔮 Magic Ball", "#a855f7")}
+    solo = match_type_breakdown.get("SOLO", 0)
+    team = match_type_breakdown.get("TEAM", 0)
+    other = sum(v for k, v in match_type_breakdown.items() if k not in ("SOLO", "TEAM"))
+
+    values, labels, colors = [], [], []
+    for val, lab, col in [(solo, "⚔️ Solo", "#3ba7ff"), (team, "👥 Team", "#ffb020"), (other, "🎲 Other", "#a855f7")]:
+        if val > 0:
+            values.append(val); labels.append(lab); colors.append(col)
+    if not values:
+        values, labels, colors = [1], ["No data yet"], ["#3a4266"]
+
+    plt, fig, ax = _mpl_dark_ax((5.2, 4.4))
+    wedges, texts, autotexts = ax.pie(
+        values, labels=labels, colors=colors, autopct=lambda p: f"{p:.1f}%" if p > 0 else "",
+        startangle=90, pctdistance=0.75, textprops={"color": "#e8ecff", "fontsize": 10, "fontweight": "bold"},
+        wedgeprops={"edgecolor": "#0d1220", "linewidth": 2}
+    )
+    centre = plt.Circle((0, 0), 0.45, fc="#0d1220", ec="#2a3350")
+    fig.gca().add_artist(centre)
+    ax.set_title("🎯 Match-Type Split", color="#ffd23f", fontsize=13, fontweight="bold", pad=14)
+    ax.axis("equal")
+    buf = BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _render_activity_chart(daily_matches: list, daily_new_users: list) -> BytesIO:
+    """📈 LINE + BAR CHART — matches played & new users, last 7 days."""
+    dm_map = {row[0]: row[1] for row in daily_matches}
+    du_map = {row[0]: row[1] for row in daily_new_users}
+    today_d = datetime.now().date()
+    days, m_vals, u_vals = [], [], []
+    for i in range(6, -1, -1):
+        d = (today_d - timedelta(days=i)).isoformat()
+        days.append("Today" if i == 0 else (today_d - timedelta(days=i)).strftime("%d %b"))
+        m_vals.append(dm_map.get(d, 0))
+        u_vals.append(du_map.get(d, 0))
+
+    plt, fig, ax = _mpl_dark_ax((6.4, 4.2))
+    x = list(range(len(days)))
+    bars = ax.bar(x, m_vals, color="#3ba7ff", width=0.55, label="🎮 Matches", zorder=2)
+    for b, v in zip(bars, m_vals):
+        if v > 0:
+            ax.text(b.get_x() + b.get_width() / 2, v, str(v), ha="center", va="bottom",
+                     color="#e8ecff", fontsize=8, fontweight="bold")
+
+    ax2 = ax.twinx()
+    ax2.plot(x, u_vals, color="#ffd23f", marker="o", linewidth=2, markersize=5, label="👤 New Users", zorder=3)
+    ax2.tick_params(colors="#ffd23f", labelsize=9)
+    ax2.set_facecolor("none")
+    for spine in ax2.spines.values():
+        spine.set_color("#2a3350")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(days, color="#c8d0e8", fontsize=9)
+    ax.grid(axis="y", color="#2a3350", linewidth=0.6, alpha=0.6, zorder=0)
+    ax.set_title("📈 7-Day Growth Trend", color="#ffd23f", fontsize=13, fontweight="bold", pad=12)
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    leg = ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", facecolor="#161d33",
+                     edgecolor="#2a3350", labelcolor="#e8ecff", fontsize=8.5)
+
+    buf = BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _render_topplayers_chart(top_players: list) -> BytesIO:
+    """🏆 HORIZONTAL BAR CHART — Top 5 players by runs."""
+    plt, fig, ax = _mpl_dark_ax((6.2, 4.2))
+    if top_players:
+        names = [ (fname or str(uid))[:14] for uid, fname, runs in top_players][::-1]
+        runs = [runs for uid, fname, runs in top_players][::-1]
+        colors = ["#ffd23f", "#c0c0c0", "#cd7f32", "#3ba7ff", "#3ba7ff"][:len(names)][::-1] if len(names) <= 5 else None
+        bars = ax.barh(names, runs, color="#3ba7ff", zorder=2)
+        for i, b in enumerate(bars):
+            bars[i].set_color(["#3ba7ff", "#3ba7ff", "#cd7f32", "#c0c0c0", "#ffd23f"][::-1][i] if len(bars) <= 5 else "#3ba7ff")
+        for b, v in zip(bars, runs):
+            ax.text(v, b.get_y() + b.get_height() / 2, f"  {v:,}", va="center", color="#e8ecff",
+                     fontsize=9, fontweight="bold")
+    else:
+        ax.text(0.5, 0.5, "No player data yet", ha="center", va="center", color="#8892b8",
+                 transform=ax.transAxes, fontsize=11)
+    ax.grid(axis="x", color="#2a3350", linewidth=0.6, alpha=0.6, zorder=0)
+    ax.set_title("🌟 Top 5 Players — Runs", color="#ffd23f", fontsize=13, fontweight="bold", pad=12)
+    buf = BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _botstats_nav_keyboard(idx: int, total: int) -> InlineKeyboardMarkup:
+    row = []
+    if idx > 0:
+        row.append(styled_button("⬅️ Back", callback_data=f"bstats_nav_{idx-1}"))
+    row.append(styled_button(f"📄 {idx+1}/{total}", callback_data="bstats_noop"))
+    if idx < total - 1:
+        row.append(styled_button("Next ➡️", callback_data=f"bstats_nav_{idx+1}"))
+    row2 = [styled_button("🔄 Refresh", callback_data="bstats_refresh"),
+            styled_button("❌ Close", callback_data="bstats_close")]
+    return InlineKeyboardMarkup([row, row2])
+
+
+def _build_botstats_pages(data: dict) -> list:
+    """Builds ordered list of {caption, chart} dicts for the paginated dashboard."""
+    mem_users = len(player_stats)
+    total_users = max(data["db_users"], mem_users, data["db_dm_users"])
+    total_matches = data["db_matches"]
+    total_runs = data["db_runs"]
+    total_wickets = data["db_wickets"]
+    total_sixes = data["db_sixes"]
+    total_fours = data["db_fours"]
+
+    active_match_count = len(active_matches)
+    active_auction_count = len(active_auctions)
+    active_tour_count = len(active_tournaments) if 'active_tournaments' in globals() else 0
+    total_banned = len(banned_groups)
+    active_groups = max(0, data["total_groups"] - total_banned)
+
+    cpu = memory = disk = 0
+    proc_mem_mb = 0
+    if psutil:
+        try:
+            cpu = psutil.cpu_percent(0.2)
+            memory = psutil.virtual_memory().percent
+            disk = psutil.disk_usage('/').percent
+            proc_mem_mb = round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1)
+        except Exception:
+            pass
+
+    uptime_secs = int(time.time() - bot_start_time) if 'bot_start_time' in globals() else 0
+    up_d, _rem = divmod(uptime_secs, 86400)
+    up_h, _rem = divmod(_rem, 3600)
+    up_m, up_s = divmod(_rem, 60)
+    uptime_str = f"{up_d}d {up_h}h {up_m}m {up_s}s" if up_d else f"{up_h}h {up_m}m {up_s}s"
+
+    mtb = data["match_type_breakdown"]
+    solo_matches = mtb.get("SOLO", 0)
+    team_matches = mtb.get("TEAM", 0)
+    other_matches = sum(v for k, v in mtb.items() if k not in ("SOLO", "TEAM"))
+
+    days_running = max(1, uptime_secs // 86400) if uptime_secs else 1
+    avg_matches_per_day = round(total_matches / days_running, 1) if days_running else total_matches
+
+    pages = []
+
+    # ── PAGE 1 — OVERVIEW ──
+    p1 = "🏏 <b>CRICOVERSE → BOT STATS</b>\n"
+    p1 += "<blockquote>┌─❰ ⚙️ SYSTEM ❱\n"
+    p1 += f"│ ⚡ Ping: <b>{data.get('ping_ms', 0)}ms</b>\n"
+    p1 += f"│ 💻 CPU: <b>{cpu}%</b>  ┊  🧠 RAM: <b>{memory}%</b>  ┊  💾 Disk: <b>{disk}%</b>\n"
+    p1 += f"│ ⏱️ Uptime: <b>{uptime_str}</b>\n"
+    p1 += "└──────────────</blockquote>\n"
+    p1 += "<blockquote>┌─❰ 👥 USERS & GROUPS ❱\n"
+    p1 += f"│ 👤 Total Users: <b>{total_users:,}</b>  ┊  💬 DM Users: <b>{data['db_dm_users']:,}</b>\n"
+    p1 += f"│ 🏘️ Groups: <b>{data['total_groups']}</b>  ┊  ✅ Active: <b>{active_groups}</b>  ┊  🚫 Banned: <b>{total_banned}</b>\n"
+    p1 += "└──────────────</blockquote>\n"
+    p1 += "<blockquote>┌─❰ 🔴 LIVE NOW ❱\n"
+    p1 += f"│ 🏏 Matches: <b>{active_match_count}</b>  ┊  🎪 Auctions: <b>{active_auction_count}</b>  ┊  🏆 Tournaments: <b>{active_tour_count}</b>\n"
+    p1 += "└──────────────</blockquote>\n"
+    p1 += "✅ <i>All systems operational</i>"
+    pages.append({"caption": p1, "chart": None})
+
+    # ── PAGE 2 — CRICKET STATS + PIE CHART ──
+    p2 = "🏏 <b>CRICKET STATS</b>\n"
+    p2 += "<blockquote>┌─❰ 📊 TOTALS ❱\n"
+    p2 += f"│ 🎮 Matches: <b>{total_matches:,}</b>\n"
+    p2 += f"│ 🏃 Runs: <b>{total_runs:,}</b>  ┊  ⚾ Wickets: <b>{total_wickets:,}</b>\n"
+    p2 += f"│ 🚀 Sixes: <b>{total_sixes:,}</b>  ┊  🔥 Fours: <b>{total_fours:,}</b>\n"
+    p2 += f"│ 💯 Hundreds: <b>{data['db_hundreds']:,}</b>  ┊  5️⃣0️⃣ Fifties: <b>{data['db_fifties']:,}</b>\n"
+    p2 += "└──────────────</blockquote>\n"
+    p2 += "<blockquote>┌─❰ 🎯 MATCH-TYPE SPLIT ❱\n"
+    p2 += f"│ ⚔️ Solo: <b>{solo_matches:,}</b>  ┊  👥 Team: <b>{team_matches:,}</b>  ┊  🎲 Other: <b>{other_matches:,}</b>\n"
+    p2 += "└──────────────</blockquote>\n"
+    p2 += "<blockquote>┌─❰ 🤖 AI MODE ❱\n"
+    p2 += f"│ 👾 Players: <b>{data['ai_players']}</b>  ┊  🎮 Matches: <b>{data['ai_total']}</b>  ┊  🏆 Wins: <b>{data['ai_wins']}</b>\n"
+    p2 += "└──────────────</blockquote>"
+    pages.append({"caption": p2, "chart": ("pie", data["match_type_breakdown"])})
+
+    # ── PAGE 3 — ACTIVITY TREND + GROWTH CHART ──
+    p3 = "📈 <b>ACTIVITY & GROWTH TREND</b>\n"
+    p3 += "<blockquote>┌─❰ 📅 WINDOW ❱\n"
+    p3 += f"│ 📅 Today: <b>{data['matches_today']:,}</b>  ┊  🗓️ 7d: <b>{data['matches_7d']:,}</b>  ┊  🗓️ 30d: <b>{data['matches_30d']:,}</b>\n"
+    p3 += f"│ 📊 Avg/day: <b>{avg_matches_per_day}</b>\n"
+    p3 += "└──────────────</blockquote>\n"
+    p3 += "📉 <i>Bars = matches played · Line = new users, last 7 days</i>"
+    pages.append({"caption": p3, "chart": ("activity", (data["daily_matches"], data["daily_new_users"]))})
+
+    # ── PAGE 4 — TOP GROUPS & PLAYERS ──
+    p4 = "🌟 <b>TOP GROUPS & PLAYERS</b>\n"
+    p4 += "<blockquote>┌─❰ 🏘️ TOP 5 GROUPS ❱\n"
+    if data["top_groups"]:
+        for i, (gid, cnt) in enumerate(data["top_groups"], 1):
+            g_name = registered_groups.get(gid, {}).get("group_name") if isinstance(registered_groups.get(gid), dict) else None
+            label = html.escape(g_name) if g_name else f"ID {gid}"
+            p4 += f"│ {i}. {label} → <b>{cnt}</b> matches\n"
+    else:
+        p4 += "│ <i>No match history yet.</i>\n"
+    p4 += "└──────────────</blockquote>\n"
+    p4 += "📊 <i>Chart below: Top 5 players by runs scored</i>"
+    pages.append({"caption": p4, "chart": ("top", data["top_players"])})
+
+    # ── PAGE 5 — SYSTEM / DATABASE / HOST ──
+    tc = data["table_counts"]
+    p5 = "🖥️ <b>DATABASE & HOST INFO</b>\n"
+    p5 += "<blockquote>┌─❰ 🗄️ DATABASE ❱\n"
+    p5 += f"│ 💽 Main DB: <b>{data['db_size_mb']} MB</b>  ┊  🏆 Tournament DB: <b>{data['tour_db_size_mb']} MB</b>\n"
+    if tc:
+        for tname in sorted(tc, key=lambda k: -tc[k])[:6]:
+            p5 += f"│ • {html.escape(tname)}: <b>{tc[tname]:,}</b> rows\n"
+    p5 += "└──────────────</blockquote>\n"
+    p5 += "<blockquote>┌─❰ 🖥️ RUNTIME ❱\n"
+    p5 += f"│ 🐍 Python: <b>{platform.python_version()}</b>\n"
+    p5 += f"│ 💻 OS: <b>{platform.system()} {platform.release()}</b>\n"
+    try:
+        import telegram as _tg_mod
+        ptb_ver = getattr(_tg_mod, "__version__", "?")
+    except Exception:
+        ptb_ver = "?"
+    p5 += f"│ 📦 python-telegram-bot: <b>{ptb_ver}</b>\n"
+    p5 += f"│ 🧠 Process RAM: <b>{proc_mem_mb} MB</b>\n"
+    jq_running = bool(application.job_queue.jobs()) if ('application' in globals() and application and application.job_queue) else False
+    p5 += f"│ ⚙️ Job Queue: <b>{'Running' if jq_running else 'Unknown/Idle'}</b>\n"
+    p5 += f"│ 🧵 Caches → Matches: <b>{len(active_matches)}</b>, Auctions: <b>{len(active_auctions)}</b>, Groups: <b>{len(registered_groups)}</b>\n"
+    p5 += "└──────────────</blockquote>"
+    pages.append({"caption": p5, "chart": None})
+
+    return pages
+
+
+def _render_chart_for_page(page: dict) -> Optional[BytesIO]:
+    chart = page.get("chart")
+    if not chart:
+        return None
+    kind, payload = chart
+    try:
+        if kind == "pie":
+            return _render_pie_chart(payload)
+        elif kind == "activity":
+            return _render_activity_chart(payload[0], payload[1])
+        elif kind == "top":
+            return _render_topplayers_chart(payload)
+    except Exception as e:
+        logger.error(f"botstats chart render failed ({kind}): {e}")
+    return None
+
+
+async def _send_botstats_page(context: ContextTypes.DEFAULT_TYPE, chat_id: int, pages: list, idx: int,
+                                owner_id: int, edit_message=None):
+    """Sends (or edits into) the given page — photo+caption if it has a chart, else plain text."""
+    page = pages[idx]
+    caption = page["caption"]
+    kb = _botstats_nav_keyboard(idx, len(pages))
+    chart_buf = _render_chart_for_page(page)
+
+    if edit_message is not None:
+        try:
+            if chart_buf:
+                from telegram import InputMediaPhoto
+                await edit_message.edit_media(
+                    media=InputMediaPhoto(chart_buf, caption=caption, parse_mode=ParseMode.HTML),
+                    reply_markup=kb
+                )
+            else:
+                await edit_message.edit_media(
+                    media=InputMediaPhoto(MEDIA_ASSETS.get("botstats"), caption=caption, parse_mode=ParseMode.HTML),
+                    reply_markup=kb
+                )
+            return edit_message
+        except Exception as e:
+            logger.warning(f"botstats edit_media failed, falling back to delete+resend: {e}")
+            try:
+                await edit_message.delete()
+            except Exception:
+                pass
+
+    try:
+        if chart_buf:
+            sent = await context.bot.send_photo(chat_id, photo=chart_buf, caption=caption,
+                                                 parse_mode=ParseMode.HTML, reply_markup=kb)
+        else:
+            asset = MEDIA_ASSETS.get("botstats")
+            if asset:
+                sent = await context.bot.send_photo(chat_id, photo=asset, caption=caption,
+                                                     parse_mode=ParseMode.HTML, reply_markup=kb)
+            else:
+                sent = await context.bot.send_message(chat_id, caption, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception as e:
+        logger.error(f"botstats send failed, falling back to text: {e}")
+        sent = await context.bot.send_message(chat_id, caption, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+    _BOTSTATS_SESSIONS[sent.message_id] = {"pages": pages, "idx": idx, "owner": owner_id}
+    return sent
+
+
+async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🏏 ADVANCED bot statistics & analytics dashboard — OWNER ONLY.
+
+    📊 Paginated multi-page dashboard with 📈 growth line chart, 🥧 pie chart
+    (match-type split), 🏆 top-players bar chart, and ⬅️➡️ Next/Back
+    navigation buttons — all metrics rendered in clean aligned blockquote
+    cards instead of one giant wall of text.
     """
     user = update.effective_user
     if user.id != OWNER_ID:
@@ -24674,204 +24999,66 @@ async def botstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     t0 = time.time()
-    msg = await update.message.reply_text("⏳ <b>Fetching deep stats...</b>", parse_mode=ParseMode.HTML)
+    loading = await update.message.reply_text("⏳ <b>Building dashboard...</b>", parse_mode=ParseMode.HTML)
 
     data = await asyncio.to_thread(_fetch_botstats_data)
-    ping_ms = round((time.time() - t0) * 1000, 2)
+    data["ping_ms"] = round((time.time() - t0) * 1000, 2)
 
-    # Also check player_stats in-memory (some data may only be there)
-    mem_users = len(player_stats)
+    pages = await asyncio.to_thread(_build_botstats_pages, data)
 
-    # Use whichever has more data
-    total_users = max(data["db_users"], mem_users, data["db_dm_users"])
-    total_matches = data["db_matches"]
-    total_runs = data["db_runs"]
-    total_wickets = data["db_wickets"]
-    total_sixes = data["db_sixes"]
-    total_fours = data["db_fours"]
-
-    # Active matches / auctions right now
-    active_match_count = len(active_matches)
-    active_auction_count = len(active_auctions)
-    active_tour_count = len(active_tournaments) if 'active_tournaments' in globals() else 0
-
-    # Banned groups
-    total_banned = len(banned_groups)
-    active_groups = max(0, data["total_groups"] - total_banned)
-
-    # System stats
-    cpu = memory = disk = 0
-    proc_mem_mb = 0
-    if psutil:
-        try:
-            cpu = await asyncio.to_thread(psutil.cpu_percent, 0.2)
-            memory = psutil.virtual_memory().percent
-            disk = psutil.disk_usage('/').percent
-            proc_mem_mb = round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1)
-        except Exception:
-            pass
-
-    # Uptime
-    uptime_secs = int(time.time() - bot_start_time) if 'bot_start_time' in globals() else 0
-    up_d, _rem = divmod(uptime_secs, 86400)
-    up_h, _rem = divmod(_rem, 3600)
-    up_m, up_s = divmod(_rem, 60)
-    uptime_str = f"{up_d}d {up_h}h {up_m}m {up_s}s" if up_d else f"{up_h}h {up_m}m {up_s}s"
-
-    # Match-type breakdown
-    mtb = data["match_type_breakdown"]
-    solo_matches = mtb.get("SOLO", 0)
-    team_matches = mtb.get("TEAM", 0)
-    other_matches = sum(v for k, v in mtb.items() if k not in ("SOLO", "TEAM"))
-
-    # Growth rate estimate (matches per active day since bot started, if known)
-    days_running = max(1, uptime_secs // 86400) if uptime_secs else 1
-    avg_matches_per_day = round(total_matches / days_running, 1) if days_running else total_matches
-
-    # ── MAIN OVERVIEW MESSAGE ──
-    text = "🏏 <b>CRICOVERSE → BOT STATS</b>\n"
-    text += "─────────────────\n"
-    text += f"⚡ Ping: <b>{ping_ms}ms</b>  ┊  💻 CPU: <b>{cpu}%</b>  ┊  🧠 RAM: <b>{memory}%</b>\n"
-    text += f"⏱️ Uptime: <b>{uptime_str}</b>  ┊  💾 Disk: <b>{disk}%</b>\n"
-    text += "─────────────────\n"
-    text += "👥 <b>USERS & GROUPS</b>\n"
-    text += f"👤 Total Users: <b>{total_users:,}</b>  ┊  💬 DM Users: <b>{data['db_dm_users']:,}</b>\n"
-    text += f"🏘️ Groups: <b>{data['total_groups']}</b>  ┊  🚫 Banned: <b>{total_banned}</b>  ┊  ✅ Active: <b>{active_groups}</b>\n"
-    text += "─────────────────\n"
-    text += "🏏 <b>CRICKET STATS</b>\n"
-    text += f"🎮 Matches: <b>{total_matches:,}</b>  ┊  🏃 Runs: <b>{total_runs:,}</b>  ┊  ⚾ Wickets: <b>{total_wickets:,}</b>\n"
-    text += f"🚀 Sixes: <b>{total_sixes:,}</b>  ┊  🔥 Fours: <b>{total_fours:,}</b>\n"
-    text += f"💯 Hundreds: <b>{data['db_hundreds']:,}</b>  ┊  5️⃣0️⃣ Fifties: <b>{data['db_fifties']:,}</b>\n"
-    text += "─────────────────\n"
-    text += "🎯 <b>MATCH-TYPE SPLIT</b>\n"
-    text += f"⚔️ Solo: <b>{solo_matches:,}</b>  ┊  👥 Team: <b>{team_matches:,}</b>  ┊  🎲 Other: <b>{other_matches:,}</b>\n"
-    text += "─────────────────\n"
-    text += "📈 <b>ACTIVITY TREND</b>\n"
-    text += f"📅 Today: <b>{data['matches_today']:,}</b>  ┊  🗓️ Last 7d: <b>{data['matches_7d']:,}</b>  ┊  🗓️ Last 30d: <b>{data['matches_30d']:,}</b>\n"
-    text += f"📊 Avg/day (since start): <b>{avg_matches_per_day}</b>\n"
-    text += "─────────────────\n"
-    text += "🤖 <b>AI MODE</b>\n"
-    text += f"👾 Players: <b>{data['ai_players']}</b>  ┊  🎮 Matches: <b>{data['ai_total']}</b>  ┊  🏆 User Wins: <b>{data['ai_wins']}</b>\n"
-    text += "─────────────────\n"
-    text += "🔴 <b>LIVE NOW</b>\n"
-    text += f"🏏 Active Matches: <b>{active_match_count}</b>  ┊  🎪 Auctions: <b>{active_auction_count}</b>  ┊  🏆 Tournaments: <b>{active_tour_count}</b>\n"
-    text += "─────────────────\n"
-    text += "✅ <b>All systems operational</b>"
-
-    stats_rows = [
-        ["Ping", f"{ping_ms} ms"],
-        ["Uptime", uptime_str],
-        ["CPU", f"{cpu}%"],
-        ["RAM", f"{memory}%"],
-        ["Disk", f"{disk}%"],
-        ["Process RAM", f"{proc_mem_mb} MB"],
-        ["Total Users", f"{total_users:,}"],
-        ["DM Users", f"{data['db_dm_users']:,}"],
-        ["Groups", f"{data['total_groups']}"],
-        ["Banned Groups", f"{total_banned}"],
-        ["Active Groups", f"{active_groups}"],
-        ["Matches Played", f"{total_matches:,}"],
-        ["  ↳ Solo", f"{solo_matches:,}"],
-        ["  ↳ Team", f"{team_matches:,}"],
-        ["  ↳ Other", f"{other_matches:,}"],
-        ["Matches Today", f"{data['matches_today']:,}"],
-        ["Matches (7d)", f"{data['matches_7d']:,}"],
-        ["Matches (30d)", f"{data['matches_30d']:,}"],
-        ["Avg Matches/Day", f"{avg_matches_per_day}"],
-        ["Runs Scored", f"{total_runs:,}"],
-        ["Wickets Taken", f"{total_wickets:,}"],
-        ["Sixes", f"{total_sixes:,}"],
-        ["Fours", f"{total_fours:,}"],
-        ["Hundreds", f"{data['db_hundreds']:,}"],
-        ["Fifties", f"{data['db_fifties']:,}"],
-        ["AI Players", f"{data['ai_players']}"],
-        ["AI Matches", f"{data['ai_total']}"],
-        ["AI User Wins", f"{data['ai_wins']}"],
-        ["Active Matches", f"{active_match_count}"],
-        ["Active Auctions", f"{active_auction_count}"],
-        ["Active Tournaments", f"{active_tour_count}"],
-        ["Main DB Size", f"{data['db_size_mb']} MB"],
-        ["Tournament DB Size", f"{data['tour_db_size_mb']} MB"],
-    ]
-
-    # Delete the "fetching..." placeholder and send a real table in its place
     try:
-        await msg.delete()
+        await loading.delete()
     except Exception:
         pass
-    await send_rich_table_message(
-        update.effective_chat.id,
-        headers=["Metric", "Value"],
-        rows=stats_rows,
-        title="🏏 CRICOVERSE → BOT STATS",
-        footer="✅ All systems operational",
-        fallback_html=text,
-    )
 
-    # ── DEEP-DIVE FOLLOW-UP: top groups, top players, DB table sizes, host info ──
-    deep = "🔬 <b>DEEP ANALYTICS</b>\n"
-    deep += "─────────────────\n"
+    await _send_botstats_page(context, update.effective_chat.id, pages, 0, user.id)
 
-    deep += "📅 <b>DAILY STATS (Last 7 Days)</b>\n"
-    dm_map = {row[0]: row[1] for row in data["daily_matches"]}
-    du_map = {row[0]: row[1] for row in data["daily_new_users"]}
-    dr_map = {row[0]: (row[1] or 0) for row in data["daily_runs"]}
-    if dm_map or du_map or dr_map:
-        today_d = datetime.now().date()
-        for i in range(6, -1, -1):
-            d = (today_d - timedelta(days=i)).isoformat()
-            day_label = "Today" if i == 0 else ("Yesterday" if i == 1 else d)
-            m_cnt = dm_map.get(d, 0)
-            u_cnt = du_map.get(d, 0)
-            r_cnt = dr_map.get(d, 0)
-            deep += f"• {day_label}: 🎮 <b>{m_cnt}</b> matches  ┊  👤 <b>{u_cnt}</b> new users  ┊  🏃 <b>{r_cnt:,}</b> runs\n"
-    else:
-        deep += "<i>No match history yet for a daily breakdown.</i>\n"
-    deep += "─────────────────\n"
 
-    deep += "🏘️ <b>TOP 5 MOST ACTIVE GROUPS</b>\n"
-    if data["top_groups"]:
-        for i, (gid, cnt) in enumerate(data["top_groups"], 1):
-            g_name = registered_groups.get(gid, {}).get("group_name") if isinstance(registered_groups.get(gid), dict) else None
-            label = html.escape(g_name) if g_name else f"ID {gid}"
-            deep += f"{i}. {label} → <b>{cnt}</b> matches\n"
-    else:
-        deep += "<i>No match history yet.</i>\n"
-    deep += "─────────────────\n"
+async def botstats_nav_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles ⬅️ Back / Next ➡️ / 🔄 Refresh / ❌ Close on the /botstats dashboard."""
+    query = update.callback_query
+    user = query.from_user
+    if user.id != OWNER_ID:
+        await query.answer("🚫 Owner only!", show_alert=True)
+        return
 
-    deep += "🌟 <b>TOP 5 PLAYERS (by runs)</b>\n"
-    if data["top_players"]:
-        for i, (uid, fname, runs) in enumerate(data["top_players"], 1):
-            deep += f"{i}. {html.escape(fname or str(uid))} → <b>{runs:,}</b> runs\n"
-    else:
-        deep += "<i>No player data yet.</i>\n"
-    deep += "─────────────────\n"
+    msg_id = query.message.message_id
+    session = _BOTSTATS_SESSIONS.get(msg_id)
 
-    deep += "🗄️ <b>DATABASE TABLE SIZES</b>\n"
-    tc = data["table_counts"]
-    if tc:
-        for tname in sorted(tc, key=lambda k: -tc[k])[:10]:
-            deep += f"• {html.escape(tname)}: <b>{tc[tname]:,}</b> rows\n"
-    else:
-        deep += "<i>Could not read table list.</i>\n"
-    deep += "─────────────────\n"
+    if query.data == "bstats_noop":
+        await query.answer()
+        return
 
-    deep += "🖥️ <b>HOST & RUNTIME</b>\n"
-    deep += f"🐍 Python: <b>{platform.python_version()}</b>  ┊  💻 OS: <b>{platform.system()} {platform.release()}</b>\n"
-    try:
-        import telegram as _tg_mod
-        ptb_ver = getattr(_tg_mod, "__version__", "?")
-    except Exception:
-        ptb_ver = "?"
-    deep += f"📦 python-telegram-bot: <b>{ptb_ver}</b>\n"
-    jq_running = bool(application.job_queue.jobs()) if ('application' in globals() and application and application.job_queue) else False
-    deep += f"⚙️ Job Queue: <b>{'Running' if jq_running else 'Unknown/Idle'}</b>  ┊  🌊 Rate Limiter: <b>{'On' if psutil else 'Unknown'}</b>\n"
-    deep += f"🧵 In-memory Caches → Matches: <b>{len(active_matches)}</b>, Auctions: <b>{len(active_auctions)}</b>, Groups: <b>{len(registered_groups)}</b>, PlayerStats: <b>{len(player_stats)}</b>, UserData: <b>{len(user_data)}</b>\n"
+    if query.data == "bstats_close":
+        await query.answer("Closed ✅")
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        _BOTSTATS_SESSIONS.pop(msg_id, None)
+        return
 
-    try:
-        await context.bot.send_message(update.effective_chat.id, deep, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.error(f"botstats deep-analytics send failed: {e}")
+    if query.data == "bstats_refresh":
+        await query.answer("🔄 Refreshing...")
+        data = await asyncio.to_thread(_fetch_botstats_data)
+        data["ping_ms"] = 0
+        pages = await asyncio.to_thread(_build_botstats_pages, data)
+        idx = session["idx"] if session else 0
+        await _send_botstats_page(context, query.message.chat_id, pages, idx, user.id, edit_message=query.message)
+        _BOTSTATS_SESSIONS[msg_id] = {"pages": pages, "idx": idx, "owner": user.id}
+        return
+
+    if not session:
+        await query.answer("Session expired — run /botstats again.", show_alert=True)
+        return
+
+    await query.answer()
+    new_idx = int(query.data.rsplit("_", 1)[1])
+    new_idx = max(0, min(new_idx, len(session["pages"]) - 1))
+    session["idx"] = new_idx
+    await _send_botstats_page(context, query.message.chat_id, session["pages"], new_idx, user.id, edit_message=query.message)
+
+
 async def dailystats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """📅 Quick daily-only breakdown (matches/new users/runs for last 7 days) — OWNER ONLY.
     Same underlying data as the DEEP ANALYTICS section of /botstats, but as
@@ -27554,10 +27741,10 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         batter_tag = f'<a href=\"tg://user?id={batter.user_id}\">{batter.first_name}</a>'
                         notification_msg = (
                             f"🔴 <b>LIVE</b>\n"
-                            f"┌─❰ 🏏 BATTING TIME ❱\n"
+                            f"<blockquote>┌─❰ 🏏 BATTING TIME ❱\n"
                             f"│ 📊 {batter_tag} ➜ {batter.runs} ({batter.balls_faced}) | ⚡ SR: {sr}\n"
                             f"│ 🏏 {html.escape(batter.first_name)}, play your shot\n"
-                            f"└──────────────"
+                            f"└──────────────</blockquote>"
                         )
                         try:
                             await context.bot.send_animation(gid, "https://t.me/kyanaamrkhe/7", caption=notification_msg, parse_mode=ParseMode.HTML)
@@ -27732,10 +27919,10 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             
                             notification_msg = (
                                 f"🔴 <b>LIVE</b>\n"
-                                f"┌─❰ 🏏 BATTING TIME ❱\n"
+                                f"<blockquote>┌─❰ 🏏 BATTING TIME ❱\n"
                                 f"│ 📊 {striker_tag} ➜ {striker.runs} ({striker.balls_faced}) | ⚡ SR: {sr}\n"
                                 f"│ 🏏 {html.escape(striker.first_name)}, play your shot\n"
-                                f"└──────────────"
+                                f"└──────────────</blockquote>"
                             )
 
                             try:
@@ -33426,6 +33613,7 @@ def main():
     application.add_handler(CommandHandler("broadcastpin", broadcastpin_command))
     application.add_handler(CommandHandler("broadcastdm", broadcastdm_command)) 
     application.add_handler(CommandHandler("botstats", botstats_command))
+    application.add_handler(CallbackQueryHandler(botstats_nav_callback, pattern="^bstats_"))
     application.add_handler(CommandHandler("dailystats", dailystats_command))
     application.add_handler(CommandHandler("backup", backup_command))
     application.add_handler(CommandHandler("restore", restore_command))

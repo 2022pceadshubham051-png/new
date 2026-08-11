@@ -1264,6 +1264,7 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 
 # Global data structures
 active_matches: Dict[int, 'Match'] = {}
+active_challenges: Dict[int, Dict] = {}   # 1v1 /challenge duels, keyed by group_id
 active_solo_matches: Dict[int, 'SoloMatch'] = {}  
 active_auctions: Dict[int, Auction] = {}
 ai_matches: Dict[int, Dict] = {}  # user_id: {match_state}
@@ -2655,6 +2656,9 @@ class Match:
         self.is_paused = False          # ⏸️ Timeout pause flag
         self.pause_until: float = 0.0   # epoch time when pause ends
         self.pause_task: Optional[asyncio.Task] = None
+
+        # 💰 Fantasy-points betting (1st innings only): {user_id: {"team": "X"/"Y", "amount": int, "name": str}}
+        self.bets: Dict[int, Dict] = {}
         
         # Timers and messages
         self.team_join_end_time: Optional[float] = None
@@ -5040,6 +5044,36 @@ async def mode_selection_callback(update: Update, context: ContextTypes.DEFAULT_
                 f"Click here: @{(await context.bot.get_me()).username}"
             )
 
+    elif query.data == "mode_challenge":
+        # Challenge Mode — whoever taps this becomes the host/challenger.
+        # No stats are recorded for challenge matches (kept purely casual).
+        if chat.id in active_challenges:
+            await query.answer("⚠️ A challenge is already active in this group!", show_alert=True)
+            return
+        await query.answer("⚔️ Challenge Mode selected!")
+
+        text = (
+            f"⚔️ <b>CHALLENGE MODE</b>\n"
+            f"<blockquote>┌──────────────\n"
+            f"├ 🎙️ Host: {_chal_player_tag(user.id, user.first_name)}\n"
+            f"├ 📝 Stats are NOT recorded for challenge matches.\n"
+            f"├\n"
+            f"├ 👉 Now tag who you want to challenge:\n"
+            f"├ • Reply to their message with <code>/challenge</code>\n"
+            f"├ • <code>/challenge @username</code>\n"
+            f"├ • <code>/challenge user_id</code>\n"
+            f"├\n"
+            f"├ Or just type <code>/challenge</code> with no target for an <b>open challenge</b>.\n"
+            f"└──────────────</blockquote>"
+        )
+        try:
+            await query.message.edit_caption(caption=text, parse_mode=ParseMode.HTML)
+        except Exception:
+            try:
+                await query.message.reply_text(text, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+
     elif query.data == "mode_magicball":
         # Magic Ball Mode - Solo match with special power-up balls
         match = Match(chat.id, chat.title)
@@ -6873,22 +6907,61 @@ async def update_solo_board(context, chat_id, match, _force=False):
             pass
 
 async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user):
-    """Initialize team mode with Fancy Image"""
-    # Create new match
+    """Initialize team mode — Host Selection happens FIRST (first tap wins), THEN joining opens."""
+    # Create new match (host not decided yet)
     match = Match(chat.id, chat.title)
     active_matches[chat.id] = match
     try:
         await notify_group_game_started(context, chat.id, chat.title)
     except Exception:
         pass
-    
-    # Track lobby creator — only they can force-start the match early
+
+    match.phase = GamePhase.HOST_SELECTION
+    match.host_id = None
+    match.host_name = None
+
+    keyboard = [[styled_button("🙋‍♂️ I Want to be Host", callback_data="team_pick_host")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    host_text = "🎙️ <b>HOST SELECTION</b>\n"
+    host_text += "<blockquote>┌─────────────────\n"
+    host_text += "├ <i>The Host controls match settings, overs, and team edits.</i>\n"
+    host_text += "├ ⚡ First tap becomes the Host!\n"
+    host_text += "└─────────────────</blockquote>\n\n"
+    host_text += "👇 <i>Tap below to claim the Host seat:</i>"
+
+    await refresh_game_message(context, chat.id, match, host_text, reply_markup, media_key="host")
+
+
+async def team_pick_host_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """First tap on 'I Want to be Host' claims the host seat, then opens the joining board."""
+    query = update.callback_query
+    chat = query.message.chat
+    user = query.from_user
+
+    match = active_matches.get(chat.id)
+    if not match or match.phase != GamePhase.HOST_SELECTION:
+        await query.answer("⚠️ Host selection isn't active anymore.", show_alert=True)
+        return
+
+    if match.host_id is not None:
+        await query.answer("Host already claimed!", show_alert=True)
+        return
+
     match.host_id = user.id
     match.host_name = user.first_name
-    
+    _touch_match_activity(match)
+    await query.answer(f"🎙️ You're the Host now!")
+
+    match.phase = GamePhase.TEAM_JOINING
+    await _open_team_join_board(context, chat.id, match)
+
+
+async def _open_team_join_board(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
+    """Open the Join Team X/Y board — called once the host is locked in."""
     # Set time (2 minutes)
     match.team_join_end_time = time.time() + get_gc_setting(match.group_id, "lobby_time", 120)
-    
+
     # Buttons
     keyboard = [
         [styled_button("🧊 Join Team X", callback_data="join_team_x"),
@@ -6897,16 +6970,16 @@ async def start_team_mode(query, context: ContextTypes.DEFAULT_TYPE, chat, user)
         [styled_button("🚀 Start Now (Host)", callback_data="team_start_now")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     # Fancy Text
     text = get_team_join_message(match)
-    
+
     # Send using Master Function (With Image)
-    await refresh_game_message(context, chat.id, match, text, reply_markup, media_key="joining")
-    
+    await refresh_game_message(context, group_id, match, text, reply_markup, media_key="joining")
+
     # Start Timer
     match.join_phase_task = asyncio.create_task(
-        team_join_countdown(context, chat.id, match)
+        team_join_countdown(context, group_id, match)
     )
 
 def get_team_join_message(match: Match) -> str:
@@ -7137,7 +7210,10 @@ async def team_join_countdown(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         logger.error(f"Timer error: {e}")
 
 async def end_team_join_phase(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
-    """End joining phase and start Host Selection"""
+    """End joining phase and move straight to Over Selection.
+    (Host was already locked in at /game → Team Mode / Real Cricket time — the
+    lobby creator is the host from the start, so there's no separate
+    "Become Host" step anymore: host phase -> joining -> over selection.)"""
     total_players = len(match.team_x.players) + len(match.team_y.players)
     
     # Min 4 Players Check
@@ -7151,31 +7227,36 @@ async def end_team_join_phase(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         except: pass
         del active_matches[group_id]
         return
-    
-    match.phase = GamePhase.HOST_SELECTION
 
-    # Reset host_id — the lobby creator's host_id was only used for force-start
-    # permissions during joining. Clear it now so "Become Host" actually works.
-    match.host_id = None
-    match.host_name = None
+    match.phase = GamePhase.OVER_SELECTION
+    _touch_match_activity(match)
+    await _send_over_selection_ui(context, group_id, match)
 
-    keyboard = [[styled_button("🙋‍♂️ I Want to be Host", callback_data="become_host")]]
+
+async def _send_over_selection_ui(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
+    """Shared over-selection UI (1-20 buttons + /over [1-50] hint), shown once the host is locked in."""
+    keyboard = []
+    row = []
+    for i in range(1, 21):
+        row.append(styled_button(f"{i}", callback_data=f"overs_{i}"))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    host_text = f"🚨 <b>REGISTRATION CLOSED</b> 🚨\n"
-    host_text += "<blockquote>┌─────────────────\n"
-    host_text += f"├ 👥 <b>Locked In:</b> <code>{total_players} Players</code>\n"
-    host_text += "└─────────────────</blockquote>\n\n"
-    host_text += "🎙️ <b>Lobby Host Selection:</b>\n"
-    host_text += "<blockquote>┌─────────────────\n"
-    host_text += "├ <i>The Host controls match settings, overs, and team edits.</i>\n"
-    host_text += "├ <i>Step up if you are ready to moderate this match!</i>\n"
-    host_text += "└─────────────────</blockquote>\n\n"
-    host_text += "👇 <i>Tap below to claim the Host seat:</i>"
 
-    
-    # Send with Host Image and Pin
-    await refresh_game_message(context, group_id, match, host_text, reply_markup, media_key="host")
+    host_tag = f'<a href="tg://user?id={match.host_id}">{html.escape(match.host_name or "Host")}</a>'
+    msg = f"🎙 <b>HOST: {host_tag}</b>\n"
+    msg += "<blockquote>┌─────────────────\n"
+    msg += "├ 🎯 Host, please select the number of overs for this match.\n"
+    msg += "├ 📏 Buttons: <b>1 to 20 Overs</b>\n"
+    msg += "├ ✍️ Want more? Type <code>/over [number]</code> (up to 50)\n"
+    msg += "└─────────────────</blockquote>"
+
+    await refresh_game_message(context, group_id, match, msg, reply_markup, media_key="host")
+
+
 
 # Team join/leave callback handlers
 async def team_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7306,11 +7387,679 @@ async def host_selection_callback(update: Update, context: ContextTypes.DEFAULT_
     msg = f"🎙 <b>HOST: {user_tag}</b>\n"
     msg += "<blockquote>┌─────────────────\n"
     msg += "├ 🎯 Host, please select the number of overs for this match.\n"
-    msg += "├ 📏 Range: <b>1 to 20 Overs</b>\n"
+    msg += "├ 📏 Buttons: <b>1 to 20 Overs</b>\n"
+    msg += "├ ✍️ Want more? Type <code>/over [number]</code> (up to 50)\n"
     msg += "└─────────────────</blockquote>"
     
     # Use Safe Refresh Function
     await refresh_game_message(context, chat.id, match, msg, reply_markup, media_key="host")
+
+async def bet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """💰 /bet [points] — bet fantasy points on a team to win. 1st innings only, one bet per player per match."""
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.id not in active_matches:
+        await update.message.reply_text("🚫 No active match found.")
+        return
+
+    match = active_matches[chat.id]
+
+    if match.game_mode not in ("TEAM", "TOURNAMENT"):
+        await update.message.reply_text("⚠️ Betting is only available in Team Mode matches.")
+        return
+
+    if match.phase != GamePhase.MATCH_IN_PROGRESS or match.innings != 1:
+        await update.message.reply_text("⏳ Bets can only be placed during the <b>1st innings</b>.", parse_mode=ParseMode.HTML)
+        return
+
+    if user.id in match.bets:
+        await update.message.reply_text("⚠️ You've already placed a bet on this match.")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("ℹ️ Usage: <code>/bet [points]</code>", parse_mode=ParseMode.HTML)
+        return
+
+    amount = int(context.args[0])
+    if amount <= 0:
+        await update.message.reply_text("⚠️ Bet amount must be positive.")
+        return
+
+    init_fantasy_data(user.id, user.first_name, user.username or "")
+    balance = fantasy_data[user.id]["points"]
+    if amount > balance:
+        await update.message.reply_text(
+            f"⚠️ Insufficient fantasy points! Your balance: <b>{balance}</b>", parse_mode=ParseMode.HTML
+        )
+        return
+
+    text = (
+        f"💰 <b>PLACE YOUR BET</b>\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ 🎯 Amount: <b>{amount}</b> points\n"
+        f"├ ⚖️ Choose the team you're backing to win\n"
+        f"└──────────────</blockquote>"
+    )
+    keyboard = [
+        [styled_button(f"🧊 {match.team_x.name}", callback_data=f"bet_X_{amount}"),
+         styled_button(f"🔥 {match.team_y.name}", callback_data=f"bet_Y_{amount}")]
+    ]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
+
+async def bet_team_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle team selection for /bet [points]."""
+    query = update.callback_query
+    user = query.from_user
+    chat = query.message.chat
+
+    if chat.id not in active_matches:
+        await query.answer("No active match found.", show_alert=True)
+        return
+    match = active_matches[chat.id]
+
+    try:
+        _, team_letter, amount_str = query.data.split("_")
+        amount = int(amount_str)
+    except Exception:
+        await query.answer("Invalid bet data.", show_alert=True)
+        return
+
+    if match.phase != GamePhase.MATCH_IN_PROGRESS or match.innings != 1:
+        await query.answer("Betting window has closed (1st innings only).", show_alert=True)
+        return
+
+    if user.id in match.bets:
+        await query.answer("You've already placed a bet on this match.", show_alert=True)
+        return
+
+    init_fantasy_data(user.id, user.first_name, user.username or "")
+    balance = fantasy_data[user.id]["points"]
+    if amount > balance:
+        await query.answer("Insufficient fantasy points anymore!", show_alert=True)
+        return
+
+    team = match.team_x if team_letter == "X" else match.team_y
+    fantasy_data[user.id]["points"] -= amount
+    match.bets[user.id] = {"team": team_letter, "amount": amount, "name": user.first_name}
+
+    await query.answer(f"✅ Bet placed: {amount} pts on {team.name}!", show_alert=True)
+    try:
+        await query.edit_message_text(
+            f"💰 <b>BET PLACED!</b>\n"
+            f"<blockquote>┌──────────────\n"
+            f"├ 👤 {html.escape(user.first_name)}\n"
+            f"├ 🎯 {amount} points on <b>{team.name}</b>\n"
+            f"└──────────────</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
+
+
+async def resolve_match_bets(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, winner: 'Team'):
+    """Pay out fantasy-point bets once the match winner is known. Winners get 2x their bet back (net profit = bet)."""
+    if not match.bets:
+        return
+    winner_letter = "X" if winner is match.team_x else "Y"
+    lines = []
+    for uid, bet in match.bets.items():
+        init_fantasy_data(uid, bet.get("name", "Player"))
+        if bet["team"] == winner_letter:
+            payout = bet["amount"] * 2
+            fantasy_data[uid]["points"] += payout
+            lines.append(f"✅ {html.escape(bet.get('name','Player'))}: +{payout} pts (won)")
+        else:
+            lines.append(f"❌ {html.escape(bet.get('name','Player'))}: -{bet['amount']} pts (lost)")
+    if lines:
+        try:
+            await context.bot.send_message(
+                group_id,
+                "💰 <b>BET RESULTS</b>\n<blockquote>┌──────────────\n├ " + "\n├ ".join(lines) + "\n└──────────────</blockquote>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+
+# ============================================================
+# ⚔️ /CHALLENGE — 1v1 DUEL MODE
+# Lightweight, self-contained (does not touch the Match/Team classes).
+# State lives in active_challenges[group_id] as a plain dict:
+# {
+#   "challenger_id","challenger_name","opponent_id","opponent_name",
+#   "phase": "pending" | "overs" | "toss" | "choice" | "innings1" | "innings2" | "done",
+#   "message_id", "overs": int,
+#   "toss_winner_id", "bat_id", "bowl_id",
+#   "innings": 1|2,
+#   "score": {1: int, 2: int}, "balls": {1: int, 2: int},
+#   "target": int|None,
+#   "pending_bowl_num": int|None,
+# }
+# ============================================================
+
+def _chal_player_tag(user_id: int, name: str) -> str:
+    return f'<a href="tg://user?id={user_id}">{html.escape(name)}</a>'
+
+
+async def challenge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """⚔️ /challenge — start a 1v1 duel. Reply/@username/user_id to target someone, or no args for an open challenge."""
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.id in active_challenges:
+        await update.message.reply_text("⚠️ A challenge is already active in this group.")
+        return
+
+    target_id = None
+    target_name = None
+
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        ru = update.message.reply_to_message.from_user
+        if not ru.is_bot and ru.id != user.id:
+            target_id, target_name = ru.id, ru.first_name
+    elif context.args:
+        arg = context.args[0]
+        if arg.startswith("@"):
+            uname = arg[1:].lower()
+            for uid, data in user_data.items():
+                if data.get("username", "").lower() == uname:
+                    target_id, target_name = uid, data.get("first_name", uname)
+                    break
+        elif arg.isdigit():
+            uid_int = int(arg)
+            if uid_int != user.id:
+                target_id = uid_int
+                target_name = user_data.get(uid_int, {}).get("first_name", str(uid_int))
+
+    active_challenges[chat.id] = {
+        "challenger_id": user.id, "challenger_name": user.first_name,
+        "opponent_id": target_id, "opponent_name": target_name,
+        "phase": "pending", "message_id": None,
+        "overs": 0, "toss_winner_id": None, "bat_id": None, "bowl_id": None,
+        "innings": 1, "score": {1: 0, 2: 0}, "balls": {1: 0, 2: 0},
+        "target": None, "pending_bowl_num": None,
+    }
+
+    challenger_tag = _chal_player_tag(user.id, user.first_name)
+
+    if target_id:
+        text = (
+            f"⚔️ <b>CHALLENGE!</b>\n"
+            f"<blockquote>┌──────────────\n"
+            f"├ {challenger_tag} is challenging {_chal_player_tag(target_id, target_name)}!\n"
+            f"└──────────────</blockquote>"
+        )
+        keyboard = [[
+            styled_button("✅ Accept", callback_data=f"chal_accept_{chat.id}"),
+            styled_button("❌ Reject", callback_data=f"chal_reject_{chat.id}")
+        ]]
+    else:
+        text = (
+            f"⚔️ <b>OPEN CHALLENGE!</b>\n"
+            f"<blockquote>┌──────────────\n"
+            f"├ {challenger_tag} is challenging anyone!\n"
+            f"├ Tap below to accept.\n"
+            f"└──────────────</blockquote>"
+        )
+        keyboard = [[styled_button("🙋 Join Challenge", callback_data=f"chal_join_{chat.id}")]]
+
+    sent = await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    active_challenges[chat.id]["message_id"] = sent.message_id
+
+
+async def challenge_response_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Accept/Reject/Join taps on a /challenge."""
+    query = update.callback_query
+    user = query.from_user
+    chat = query.message.chat
+
+    data = query.data  # chal_accept_<gid> | chal_reject_<gid> | chal_join_<gid>
+    parts = data.split("_")
+    action = parts[1]
+    gid = int(parts[2])
+
+    if gid not in active_challenges or active_challenges[gid]["phase"] != "pending":
+        await query.answer("This challenge is no longer active.", show_alert=True)
+        return
+    ch = active_challenges[gid]
+
+    if action == "reject":
+        if user.id != ch["opponent_id"]:
+            await query.answer("Only the challenged player can reject.", show_alert=True)
+            return
+        await query.answer("Challenge rejected.")
+        del active_challenges[gid]
+        await query.edit_message_text(
+            f"❌ <b>Challenge rejected</b> by {_chal_player_tag(user.id, user.first_name)}.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if action == "accept":
+        if user.id != ch["opponent_id"]:
+            await query.answer("Only the challenged player can accept.", show_alert=True)
+            return
+        await query.answer("Challenge accepted!")
+
+    elif action == "join":
+        if ch["opponent_id"] is not None:
+            await query.answer("Someone already joined!", show_alert=True)
+            return
+        if user.id == ch["challenger_id"]:
+            await query.answer("You can't join your own challenge!", show_alert=True)
+            return
+        ch["opponent_id"] = user.id
+        ch["opponent_name"] = user.first_name
+        await query.answer("Joined!")
+
+    # Move to overs-selection phase — the CHALLENGER picks overs (1-4)
+    ch["phase"] = "overs"
+    text = (
+        f"🎙️ <b>{_chal_player_tag(ch['challenger_id'], ch['challenger_name'])}</b> vs "
+        f"<b>{_chal_player_tag(ch['opponent_id'], ch['opponent_name'])}</b>\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ 🔢 {html.escape(ch['challenger_name'])}, select number of overs:\n"
+        f"└──────────────</blockquote>"
+    )
+    keyboard = [[styled_button(f"{n}", callback_data=f"chalovers_{gid}_{n}") for n in range(1, 5)]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
+
+async def challenge_overs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
+    parts = query.data.split("_")
+    gid = int(parts[1])
+    overs = int(parts[2])
+
+    if gid not in active_challenges or active_challenges[gid]["phase"] != "overs":
+        await query.answer("Session expired.", show_alert=True)
+        return
+    ch = active_challenges[gid]
+
+    if user.id != ch["challenger_id"]:
+        await query.answer("Only the challenger selects the overs.", show_alert=True)
+        return
+
+    ch["overs"] = overs
+    ch["phase"] = "toss"
+    await query.answer(f"{overs} overs set!")
+
+    # Toss: the CHALLENGED player calls heads/tails
+    text = (
+        f"🪙 <b>TOSS TIME</b>\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ 🏏 Format: {overs} over{'s' if overs != 1 else ''}\n"
+        f"├ 👑 {_chal_player_tag(ch['opponent_id'], ch['opponent_name'])} — call it!\n"
+        f"└──────────────</blockquote>"
+    )
+    keyboard = [[
+        styled_button("🪙 Heads", callback_data=f"chaltoss_{gid}_heads"),
+        styled_button("🪙 Tails", callback_data=f"chaltoss_{gid}_tails")
+    ]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
+
+async def challenge_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
+    parts = query.data.split("_")
+    gid = int(parts[1])
+    call = parts[2]
+
+    if gid not in active_challenges or active_challenges[gid]["phase"] != "toss":
+        await query.answer("Session expired.", show_alert=True)
+        return
+    ch = active_challenges[gid]
+
+    if user.id != ch["opponent_id"]:
+        await query.answer("Only the challenged player calls the toss.", show_alert=True)
+        return
+
+    result = random.choice(["heads", "tails"])
+    winner_id = ch["opponent_id"] if call == result else ch["challenger_id"]
+    winner_name = ch["opponent_name"] if call == result else ch["challenger_name"]
+    ch["toss_winner_id"] = winner_id
+    ch["phase"] = "choice"
+    await query.answer(f"It's {result}!")
+
+    text = (
+        f"🪙 <b>Toss: {result.upper()}!</b>\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ 🏆 {_chal_player_tag(winner_id, winner_name)} won the toss!\n"
+        f"├ 🎯 Choose to Bat or Bowl:\n"
+        f"└──────────────</blockquote>"
+    )
+    keyboard = [[
+        styled_button("🏏 Bat", callback_data=f"chalchoice_{gid}_bat"),
+        styled_button("🎯 Bowl", callback_data=f"chalchoice_{gid}_bowl")
+    ]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
+
+async def challenge_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
+    parts = query.data.split("_")
+    gid = int(parts[1])
+    choice = parts[2]
+
+    if gid not in active_challenges or active_challenges[gid]["phase"] != "choice":
+        await query.answer("Session expired.", show_alert=True)
+        return
+    ch = active_challenges[gid]
+
+    if user.id != ch["toss_winner_id"]:
+        await query.answer("Only the toss winner chooses.", show_alert=True)
+        return
+
+    other_id = ch["opponent_id"] if user.id == ch["challenger_id"] else ch["challenger_id"]
+    other_name = ch["opponent_name"] if user.id == ch["challenger_id"] else ch["challenger_name"]
+
+    if choice == "bat":
+        ch["bat_id"], ch["bowl_id"] = user.id, other_id
+    else:
+        ch["bowl_id"], ch["bat_id"] = user.id, other_id
+
+    await query.answer(f"Chose to {choice}!")
+    ch["phase"] = "innings1"
+    ch["innings"] = 1
+    ch["pending_bowl_num"] = None
+    await _ask_challenge_bowler(query, context, gid)
+
+
+async def _bat_bowl_names(gid: int):
+    ch = active_challenges[gid]
+    bat_name = ch["challenger_name"] if ch["bat_id"] == ch["challenger_id"] else ch["opponent_name"]
+    bowl_name = ch["challenger_name"] if ch["bowl_id"] == ch["challenger_id"] else ch["opponent_name"]
+    return bat_name, bowl_name
+
+
+def _challenge_score_line(gid: int) -> str:
+    ch = active_challenges[gid]
+    inn = ch["innings"]
+    score = ch["score"][inn]
+    balls = ch["balls"][inn]
+    overs_str = f"{balls // 6}.{balls % 6}"
+    line = f"📊 Score: <b>{score}</b> ({overs_str}/{ch['overs']} ov)"
+    if inn == 2 and ch["target"] is not None:
+        line += f" | 🎯 Target: {ch['target']}"
+    return line
+
+
+async def _ask_challenge_bowler(query_or_msg, context: ContextTypes.DEFAULT_TYPE, gid: int):
+    ch = active_challenges[gid]
+    bat_name, bowl_name = await _bat_bowl_names(gid)
+    text = (
+        f"🎯 <b>{html.escape(bowl_name)}'s turn to bowl!</b>\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ Innings {ch['innings']} — {_challenge_score_line(gid)}\n"
+        f"├ Select a number (1-6):\n"
+        f"└──────────────</blockquote>"
+    )
+    keyboard = [[styled_button(f"{n}", callback_data=f"chalbowl_{gid}_{n}") for n in range(1, 4)],
+                [styled_button(f"{n}", callback_data=f"chalbowl_{gid}_{n}") for n in range(4, 7)]]
+    markup = InlineKeyboardMarkup(keyboard)
+    if hasattr(query_or_msg, "edit_message_text"):
+        await query_or_msg.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    else:
+        sent = await context.bot.edit_message_text(
+            chat_id=gid, message_id=ch["message_id"], text=text, reply_markup=markup, parse_mode=ParseMode.HTML
+        )
+
+
+async def challenge_bowl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
+    parts = query.data.split("_")
+    gid = int(parts[1])
+    num = int(parts[2])
+
+    if gid not in active_challenges or active_challenges[gid]["phase"] not in ("innings1", "innings2"):
+        await query.answer("Session expired.", show_alert=True)
+        return
+    ch = active_challenges[gid]
+
+    if user.id != ch["bowl_id"]:
+        await query.answer("Only the bowler picks this number.", show_alert=True)
+        return
+
+    ch["pending_bowl_num"] = num
+    await query.answer(f"Bowled: {num}")
+
+    bat_name, bowl_name = await _bat_bowl_names(gid)
+    text = (
+        f"🏏 <b>{html.escape(bat_name)}'s turn to bat!</b>\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ Innings {ch['innings']} — {_challenge_score_line(gid)}\n"
+        f"├ Select a number (1-6):\n"
+        f"└──────────────</blockquote>"
+    )
+    keyboard = [[styled_button(f"{n}", callback_data=f"chalbat_{gid}_{n}") for n in range(1, 4)],
+                [styled_button(f"{n}", callback_data=f"chalbat_{gid}_{n}") for n in range(4, 7)]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
+
+async def challenge_bat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
+    parts = query.data.split("_")
+    gid = int(parts[1])
+    bat_num = int(parts[2])
+
+    if gid not in active_challenges or active_challenges[gid]["phase"] not in ("innings1", "innings2"):
+        await query.answer("Session expired.", show_alert=True)
+        return
+    ch = active_challenges[gid]
+
+    if user.id != ch["bat_id"]:
+        await query.answer("Only the batter picks this number.", show_alert=True)
+        return
+    if ch["pending_bowl_num"] is None:
+        await query.answer("Wait for the bowler!", show_alert=True)
+        return
+
+    bowl_num = ch["pending_bowl_num"]
+    ch["pending_bowl_num"] = None
+    inn = ch["innings"]
+    ch["balls"][inn] += 1
+    is_out = (bat_num == bowl_num)
+
+    if not is_out:
+        ch["score"][inn] += bat_num
+        await query.answer(f"{bat_num} run{'s' if bat_num != 1 else ''}!")
+    else:
+        await query.answer("OUT! 🎯")
+
+    bat_name, bowl_name = await _bat_bowl_names(gid)
+    ball_result_text = (
+        f"{'🎯 <b>OUT!</b>' if is_out else f'🏏 <b>{bat_num} run' + ('s' if bat_num != 1 else '') + '!</b>'}\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ 🎯 Bowled: {bowl_num}  |  🏏 Batted: {bat_num}\n"
+        f"├ Innings {ch['innings']} — {_challenge_score_line(gid)}\n"
+        f"└──────────────</blockquote>"
+    )
+    await query.edit_message_text(ball_result_text, parse_mode=ParseMode.HTML)
+
+    balls_done = ch["balls"][inn]
+    overs_done = balls_done >= ch["overs"] * 6
+    target_chased = inn == 2 and ch["target"] is not None and ch["score"][inn] >= ch["target"]
+
+    if is_out or overs_done or target_chased:
+        await asyncio.sleep(2)
+        await _end_challenge_innings(context, gid)
+    else:
+        await asyncio.sleep(1.5)
+        await _ask_challenge_bowler(query, context, gid)
+
+
+async def _end_challenge_innings(context: ContextTypes.DEFAULT_TYPE, gid: int):
+    ch = active_challenges[gid]
+    inn = ch["innings"]
+
+    if inn == 1:
+        ch["target"] = ch["score"][1] + 1
+        ch["innings"] = 2
+        ch["bat_id"], ch["bowl_id"] = ch["bowl_id"], ch["bat_id"]
+        ch["phase"] = "innings2"
+        ch["pending_bowl_num"] = None
+        bat_name, bowl_name = await _bat_bowl_names(gid)
+        text = (
+            f"🔄 <b>INNINGS BREAK</b>\n"
+            f"<blockquote>┌──────────────\n"
+            f"├ 🏏 Innings 1: {ch['score'][1]} runs\n"
+            f"├ 🎯 Target for {html.escape(bat_name)}: <b>{ch['target']}</b>\n"
+            f"└──────────────</blockquote>"
+        )
+        try:
+            await context.bot.edit_message_text(chat_id=gid, message_id=ch["message_id"], text=text, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+        class _FakeQuery:
+            def __init__(self, bot, chat_id, message_id):
+                self._bot, self._chat_id, self._message_id = bot, chat_id, message_id
+            async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
+                await self._bot.edit_message_text(
+                    chat_id=self._chat_id, message_id=self._message_id, text=text,
+                    reply_markup=reply_markup, parse_mode=parse_mode
+                )
+        fq = _FakeQuery(context.bot, gid, ch["message_id"])
+        await _ask_challenge_bowler(fq, context, gid)
+        return
+
+    # Innings 2 finished → determine winner
+    score1, score2 = ch["score"][1], ch["score"][2]
+
+    # Whoever batted in innings 1 is now bowling in innings 2; recover names directly:
+    # ch["bowl_id"] currently is the innings-1 batter (roles were swapped at innings break)
+    inn1_batter_id = ch["bowl_id"]
+    inn1_batter_name = ch["challenger_name"] if inn1_batter_id == ch["challenger_id"] else ch["opponent_name"]
+    inn2_batter_id = ch["bat_id"]
+    inn2_batter_name = ch["challenger_name"] if inn2_batter_id == ch["challenger_id"] else ch["opponent_name"]
+
+    if score2 >= ch["target"]:
+        winner_id, winner_name = inn2_batter_id, inn2_batter_name
+        margin = f"won by {ch['overs']*6 - ch['balls'][2]} ball(s) remaining"
+    elif score2 < score1:
+        winner_id, winner_name = inn1_batter_id, inn1_batter_name
+        margin = f"won by {score1 - score2} run(s)"
+    else:
+        winner_id, winner_name = None, None
+        margin = "Match tied!"
+
+    result_text = (
+        f"🏆 <b>MATCH OVER!</b>\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ 🏏 {html.escape(inn1_batter_name)}: {score1}\n"
+        f"├ 🏏 {html.escape(inn2_batter_name)}: {score2}\n"
+        f"├ {'🤝 ' + margin if not winner_id else '🏆 ' + html.escape(winner_name) + ' ' + margin}\n"
+        f"└──────────────</blockquote>"
+    )
+    try:
+        await context.bot.edit_message_text(chat_id=gid, message_id=ch["message_id"], text=result_text, parse_mode=ParseMode.HTML)
+    except Exception:
+        try:
+            await context.bot.send_message(gid, result_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+    del active_challenges[gid]
+
+
+async def over_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✍️ /over [number] — manually pick overs (1-50) during the over-selection phase.
+    Same effect as tapping an overs_N button, but lets the host go beyond the 20 shown on buttons."""
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.id not in active_matches:
+        await update.message.reply_text("🚫 No active match found.")
+        return
+
+    match = active_matches[chat.id]
+
+    if match.phase != GamePhase.OVER_SELECTION:
+        await update.message.reply_text("⚠️ Overs can only be set during the over-selection phase.")
+        return
+
+    if user.id != match.host_id:
+        await update.message.reply_text("🚧 <b>HOST ONLY!</b> Only the host can select overs.", parse_mode=ParseMode.HTML)
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("ℹ️ Usage: <code>/over [number]</code> — between 1 and 50.", parse_mode=ParseMode.HTML)
+        return
+
+    overs = int(context.args[0])
+    if not (1 <= overs <= 50):
+        await update.message.reply_text("⚠️ Overs must be between 1 and 50.")
+        return
+
+    match.total_overs = overs
+    match.phase = GamePhase.TEAM_EDIT
+    await start_team_edit_phase(update, context, match)
+
+async def changeover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✍️ /changeover [number] — host can extend/reduce the match's total overs mid-game.
+    Overs already bowled stay bowled; only the remaining-overs count is recalculated,
+    since balls_remaining = (total_overs*6) - balls_bowled_so_far is derived live."""
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.id not in active_matches:
+        await update.message.reply_text("🚫 No active match found.")
+        return
+
+    match = active_matches[chat.id]
+
+    if user.id != match.host_id:
+        await update.message.reply_text("🚧 <b>HOST ONLY!</b> Only the host can change overs.", parse_mode=ParseMode.HTML)
+        return
+
+    if match.phase != GamePhase.MATCH_IN_PROGRESS:
+        await update.message.reply_text("⏳ <b>MATCH NOT IN PROGRESS!</b> Can only change overs during an active match.", parse_mode=ParseMode.HTML)
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("ℹ️ Usage: <code>/changeover [number]</code> — between 1 and 50.", parse_mode=ParseMode.HTML)
+        return
+
+    new_overs = int(context.args[0])
+    if not (1 <= new_overs <= 50):
+        await update.message.reply_text("⚠️ Overs must be between 1 and 50.")
+        return
+
+    balls_bowled_now = match.current_batting_team.balls if match.current_batting_team else 0
+    overs_already_bowled = balls_bowled_now // 6
+    balls_into_current_over = balls_bowled_now % 6
+
+    if new_overs * 6 < balls_bowled_now:
+        await update.message.reply_text(
+            f"⚠️ Can't set overs below what's already been bowled "
+            f"({overs_already_bowled}.{balls_into_current_over} overs done).",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    old_overs = match.total_overs
+    match.total_overs = new_overs
+    balls_left = (new_overs * 6) - balls_bowled_now
+    overs_left = balls_left // 6
+    balls_left_rem = balls_left % 6
+
+    await update.message.reply_text(
+        f"🔄 <b>OVERS CHANGED!</b>\n"
+        f"<blockquote>┌──────────────\n"
+        f"├ 📏 {old_overs} → <b>{new_overs}</b> overs\n"
+        f"├ ✅ Already bowled: {overs_already_bowled}.{balls_into_current_over} overs (unaffected)\n"
+        f"├ ⏳ Remaining now: {overs_left}.{balls_left_rem} overs\n"
+        f"└──────────────</blockquote>",
+        parse_mode=ParseMode.HTML
+    )
 
 # Captain selection callback
 async def open_fantasy_squad_window(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
@@ -7375,8 +8124,33 @@ async def open_fantasy_squad_window(context: ContextTypes.DEFAULT_TYPE, group_id
     asyncio.create_task(fantasy_window_timeout(context, group_id, match))
 
 
+async def _start_captain_selection(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
+    """Show the Captain Selection board. Runs AFTER the Dream III fantasy window closes."""
+    match.phase = GamePhase.CAPTAIN_SELECTION
+
+    captain_x = match.team_x.get_player(match.team_x.captain_id)
+    captain_y = match.team_y.get_player(match.team_y.captain_id)
+
+    cap_x_name = captain_x.first_name if captain_x else "Not Selected"
+    cap_y_name = captain_y.first_name if captain_y else "Not Selected"
+
+    keyboard = [
+        [styled_button("Become Captain - Team X", callback_data="captain_team_x")],
+        [styled_button("Become Captain - Team Y", callback_data="captain_team_y")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    msg = "🧢 <b>CAPTAIN SELECTION</b>\n"
+    msg += "─────────────────\n"
+    msg += f"🧊 <b>Team X:</b> {cap_x_name}\n"
+    msg += f"🔥 <b>Team Y:</b> {cap_y_name}\n\n"
+    msg += "<i>Click below to lead your team!</i>"
+
+    await refresh_game_message(context, group_id, match, msg, reply_markup, media_key="squads")
+
+
 async def fantasy_window_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
-    """After the Dream III pick window expires, lock picks and start the toss."""
+    """After the Dream III pick window expires, lock picks and move to Captain Selection."""
     await asyncio.sleep(FANTASY_PICK_WINDOW_SECONDS)
 
     if match.phase != GamePhase.FANTASY_PICK:
@@ -7388,14 +8162,13 @@ async def fantasy_window_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: i
         squad_count = len([s for s in match.fantasy_squads.values() if s.get("players")])
         await context.bot.send_message(
             group_id,
-            f"🔒 <b>Dream III squads locked!</b> {squad_count} squad(s) submitted.\n🪙 Toss time now...",
+            f"🔒 <b>Dream III squads locked!</b> {squad_count} squad(s) submitted.\n🧢 Captain selection now...",
             parse_mode=ParseMode.HTML,
         )
     except Exception as e:
         logger.error(f"Error sending fantasy lock message: {e}")
 
-    match.phase = GamePhase.TOSS
-    await start_toss(None, context, match)
+    await _start_captain_selection(context, group_id, match)
 
 
 async def captain_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7440,16 +8213,9 @@ async def captain_selection_callback(update: Update, context: ContextTypes.DEFAU
     
     # Check if BOTH are selected
     if match.team_x.captain_id and match.team_y.captain_id:
-        # ✅ FLOW FIX: Captains ke baad Fantasy Dream III (30s) → phir Toss
-        try:
-            await open_fantasy_squad_window(context, chat.id, match)
-        except Exception as e:
-            logger.error(f"Error opening fantasy squad window: {e}")
-
-        if match.phase != GamePhase.FANTASY_PICK:
-            # Not enough players for fantasy (e.g. <4) — go straight to toss
-            match.phase = GamePhase.TOSS
-            await start_toss(query, context, match)
+        # ✅ FLOW: Dream III already happened before Captain Selection — go straight to Toss
+        match.phase = GamePhase.TOSS
+        await start_toss(query, context, match)
 
     else:
         # Update Message (Show who is selected)
@@ -8015,30 +8781,16 @@ async def team_edit_done_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("Both teams need at least one player.", show_alert=True)
         return
     
-    # ✅ FLOW FIX: Team Edit ke baad ab Captain Selection aayega
-    match.phase = GamePhase.CAPTAIN_SELECTION
-    
-    # Prepare Captain Selection Message
-    captain_x = match.team_x.get_player(match.team_x.captain_id)
-    captain_y = match.team_y.get_player(match.team_y.captain_id)
-    
-    cap_x_name = captain_x.first_name if captain_x else "Not Selected"
-    cap_y_name = captain_y.first_name if captain_y else "Not Selected"
-    
-    keyboard = [
-        [styled_button("Become Captain - Team X", callback_data="captain_team_x")],
-        [styled_button("Become Captain - Team Y", callback_data="captain_team_y")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    msg = "🧢 <b>CAPTAIN SELECTION</b>\n"
-    msg += "─────────────────\n"
-    msg += f"🧊 <b>Team X:</b> {cap_x_name}\n"
-    msg += f"🔥 <b>Team Y:</b> {cap_y_name}\n\n"
-    msg += "<i>Click below to lead your team!</i>"
-    
-    # Update Board (Using Refresh function to be safe)
-    await refresh_game_message(context, chat.id, match, msg, reply_markup, media_key="squads")
+    # ✅ FLOW: Team Edit ke baad ab Dream III (Fantasy) window aayega, uske baad Captain Selection
+    try:
+        await open_fantasy_squad_window(context, chat.id, match)
+    except Exception as e:
+        logger.error(f"Error opening fantasy squad window: {e}")
+
+    if match.phase != GamePhase.FANTASY_PICK:
+        # Not enough players for fantasy (e.g. <4) — go straight to captain selection
+        await _start_captain_selection(context, chat.id, match)
+    return
 
 # Over selection callback
 async def over_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -15285,6 +16037,12 @@ async def determine_match_winner(context: ContextTypes.DEFAULT_TYPE, group_id: i
     
     logger.info(f"🏆 FINAL: Winner={winner.name}, Loser={loser.name}, Margin={margin}")
     
+    # 💰 Resolve fantasy-point bets (placed during 1st innings)
+    try:
+        await resolve_match_bets(context, group_id, match, winner)
+    except Exception as e:
+        logger.error(f"❌ Bet resolution error: {e}")
+    
     # ==========================================
     # 💾 UPDATE STATS & HISTORY (Non-blocking)
     # ==========================================
@@ -15569,6 +16327,12 @@ async def _dead_code_removed_duplicate_winner_logic(group_id, match, context):
         return
     
     logger.info(f"🏆 FINAL: Winner={winner.name}, Loser={loser.name}, Margin={margin}")
+    
+    # 💰 Resolve fantasy-point bets (placed during 1st innings)
+    try:
+        await resolve_match_bets(context, group_id, match, winner)
+    except Exception as e:
+        logger.error(f"❌ Bet resolution error: {e}")
     
     # ==========================================
     # 📊 UPDATE STATS & HISTORY
@@ -22012,7 +22776,7 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bulk_targets = [t for t in bulk_targets if not (t[0] in seen or seen.add(t[0]))]
 
     if bulk_targets:
-        removed, not_found = [], []
+        removed, not_found, blocked_host = [], [], []
         for (uid, uname, fname) in bulk_targets:
             team_letter = None
             if match.team_x.get_player(uid):
@@ -22022,6 +22786,9 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if team_letter is None:
                 not_found.append(fname)
                 continue
+            if uid == match.host_id:
+                blocked_host.append(fname)
+                continue
             team = match.team_x if team_letter == "X" else match.team_y
             team.remove_player(uid)
             removed.append(f"{fname} (Team {team_letter})")
@@ -22029,6 +22796,8 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = []
         if removed:
             lines.append(f"🎯 Removed: {', '.join(removed)}")
+        if blocked_host:
+            lines.append(f"🚧 Host can't remove themselves mid-match: {', '.join(blocked_host)}")
         if not_found:
             lines.append(f"⚠️ Not found in any team: {', '.join(not_found)}")
         await update.message.reply_text(
@@ -22132,6 +22901,10 @@ async def shift_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             not_found.append(fname)
             continue
 
+        if uid == match.host_id:
+            blocked.append(f"{fname} (host can't be shifted)")
+            continue
+
         # Don't shift a player mid-over — they're actively involved right now
         idx = next((i for i, p in enumerate(from_team.players) if p.user_id == uid), None)
         if idx is not None and idx in (
@@ -22202,6 +22975,14 @@ async def remove_player_team_callback(update: Update, context: ContextTypes.DEFA
         return
 
     player = team.players[serial - 1]
+
+    # Host can never remove themselves mid-game
+    if player.user_id == match.host_id:
+        await query.edit_message_text(
+            themed("🚧 BLOCKED", ["The host cannot remove themselves mid-match."], "🚧"),
+            parse_mode=ParseMode.HTML,
+        )
+        return
 
     # Prevent removing active players
     if team == match.current_batting_team:
@@ -22407,6 +23188,13 @@ async def mid_game_remove_logic(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(
             f"⚠️ <b>PLAYER NOT FOUND!</b>\n\n"
             f"Player is not in Team {team_name}!",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    if target_user_id == match.host_id:
+        await update.message.reply_text(
+            "🚧 <b>HOST CAN'T REMOVE THEMSELVES!</b>\n\n"
+            "The host cannot remove themselves mid-match.",
             parse_mode=ParseMode.HTML
         )
         return
@@ -33281,9 +34069,10 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [
             [styled_button("⚔️ Solo Mode", callback_data="mode_solo"),
-             styled_button("🤖 AI Mode (DM)", callback_data="mode_ai")],
-            [styled_button("👥 Team Mode", callback_data="mode_team"),
-             styled_button("🏏 Real Cricket", callback_data="mode_real_cricket")],
+             styled_button("👥 Team Mode", callback_data="mode_team")],
+            [styled_button("🏏 Real Cricket", callback_data="mode_real_cricket")],
+            [styled_button("🤖 AI Mode (DM)", callback_data="mode_ai"),
+             styled_button("⚔️ Challenge Mode", callback_data="mode_challenge")],
             [styled_button("🏆 Tournament Mode", callback_data="mode_tournament")]
         ]
 
@@ -33632,6 +34421,17 @@ def main():
     application.add_handler(CommandHandler("join", join_command))
     application.add_handler(CallbackQueryHandler(mid_game_join_callback, pattern="^midjoin_"))
     application.add_handler(CommandHandler("remove", remove_command))
+    application.add_handler(CommandHandler("over", over_command))
+    application.add_handler(CommandHandler("changeover", changeover_command))
+    application.add_handler(CommandHandler("bet", bet_command))
+    application.add_handler(CallbackQueryHandler(bet_team_callback, pattern="^bet_"))
+    application.add_handler(CommandHandler("challenge", challenge_command))
+    application.add_handler(CallbackQueryHandler(challenge_response_callback, pattern="^chal_(accept|reject|join)_"))
+    application.add_handler(CallbackQueryHandler(challenge_overs_callback, pattern="^chalovers_"))
+    application.add_handler(CallbackQueryHandler(challenge_toss_callback, pattern="^chaltoss_"))
+    application.add_handler(CallbackQueryHandler(challenge_choice_callback, pattern="^chalchoice_"))
+    application.add_handler(CallbackQueryHandler(challenge_bowl_callback, pattern="^chalbowl_"))
+    application.add_handler(CallbackQueryHandler(challenge_bat_callback, pattern="^chalbat_"))
     application.add_handler(CommandHandler("shift", shift_command))
 
     application.add_handler(CommandHandler("batting", batting_command))
@@ -33833,7 +34633,7 @@ def main():
     )
     application.add_handler(CallbackQueryHandler(commentary_callback, pattern="^gcommentary_"))
     application.add_handler(
-        CallbackQueryHandler(host_selection_callback, pattern="^become_host$")
+        CallbackQueryHandler(team_pick_host_callback, pattern="^team_pick_host$")
     )
     application.add_handler(
         CallbackQueryHandler(captain_selection_callback, pattern="^captain_team_")

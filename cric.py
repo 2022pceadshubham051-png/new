@@ -17,6 +17,7 @@ import json
 import sqlite3
 import shutil
 import os
+from pathlib import Path
 import sys
 import platform
 import pickle
@@ -915,30 +916,63 @@ def get_user_tag(user):
         return "Unknown"
 
 # 🎨 GLOBAL MEDIA ASSETS (Safe Placeholders)
+# ─────────────────────────────────────────────────────────────────────────
+# 🖼️ LOCAL IMAGE LOADER
+# All bot images now live as plain files in a folder next to this script,
+# instead of Telegram file_ids. This avoids re-uploading images and keeps
+# everything fast (no file_id lookups on Telegram's servers).
+#
+# HOW TO ADD/REPLACE AN IMAGE:
+#   1. Put the .jpg/.png file inside the "cricoverse_images" folder that
+#      sits right next to cric.py (create the folder if it's missing).
+#   2. Name it exactly like the filename below (or edit the filename here).
+#   3. That's it — no restart-time file_id hunting needed.
+#
+# If a file is missing, MediaAsset falls back to a text-only message so the
+# bot never crashes because an image wasn't dropped in yet.
+# ─────────────────────────────────────────────────────────────────────────
+MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cricoverse_images")
+
+
+def media_path(filename: str):
+    """Returns a Path object for a local image. python-telegram-bot (v20+)
+    accepts pathlib.Path directly in `photo=` and loads it from disk."""
+    return Path(MEDIA_DIR) / filename
+
+
 MEDIA_ASSETS = {
-    "welcome": "AgACAgEAAxkBAAEBc99p_NpoOlPU56YDEyV7oV7a7io0NAAC0AtrG6eY6Udx3evMXKcS7QEAAwIAA3kAAzsE",
-    "help": "AgACAgEAAxkBAAEBc-Fp_NpsNOtftFUDKLfYzTHRguoY5wAC0QtrG6eY6UdJ545iE_NO9wEAAwIAA3kAAzsE",
-    "mode_select": "AgACAgEAAxkBAAEBc8tp_Nop0ztRGRFb00HQreWvp92-cgACxgtrG6eY6UcUeERD_3C2PwEAAwIAA3kAAzsE",
-    "aimode_select": "AgACAgEAAxkBAAEBc91p_NpkzIOHSGQmLYA4x2E5Ptv4gAACzwtrG6eY6UfU0yNSlXTsYQEAAwIAA3kAAzsE",
-    "joining": "AgACAgEAAxkBAAEBc9tp_NpfcYmWOmdZLd_jorbAtaUwSwACzgtrG6eY6UdJpaSRO-BVjQEAAwIAA3kAAzsE",
-    "host": "AgACAgEAAxkBAAEBc-Np_Npu_jB7mbm6cr_aJzuz-b5U1wAC0gtrG6eY6UevFJyWlB_1ZwEAAwIAA3kAAzsE",
-    "squads": "AgACAgEAAxkBAAEBc9Fp_No7t1y4dOZoKNUJ37Rvzn8QGgACyQtrG6eY6Uf1pVWq3Gwy3gEAAwIAA3kAAzsE",
-    "toss": "AgACAgEAAxkBAAEBc81p_Notv867lyWnsVymT8NUQ3ce2gACxwtrG6eY6Uf94AvtTt5ZLwEAAwIAA3kAAzsE",
-    "botstats": "AgACAgEAAxkBAAEBc-lp_N-qVsCm-DNTbYr4V6h_dVl2rQAC1gtrG6eY6UdtZ1RVnCeUswEAAwIAA3kAAzsE",
-    "new_bid": "AgACAgEAAxkBAAEBc9dp_NpQSHUn3lSTWqOGAcHsKan4wQACzAtrG6eY6UddXoQs7u3axQEAAwIAA3kAAzsE", 
-    "scorecard": "AgACAgUAAxkBAALMKmmQoDUL8VmATZeIi4UlNNFbpKOPAAIID2sbsP15VOb5oke00b3xAQADAgADeQADOgQ",
-    "auction_setup": "AgACAgEAAxkBAAEBc-Vp_NtvgwY87Xrywz4ShZflJBKv5AAC1AtrG6eY6Ue9-wdxkOd-kAEAAwIAA3kAAzsE",
-    "auction_live": "AgACAgEAAxkBAAEBc-dp_Nty9i_T0m-RsrRYfr8RxoM7iQAC1QtrG6eY6UfJNpPixzMxJAEAAwIAA3kAAzsE",
-    "auction_end": "AgACAgUAAxkBAALMXGmQvIoo5wyAbZKrO3c_AwKPSL2IAAKXDmsbnjKIVLwkZQIZOCRFAQADAgADeQADOgQ",
-    # Tournament mode images (replace with your actual file IDs)
-    "tournament_mode": "AgACAgUAAxkBAALMJmmQoCzqP4IUR8uPpxQfP_TiCerjAAIMD2sbsP15VF2lqpJFGN7yAQADAgADeQADOgQ",
-    "tournament_fixtures": "AgACAgUAAxkBAALMJmmQoCzqP4IUR8uPpxQfP_TiCerjAAIMD2sbsP15VF2lqpJFGN7yAQADAgADeQADOgQ",
-    "tournament_points": "AgACAgUAAxkBAALMJmmQoCzqP4IUR8uPpxQfP_TiCerjAAIMD2sbsP15VF2lqpJFGN7yAQADAgADeQADOgQ",
-    "tournament_teams": "AgACAgUAAxkBAALMWmmQvIZFgc8DC8O3tQyyswuJLIpvAAKQDmsbnjKIVP9FxWHhpQZPAQADAgADeQADOgQ",
-    "tournament_match": "AgACAgUAAxkBAALMMGmQoE4Zf_HhwlQId3Vgq0DNN1WMAAJGDmsbnjKIVNmxZFYO324iAQADAgADeQADOgQ",
-    # 🏆 Fantasy Dream III pick window banner — replace with your own file_id/URL anytime.
-    # Falls back to the "squads" photo by default so it works out of the box.
-    "fantasy": "AgACAgEAAxkBAAEBc9Fp_No7t1y4dOZoKNUJ37Rvzn8QGgACyQtrG6eY6Uf1pVWq3Gwy3gEAAwIAA3kAAzsE",
+    "welcome": media_path("welcome.jpg"),
+    "help": media_path("help.jpg"),
+    "mode_select": media_path("game_command.jpg"),
+    "aimode_select": media_path("game_command.jpg"),
+    "joining": media_path("joining_phase.jpg"),
+    "host": media_path("host_selection.jpg"),
+    "squads": media_path("team_edit.jpg"),
+    "toss": media_path("toss.jpg"),
+    "bat_or_ball": media_path("bat_or_ball.jpg"),
+    "botstats": media_path("leaderboard.jpg"),
+    "new_bid": media_path("captain_selection.jpg"),
+    "scorecard": media_path("leaderboard.jpg"),
+    "auction_setup": media_path("captain_selection.jpg"),
+    "auction_live": media_path("captain_selection.jpg"),
+    "auction_end": media_path("captain_selection.jpg"),
+    # Tournament mode images
+    "tournament_mode": media_path("game_command.jpg"),
+    "tournament_fixtures": media_path("game_command.jpg"),
+    "tournament_points": media_path("leaderboard.jpg"),
+    "tournament_teams": media_path("team_edit.jpg"),
+    "tournament_match": media_path("toss.jpg"),
+    # 🏆 Fantasy Dream III pick window banner
+    "fantasy": media_path("dream3.jpg"),
+    # ⚙️ New screens (previously had no dedicated image)
+    "settings": media_path("settings.jpg"),
+    "over_selection": media_path("over_selection.jpg"),
+    "team_edit": media_path("team_edit.jpg"),
+    "captain_selection": media_path("captain_selection.jpg"),
+    "openers_selected": media_path("openers_selected.jpg"),
+    "powerplay1": media_path("powerplay1.jpg"),
+    "powerplay2": media_path("powerplay2.jpg"),
+    "powerplay3": media_path("powerplay3.jpg"),
 }
 # Commentary templates
 # Ultimate Professional English Commentary (Expanded)
@@ -3495,16 +3529,22 @@ async def refresh_game_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         match.main_message_id = None
 
     # Step 2: Send new message
+    asset = MEDIA_ASSETS.get(media_key) if media_key else None
+    # asset may be a local Path — only use it if the file actually exists on disk,
+    # so a missing image never breaks the game flow (falls back to text).
+    has_photo = bool(asset) and (not isinstance(asset, (str, Path)) or os.path.isfile(str(asset)))
     try:
-        if media_key and media_key in MEDIA_ASSETS:
+        if has_photo:
             msg = await context.bot.send_photo(
                 chat_id=chat_id,
-                photo=MEDIA_ASSETS[media_key],
+                photo=asset,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=ParseMode.HTML
             )
         else:
+            if media_key:
+                logger.warning(f"refresh_game_message: image for '{media_key}' not found, sending text only")
             msg = await context.bot.send_message(
                 chat_id=chat_id,
                 text=caption,
@@ -3517,6 +3557,14 @@ async def refresh_game_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         # was spamming "pinned a message" system notices in the group.
     except Exception as e:
         logger.error(f"refresh_game_message send failed: {e}")
+        # Last-resort fallback: try plain text so the game never gets stuck silently
+        try:
+            msg = await context.bot.send_message(
+                chat_id=chat_id, text=caption, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+            )
+            match.main_message_id = msg.message_id
+        except Exception:
+            logger.exception("refresh_game_message: text fallback also failed")
 
 # Important: Is function ko call karne ke liye niche wala update_team_edit_message use karo
 async def update_team_edit_message(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
@@ -7308,7 +7356,7 @@ async def _send_over_selection_ui(context: ContextTypes.DEFAULT_TYPE, group_id: 
     msg += "├ ✍️ Want more? Type <code>/over [number]</code> (up to 50)\n"
     msg += "└─────────────────</blockquote>"
 
-    await refresh_game_message(context, group_id, match, msg, reply_markup, media_key="host")
+    await refresh_game_message(context, group_id, match, msg, reply_markup, media_key="over_selection")
 
 
 
@@ -8245,7 +8293,7 @@ async def _start_captain_selection(context: ContextTypes.DEFAULT_TYPE, group_id:
     msg += f"🔥 <b>Team Y:</b> {cap_y_name}\n\n"
     msg += "<i>Click below to lead your team!</i>"
 
-    await refresh_game_message(context, group_id, match, msg, reply_markup, media_key="squads")
+    await refresh_game_message(context, group_id, match, msg, reply_markup, media_key="captain_selection")
 
 
 async def fantasy_window_timeout(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match):
@@ -8388,7 +8436,7 @@ async def start_team_edit_phase(query, context: ContextTypes.DEFAULT_TYPE, match
     
     # Use Master Function (Corrected Call)
     chat_id = query.message.chat.id
-    await refresh_game_message(context, chat_id, match, edit_text, reply_markup=reply_markup, media_key="squads")
+    await refresh_game_message(context, chat_id, match, edit_text, reply_markup=reply_markup, media_key="team_edit")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -9008,7 +9056,7 @@ async def toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     
     # ✅ FIX: Use refresh_game_message instead of edit_message_text
-    await refresh_game_message(context, chat.id, match, decision_text, reply_markup, media_key="toss")
+    await refresh_game_message(context, chat.id, match, decision_text, reply_markup, media_key="bat_or_ball")
     
     # Set timeout for decision
     asyncio.create_task(toss_decision_timeout(context, chat.id, match))
@@ -12683,7 +12731,7 @@ async def _real_cricket_send_gif(context: ContextTypes.DEFAULT_TYPE, group_id: i
 
 
 async def real_cricket_maybe_send_powerplay_gif(context: ContextTypes.DEFAULT_TYPE, group_id: int, match: Match, pp_number: int):
-    """Sends the powerplay-start GIF + rules reminder, pauses 5s, then
+    """Sends the powerplay-start banner image + rules reminder, pauses 5s, then
     lets play resume. Call this the moment a new powerplay begins."""
     cap = real_cricket_boundary_cap(pp_number)
     match.real_break_in_progress = True
@@ -12692,7 +12740,16 @@ async def real_cricket_maybe_send_powerplay_gif(context: ContextTypes.DEFAULT_TY
         f"🎯 Max <b>{cap} boundary balls</b> allowed this powerplay.\n"
         f"<i>Cross the cap and the ball becomes a No Ball!</i>"
     )
-    await _real_cricket_send_gif(context, group_id, "powerplay.gif", caption)
+    pp_key = f"powerplay{pp_number}"
+    try:
+        pp_photo = MEDIA_ASSETS.get(pp_key)
+        if pp_photo and os.path.isfile(pp_photo):
+            await context.bot.send_photo(chat_id=group_id, photo=pp_photo, caption=caption, parse_mode=ParseMode.HTML)
+        else:
+            await _real_cricket_send_gif(context, group_id, "powerplay.gif", caption)
+    except Exception:
+        logger.exception(f"Failed to send powerplay banner for pp{pp_number}, falling back to gif/text")
+        await _real_cricket_send_gif(context, group_id, "powerplay.gif", caption)
     await asyncio.sleep(5)
     match.real_break_in_progress = False
 
@@ -29321,7 +29378,14 @@ async def gcsettings_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [styled_button("❌ Close", callback_data=f"gcs_close_{group_id}")]
     ]
     
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    try:
+        await update.message.reply_photo(
+            photo=MEDIA_ASSETS["settings"], caption=text,
+            parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception:
+        logger.exception("gcsettings_command: failed to send settings photo, falling back to text")
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def gcsettings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -30140,12 +30204,12 @@ async def registration_command(update: Update, context: ContextTypes.DEFAULT_TYP
 # ═══════════════════════════════════════════════════════════════
 
 # Add your photo URLs here
-REGISTRATION_OPEN_PHOTO = "AgACAgUAAxkBAALMPmmQoG8t7b7vf6Fm-KAM8a7WXgj-AAIBD2sbsP15VF-xcgz1IHGmAQADAgADeQADOgQ"  # For /days command
-PLAYER_REGISTERED_PHOTO = "AgACAgUAAxkBAALMPmmQoG8t7b7vf6Fm-KAM8a7WXgj-AAIBD2sbsP15VF-xcgz1IHGmAQADAgADeQADOgQ"  # For player registration (same as REGISTRATION_OPEN_PHOTO until custom one is set)
+REGISTRATION_OPEN_PHOTO = media_path("game_command.jpg")  # For /days command
+PLAYER_REGISTERED_PHOTO = media_path("game_command.jpg")  # For player registration
 WALLET_PHOTO = "AgACAgUAAxkBAALMOGmQoGI2yQYSO5lrue-bhHMroAvNAAIED2sbsP15VJ6-OfHg_wIpAQADAgADeQADOgQ"  # For /wallet command
 MATCH_END_PHOTO = "AgACAgUAAxkBAALMNmmQoFwdymhKwKpHWMzG58jXN7QpAAIDD2sbsP15VCx1vWDMlLFFAQADAgADeQADOgQ"  # For /endmatch command
 SOLO_END_PHOTO = "AgACAgUAAxkBAALMNmmQoFwdymhKwKpHWMzG58jXN7QpAAIDD2sbsP15VCx1vWDMlLFFAQADAgADeQADOgQ"  # For /endsolo command
-OPENING_PAIR_PHOTO = "AgACAgUAAxkBAALMZGmQvJo86E-F5LVYNdfb3kHNtz9LAAKwDmsbnjKIVE7soeIB8l4aAQADAgADeQADOgQ"  # For opening pair set
+OPENING_PAIR_PHOTO = media_path("openers_selected.jpg")  # For opening pair set
 COMMENTARY_PHOTO = "AgACAgUAAxkBAALMLmmQoD_G9GgJoMQeXvWpQxElme4wAAIKD2sbsP15VJkoPDzurgMwAQADAgADeQADOgQ"  # For commentary command
 MINI_SCORECARD_PHOTO = "AgACAgUAAxkBAALMYmmQvJbYeVGWGfemhmBImf0SSZSFAAKtDmsbnjKIVJm0yo4ov5RIAQADAgADeQADOgQ"  # For mini scorecard
 PLAYERS_PHOTO = "AgACAgUAAxkBAALMaGmQvgMDXA9fZ1YupBEa0R_aikbUAALbDmsbnjKIVIargp_gHgABfwEAAwIAA3kAAzoE"  # For players list

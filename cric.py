@@ -1385,7 +1385,19 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS groups (group_id INTEGER PRIMARY KEY, data TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS achievements (user_id INTEGER PRIMARY KEY, data TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS fantasy_stats (user_id INTEGER PRIMARY KEY, data TEXT)''')
-    
+
+    # 🔧 LIGHTWEIGHT OVER-CHECKPOINT: tiny per-match snapshot written after
+    # every completed over (NOT a full stats commit). If the server crashes
+    # mid-match, the match can recover from the last checkpointed over
+    # instead of losing the whole game. Cleared once the match ends normally
+    # and a full stats commit (save_data()) has happened.
+    c.execute('''CREATE TABLE IF NOT EXISTS match_checkpoints (
+        group_id INTEGER PRIMARY KEY,
+        over_number INTEGER,
+        data TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+
     # Create user_stats table for detailed statistics
     c.execute('''CREATE TABLE IF NOT EXISTS user_stats (
         user_id INTEGER PRIMARY KEY,
@@ -1777,14 +1789,10 @@ def _save_data_sync():
 
         conn.commit()
         conn.close()
-        
-        # 2. JSON Save (Secondary / Manual Backup) — no indent, much faster to serialize
-        with open(USERS_FILE, 'w') as f: json.dump(user_data, f)
-        with open(STATS_FILE, 'w') as f: json.dump(player_stats, f)
-        with open(MATCHES_FILE, 'w') as f: json.dump(match_history, f)
-        with open(GROUPS_FILE, 'w') as f: json.dump(registered_groups, f)
-        with open(ACHIEVEMENTS_FILE, 'w') as f: json.dump(achievements, f)
-        with open(FANTASY_FILE, 'w') as f: json.dump(fantasy_data, f)
+        # 🔧 JSON backup removed — SQLite (DB_FILE) is now the single source of
+        # truth. Writing 6 JSON files on every save doubled disk I/O for no
+        # benefit once SQLite is reliable, so it's gone. If you ever need a
+        # human-readable export, use /dbexport or a one-off script instead.
 
     except Exception as e:
         logger.error(f"Error saving data: {e}")
@@ -1811,6 +1819,70 @@ def save_data():
         except RuntimeError:
             # No running event loop (e.g. called from sync startup code) — save immediately, inline.
             _save_data_sync()
+
+def _checkpoint_match_sync(group_id: int, over_number: int, snapshot: dict):
+    """
+    ⚡ LIGHTWEIGHT PER-OVER CHECKPOINT (runs in a background thread).
+    Writes ONE small row for this match — not a full stats DB commit.
+    This is what keeps a crash from losing the whole match: worst case you
+    lose the current, still-in-progress over, not the whole game.
+    """
+    try:
+        conn = db_connect(DB_FILE)
+        c = conn.cursor()
+        c.execute(
+            "INSERT OR REPLACE INTO match_checkpoints (group_id, over_number, data, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            (group_id, over_number, json.dumps(snapshot)),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Checkpoint save failed for group {group_id}: {e}")
+
+
+def checkpoint_match(group_id: int, match) -> None:
+    """
+    Call this once per completed over. Fire-and-forget — never blocks the
+    ball flow. This intentionally does NOT touch user_data / player_stats /
+    achievements etc; that full commit only happens at match end via
+    save_data() (or the debounced background save it schedules).
+    """
+    try:
+        bat_team = match.current_batting_team
+        snapshot = {
+            "innings": match.innings,
+            "batting_team": bat_team.name,
+            "score": bat_team.score,
+            "wickets": bat_team.wickets,
+            "balls": bat_team.balls,
+            "target": getattr(match, "target", None),
+            "total_overs": match.total_overs,
+        }
+        over_number = bat_team.balls // 6
+        asyncio.create_task(asyncio.to_thread(_checkpoint_match_sync, group_id, over_number, snapshot))
+    except RuntimeError:
+        # No running event loop — safe to skip, this is a best-effort backup only.
+        pass
+    except Exception as e:
+        logger.error(f"checkpoint_match failed for group {group_id}: {e}")
+
+
+def clear_match_checkpoint(group_id: int) -> None:
+    """Drop the checkpoint row once the match ends and a full save_data() commit has run."""
+    def _clear():
+        try:
+            conn = db_connect(DB_FILE)
+            c = conn.cursor()
+            c.execute("DELETE FROM match_checkpoints WHERE group_id = ?", (group_id,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Checkpoint clear failed for group {group_id}: {e}")
+    try:
+        asyncio.create_task(asyncio.to_thread(_clear))
+    except RuntimeError:
+        _clear()
+
 
 def load_data():
     """Load all data (Try SQL first, Fallback to JSON)"""
@@ -11553,7 +11625,6 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             if bat_team.get_current_over_balls() == 0:
                 await check_over_complete(context, group_id, match)
             else:
-                await asyncio.sleep(2)
                 await execute_ball(context, group_id, match)
             return
         else:
@@ -11626,7 +11697,6 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
             except Exception:
                 logger.exception("real cricket no-ball message failed")
             match.current_ball_data = {}
-            await asyncio.sleep(2)
             await execute_ball(context, group_id, match)  # replay the ball, over/ball-count unchanged
             return
 
@@ -11825,12 +11895,10 @@ async def process_ball_result(context: ContextTypes.DEFAULT_TYPE, group_id: int,
     current_over_balls = bat_team.get_current_over_balls()
     
     if current_over_balls == 0 and bat_team.balls > 0:
-        await asyncio.sleep(2)
         await check_over_complete(context, group_id, match)
         return
     
     # Continue with next ball
-    await asyncio.sleep(2)
     await execute_ball(context, group_id, match)
 
 async def commentary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -12434,8 +12502,6 @@ async def handle_noball_and_continue(context: ContextTypes.DEFAULT_TYPE, group_i
         "noball": True,
     })
     
-    await asyncio.sleep(2)
-    
     # Reset ball data and re-send bowling prompt (ball NOT counted)
     match.current_ball_data = {}
     await execute_ball(context, group_id, match)
@@ -12749,6 +12815,11 @@ async def check_over_complete(context: ContextTypes.DEFAULT_TYPE, group_id: int,
         runs_in_this_over = bat_team.score - already_accounted
         match.team_y_over_runs.append(max(0, runs_in_this_over))
     match.current_over_runs = 0  # Reset for the next over
+
+    # ⚡ Lightweight checkpoint — one small row per over, NOT a full stats
+    # commit. Full stats only get committed at match end (see end_innings /
+    # match completion, where save_data() + clear_match_checkpoint() run).
+    checkpoint_match(group_id, match)
 
     # ── Compute best ball of the over from ball_by_ball_log ──
     over_num_done = bat_team.balls // 6
@@ -13802,8 +13873,6 @@ async def process_solo_turn_result(context, chat_id, match):
             parse_mode=ParseMode.HTML
         )
         
-        # ✅ CRITICAL FIX: Naya ball trigger karna zaroori hai
-        await asyncio.sleep(2)
         # 🔧 GLITCH FIX: re-check — /endmatch may have fired during the awaits above.
         if is_match_stale(chat_id, match):
             logger.info("⛔ process_solo_turn_result (wicket branch) aborted post-await — match already ended.")
@@ -13909,7 +13978,6 @@ async def process_solo_turn_result(context, chat_id, match):
                 f"🔄 <b>CHANGE OF OVER!</b>\n<blockquote>⚾ New Bowler: {new_bowler.first_name} takes the ball.</blockquote>", 
                 parse_mode=ParseMode.HTML
             )
-            await asyncio.sleep(2)
 
         # Trigger Next Ball
         # 🔧 GLITCH FIX: re-check — /endmatch may have fired during the awaits above
@@ -19240,7 +19308,8 @@ async def update_player_stats_after_match(match: Match, winner: Team, loser: Tea
 
     await asyncio.to_thread(_sync_player_stats_to_db, all_players, winner)
 
-    save_data()
+    save_data()  # ✅ FULL STATS COMMIT — match has ended, this is the real DB write.
+    clear_match_checkpoint(getattr(match, "group_id", None))  # over-checkpoint no longer needed
 
 
 def update_h2h_stats(match: Match):

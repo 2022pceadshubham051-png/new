@@ -5124,41 +5124,19 @@ async def auction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active_auctions[chat.id] = auction
         
         msg = (
-            "╭━━ 🏦 AUCTION SETUP ━━━━━━💰\n"
-            "┃ ⚙ Follow these steps to begin!\n"
-            "┃\n"
-            "┃ 📋 NEXT STEPS\n"
-            "┃ ├ 1️⃣ /bidder [team]      ➔ Assign bidders\n"
-            "┃ ├ 2️⃣ /aucplayer          ➔ Add players\n"
-            "┃ ├ 3️⃣ Select auctioneer below\n"
-            "┃\n"
-            "┃ 💰 Default Purse: 1000\n"
-            "╰━━━━━━━━"
+            "<blockquote>🎪 <b>AUCTION SETUP INITIATED!</b>\n"
+            "─────────────────\n\n"
+            "🎤 Who wants to become the <b>Auctioneer</b>?\n"
+            "Tap the button below to claim it!\n"
+            "─────────────────</blockquote>"
         )
         
-        keyboard = [[styled_button("🎤 Be Auctioneer", callback_data="become_auctioneer")]]
+        keyboard = [[styled_button("🎤 I want to become Auctioneer", callback_data="become_auctioneer")]]
         
         # ✅ FIX: Use edit_caption
         await query.message.edit_caption(
             caption=msg,
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.HTML
-        )
-    
-    elif query.data == "become_auctioneer":
-        chat = query.message.chat
-        user = query.from_user
-        
-        if chat.id not in active_auctions:
-            return
-        
-        auction = active_auctions[chat.id]
-        auction.auctioneer_id = user.id
-        auction.auctioneer_name = user.first_name
-        
-        # ✅ FIX: Use edit_caption
-        await query.message.edit_caption(
-            caption=f"✅ <b>Auctioneer Set!</b>\n\n🎤 {get_user_tag(user)}\n\nNext: Assign bidders with <code>/bidder</code>",
             parse_mode=ParseMode.HTML
         )
     
@@ -34786,7 +34764,7 @@ def main():
     application.add_handler(CallbackQueryHandler(ai_choice_callback, pattern="^ai_choice_"))
 
     # Stats callbacks
-    application.add_handler(CallbackQueryHandler(auction_callback, pattern="^(start_auction|become_auctioneer|back_to_modes)$"))
+    application.add_handler(CallbackQueryHandler(auction_callback, pattern="^(start_auction|back_to_modes)$"))
     application.add_handler(
         CallbackQueryHandler(stats_view_callback, pattern="^stats_view_")
     )

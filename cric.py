@@ -357,12 +357,13 @@ class AuctionPhase(Enum):
 
 class AuctionTeam:
     """Represents a team in auction"""
-    def __init__(self, name: str):
+    def __init__(self, name: str, starting_purse: int = 1000):
         self.name = name
         self.bidder_id: Optional[int] = None
         self.bidder_name: str = ""
         self.players: List[Dict] = []  # {player_id, player_name, price}
-        self.purse_remaining = 1000
+        self.purse_remaining = starting_purse
+        self.starting_purse = starting_purse
         self.total_spent = 0
     
     def add_player(self, player_id: int, player_name: str, price: int):
@@ -406,6 +407,11 @@ class Auction:
         self.host_name = host_name
         self.phase = AuctionPhase.BIDDER_SELECTION
         self.created_at = datetime.now()
+
+        # Setup wizard (auctioneer -> purse/squad config -> bidders -> players -> live)
+        self.setup_stage: str = "auctioneer"  # auctioneer -> config -> bidder -> player -> live
+        self.default_purse: int = 1000
+        self.max_players_per_team: int = 11
         
         # Teams
         self.teams: Dict[str, AuctionTeam] = {}
@@ -4713,7 +4719,6 @@ def get_help_tournament_text():
         "┃ ├ /auction           ➔ Setup auction\n"
         "┃ ├ /bidder [team]     ➔ Assign bidder\n"
         "┃ ├ /aucplayer @user   ➔ Add player\n"
-        "┃ ├ /startauction      ➔ Go live!\n"
         "┃ └ /bid [amount]      ➔ Place bid\n"
         "╰━━━━━━━━"
     )
@@ -5126,7 +5131,6 @@ async def auction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "┃ ├ 1️⃣ /bidder [team]      ➔ Assign bidders\n"
             "┃ ├ 2️⃣ /aucplayer          ➔ Add players\n"
             "┃ ├ 3️⃣ Select auctioneer below\n"
-            "┃ └ 4️⃣ /startauction       ➔ Go live!\n"
             "┃\n"
             "┃ 💰 Default Purse: 1000\n"
             "╰━━━━━━━━"
@@ -7543,6 +7547,46 @@ def _chal_player_tag(user_id: int, name: str) -> str:
     return f'<a href="tg://user?id={user_id}">{html.escape(name)}</a>'
 
 
+# 🖼️ Static image used for every /challenge message (caption + buttons get edited turn by turn)
+CHALLENGE_IMAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "challenge.jpg")
+
+async def _chal_send_initial(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_markup=None):
+    """Send the FIRST challenge message. Uses the static challenge.jpg as a photo (caption edited
+    turn-by-turn from here on) if the file exists next to cric.py, else falls back to plain text."""
+    if os.path.isfile(CHALLENGE_IMAGE_PATH):
+        try:
+            with open(CHALLENGE_IMAGE_PATH, "rb") as img:
+                sent = await context.bot.send_photo(
+                    chat_id, photo=img, caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML
+                )
+            return sent.message_id, True
+        except Exception as e:
+            logger.error(f"Challenge image send failed, falling back to text: {e}")
+    sent = await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+    return sent.message_id, False
+
+
+async def _chal_edit(context: ContextTypes.DEFAULT_TYPE, gid: int, text: str, reply_markup=None):
+    """Edit the ongoing challenge message — caption if it's a photo message, text otherwise.
+    Buttons and caption/text both get refreshed on every call so the single message stays live."""
+    ch = active_challenges.get(gid)
+    if not ch or not ch.get("message_id"):
+        return
+    try:
+        if ch.get("is_photo"):
+            await context.bot.edit_message_caption(
+                chat_id=gid, message_id=ch["message_id"], caption=text,
+                reply_markup=reply_markup, parse_mode=ParseMode.HTML
+            )
+        else:
+            await context.bot.edit_message_text(
+                chat_id=gid, message_id=ch["message_id"], text=text,
+                reply_markup=reply_markup, parse_mode=ParseMode.HTML
+            )
+    except Exception as e:
+        logger.error(f"Challenge message edit error: {e}")
+
+
 async def challenge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """⚔️ /challenge — start a 1v1 duel. Reply/@username/user_id to target someone, or no args for an open challenge."""
     chat = update.effective_chat
@@ -7576,10 +7620,11 @@ async def challenge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_challenges[chat.id] = {
         "challenger_id": user.id, "challenger_name": user.first_name,
         "opponent_id": target_id, "opponent_name": target_name,
-        "phase": "pending", "message_id": None,
+        "phase": "pending", "message_id": None, "is_photo": False,
         "overs": 0, "toss_winner_id": None, "bat_id": None, "bowl_id": None,
         "innings": 1, "score": {1: 0, 2: 0}, "balls": {1: 0, 2: 0},
         "target": None, "pending_bowl_num": None,
+        "prev_bat_num": None, "prev_bowl_num": None,
     }
 
     challenger_tag = _chal_player_tag(user.id, user.first_name)
@@ -7605,8 +7650,9 @@ async def challenge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         keyboard = [[styled_button("🙋 Join Challenge", callback_data=f"chal_join_{chat.id}")]]
 
-    sent = await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-    active_challenges[chat.id]["message_id"] = sent.message_id
+    mid, is_photo = await _chal_send_initial(context, chat.id, text, InlineKeyboardMarkup(keyboard))
+    active_challenges[chat.id]["message_id"] = mid
+    active_challenges[chat.id]["is_photo"] = is_photo
 
 
 async def challenge_response_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7631,10 +7677,7 @@ async def challenge_response_callback(update: Update, context: ContextTypes.DEFA
             return
         await query.answer("Challenge rejected.")
         del active_challenges[gid]
-        await query.edit_message_text(
-            f"❌ <b>Challenge rejected</b> by {_chal_player_tag(user.id, user.first_name)}.",
-            parse_mode=ParseMode.HTML
-        )
+        await _chal_edit(context, gid, f"❌ <b>Challenge rejected</b> by {_chal_player_tag(user.id, user.first_name)}.")
         return
 
     if action == "accept":
@@ -7664,7 +7707,7 @@ async def challenge_response_callback(update: Update, context: ContextTypes.DEFA
         f"└──────────────</blockquote>"
     )
     keyboard = [[styled_button(f"{n}", callback_data=f"chalovers_{gid}_{n}") for n in range(1, 5)]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    await _chal_edit(context, gid, text, InlineKeyboardMarkup(keyboard))
 
 
 async def challenge_overs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7699,7 +7742,7 @@ async def challenge_overs_callback(update: Update, context: ContextTypes.DEFAULT
         styled_button("🪙 Heads", callback_data=f"chaltoss_{gid}_heads"),
         styled_button("🪙 Tails", callback_data=f"chaltoss_{gid}_tails")
     ]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    await _chal_edit(context, gid, text, InlineKeyboardMarkup(keyboard))
 
 
 async def challenge_toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7736,7 +7779,7 @@ async def challenge_toss_callback(update: Update, context: ContextTypes.DEFAULT_
         styled_button("🏏 Bat", callback_data=f"chalchoice_{gid}_bat"),
         styled_button("🎯 Bowl", callback_data=f"chalchoice_{gid}_bowl")
     ]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    await _chal_edit(context, gid, text, InlineKeyboardMarkup(keyboard))
 
 
 async def challenge_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7767,7 +7810,7 @@ async def challenge_choice_callback(update: Update, context: ContextTypes.DEFAUL
     ch["phase"] = "innings1"
     ch["innings"] = 1
     ch["pending_bowl_num"] = None
-    await _ask_challenge_bowler(query, context, gid)
+    await _ask_challenge_bowler(context, gid)
 
 
 async def _bat_bowl_names(gid: int):
@@ -7777,37 +7820,54 @@ async def _bat_bowl_names(gid: int):
     return bat_name, bowl_name
 
 
-def _challenge_score_line(gid: int) -> str:
+def _challenge_overs_str(gid: int) -> str:
     ch = active_challenges[gid]
     inn = ch["innings"]
-    score = ch["score"][inn]
     balls = ch["balls"][inn]
-    overs_str = f"{balls // 6}.{balls % 6}"
-    line = f"📊 Score: <b>{score}</b> ({overs_str}/{ch['overs']} ov)"
-    if inn == 2 and ch["target"] is not None:
-        line += f" | 🎯 Target: {ch['target']}"
-    return line
+    return f"{balls // 6}.{balls % 6}"
 
 
-async def _ask_challenge_bowler(query_or_msg, context: ContextTypes.DEFAULT_TYPE, gid: int):
+def _challenge_turn_text(gid: int, turn_role: str) -> str:
+    """turn_role: 'bowl' (asking the bowler) or 'bat' (asking the batter)"""
     ch = active_challenges[gid]
-    bat_name, bowl_name = await _bat_bowl_names(gid)
-    text = (
-        f"🎯 <b>{html.escape(bowl_name)}'s turn to bowl!</b>\n"
-        f"<blockquote>┌──────────────\n"
-        f"├ Innings {ch['innings']} — {_challenge_score_line(gid)}\n"
-        f"├ Select a number (1-6):\n"
-        f"└──────────────</blockquote>"
-    )
+    inn = ch["innings"]
+    bat_name, bowl_name = None, None
+    bat_name = ch["challenger_name"] if ch["bat_id"] == ch["challenger_id"] else ch["opponent_name"]
+    bowl_name = ch["challenger_name"] if ch["bowl_id"] == ch["challenger_id"] else ch["opponent_name"]
+    bat_tag = _chal_player_tag(ch["bat_id"], bat_name)
+    bowl_tag = _chal_player_tag(ch["bowl_id"], bowl_name)
+    score = ch["score"][inn]
+    overs_str = _challenge_overs_str(gid)
+
+    lines = [f"🏏 <b>Over : {overs_str}</b>", ""]
+    lines.append("┌──────────────")
+    lines.append(f"├ 🏏 {bat_tag}: {score} Run{'s' if score != 1 else ''}")
+    if inn == 2 and ch["target"] is not None:
+        lines.append(f"├ 🎯 Target: {ch['target']}")
+    lines.append("└──────────────")
+
+    prev_bat = ch.get("prev_bat_num")
+    prev_bowl = ch.get("prev_bowl_num")
+    if prev_bat is not None or prev_bowl is not None:
+        lines.append("┌──────────────")
+        lines.append(f"├ 🏏 {bat_tag} Bat {prev_bat if prev_bat is not None else '-'} (Last turn)")
+        lines.append(f"├ 🎯 {bowl_tag} Bowl {prev_bowl if prev_bowl is not None else '-'} (Last turn)")
+        lines.append("└──────────────")
+
+    if turn_role == "bowl":
+        lines.append(f"↳ 🎯 {bowl_tag} your turn:")
+    else:
+        lines.append(f"↳ 🏏 {bat_tag} your turn:")
+
+    return "\n".join(lines)
+
+
+async def _ask_challenge_bowler(context: ContextTypes.DEFAULT_TYPE, gid: int):
+    ch = active_challenges[gid]
+    text = _challenge_turn_text(gid, "bowl")
     keyboard = [[styled_button(f"{n}", callback_data=f"chalbowl_{gid}_{n}") for n in range(1, 4)],
                 [styled_button(f"{n}", callback_data=f"chalbowl_{gid}_{n}") for n in range(4, 7)]]
-    markup = InlineKeyboardMarkup(keyboard)
-    if hasattr(query_or_msg, "edit_message_text"):
-        await query_or_msg.edit_message_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    else:
-        sent = await context.bot.edit_message_text(
-            chat_id=gid, message_id=ch["message_id"], text=text, reply_markup=markup, parse_mode=ParseMode.HTML
-        )
+    await _chal_edit(context, gid, text, InlineKeyboardMarkup(keyboard))
 
 
 async def challenge_bowl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7827,19 +7887,12 @@ async def challenge_bowl_callback(update: Update, context: ContextTypes.DEFAULT_
         return
 
     ch["pending_bowl_num"] = num
-    await query.answer(f"Bowled: {num}")
+    await query.answer(f"🎯 Bowled: {num}")
 
-    bat_name, bowl_name = await _bat_bowl_names(gid)
-    text = (
-        f"🏏 <b>{html.escape(bat_name)}'s turn to bat!</b>\n"
-        f"<blockquote>┌──────────────\n"
-        f"├ Innings {ch['innings']} — {_challenge_score_line(gid)}\n"
-        f"├ Select a number (1-6):\n"
-        f"└──────────────</blockquote>"
-    )
+    text = _challenge_turn_text(gid, "bat")
     keyboard = [[styled_button(f"{n}", callback_data=f"chalbat_{gid}_{n}") for n in range(1, 4)],
                 [styled_button(f"{n}", callback_data=f"chalbat_{gid}_{n}") for n in range(4, 7)]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    await _chal_edit(context, gid, text, InlineKeyboardMarkup(keyboard))
 
 
 async def challenge_bat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7869,19 +7922,26 @@ async def challenge_bat_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     if not is_out:
         ch["score"][inn] += bat_num
-        await query.answer(f"{bat_num} run{'s' if bat_num != 1 else ''}!")
+        await query.answer(f"🏃 {bat_num} run{'s' if bat_num != 1 else ''}!")
     else:
-        await query.answer("OUT! 🎯")
+        await query.answer("🎯 OUT!")
+
+    # Remember this ball as "last turn" for the next prompt
+    ch["prev_bat_num"] = bat_num
+    ch["prev_bowl_num"] = bowl_num
 
     bat_name, bowl_name = await _bat_bowl_names(gid)
+    overs_str = _challenge_overs_str(gid)
+    result_emoji = "🎯 <b>OUT!</b>" if is_out else f"🏃 <b>{bat_num} Run{'s' if bat_num != 1 else ''}!</b>"
     ball_result_text = (
-        f"{'🎯 <b>OUT!</b>' if is_out else f'🏏 <b>{bat_num} run' + ('s' if bat_num != 1 else '') + '!</b>'}\n"
-        f"<blockquote>┌──────────────\n"
-        f"├ 🎯 Bowled: {bowl_num}  |  🏏 Batted: {bat_num}\n"
-        f"├ Innings {ch['innings']} — {_challenge_score_line(gid)}\n"
-        f"└──────────────</blockquote>"
+        f"{result_emoji}\n"
+        f"🏏 <b>Over : {overs_str}</b>\n\n"
+        f"  🏏 Batter : {html.escape(bat_name)}\n"
+        f"  🎯 Bowler : {html.escape(bowl_name)}\n\n"
+        f" {html.escape(bat_name)}  Bat {bat_num}\n"
+        f"{html.escape(bowl_name)} Bowl {bowl_num}"
     )
-    await query.edit_message_text(ball_result_text, parse_mode=ParseMode.HTML)
+    await _chal_edit(context, gid, ball_result_text, None)
 
     balls_done = ch["balls"][inn]
     overs_done = balls_done >= ch["overs"] * 6
@@ -7892,7 +7952,7 @@ async def challenge_bat_callback(update: Update, context: ContextTypes.DEFAULT_T
         await _end_challenge_innings(context, gid)
     else:
         await asyncio.sleep(1.5)
-        await _ask_challenge_bowler(query, context, gid)
+        await _ask_challenge_bowler(context, gid)
 
 
 async def _end_challenge_innings(context: ContextTypes.DEFAULT_TYPE, gid: int):
@@ -7905,30 +7965,19 @@ async def _end_challenge_innings(context: ContextTypes.DEFAULT_TYPE, gid: int):
         ch["bat_id"], ch["bowl_id"] = ch["bowl_id"], ch["bat_id"]
         ch["phase"] = "innings2"
         ch["pending_bowl_num"] = None
+        ch["prev_bat_num"] = None
+        ch["prev_bowl_num"] = None
         bat_name, bowl_name = await _bat_bowl_names(gid)
         text = (
             f"🔄 <b>INNINGS BREAK</b>\n"
             f"<blockquote>┌──────────────\n"
-            f"├ 🏏 Innings 1: {ch['score'][1]} runs\n"
+            f"├ 🏏 Innings 1: {ch['score'][1]} Run{'s' if ch['score'][1] != 1 else ''}\n"
             f"├ 🎯 Target for {html.escape(bat_name)}: <b>{ch['target']}</b>\n"
             f"└──────────────</blockquote>"
         )
-        try:
-            await context.bot.edit_message_text(chat_id=gid, message_id=ch["message_id"], text=text, parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
+        await _chal_edit(context, gid, text, None)
         await asyncio.sleep(2)
-
-        class _FakeQuery:
-            def __init__(self, bot, chat_id, message_id):
-                self._bot, self._chat_id, self._message_id = bot, chat_id, message_id
-            async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
-                await self._bot.edit_message_text(
-                    chat_id=self._chat_id, message_id=self._message_id, text=text,
-                    reply_markup=reply_markup, parse_mode=parse_mode
-                )
-        fq = _FakeQuery(context.bot, gid, ch["message_id"])
-        await _ask_challenge_bowler(fq, context, gid)
+        await _ask_challenge_bowler(context, gid)
         return
 
     # Innings 2 finished → determine winner
@@ -7940,34 +7989,34 @@ async def _end_challenge_innings(context: ContextTypes.DEFAULT_TYPE, gid: int):
     inn1_batter_name = ch["challenger_name"] if inn1_batter_id == ch["challenger_id"] else ch["opponent_name"]
     inn2_batter_id = ch["bat_id"]
     inn2_batter_name = ch["challenger_name"] if inn2_batter_id == ch["challenger_id"] else ch["opponent_name"]
+    inn1_tag = _chal_player_tag(inn1_batter_id, inn1_batter_name)
+    inn2_tag = _chal_player_tag(inn2_batter_id, inn2_batter_name)
 
     if score2 >= ch["target"]:
-        winner_id, winner_name = inn2_batter_id, inn2_batter_name
-        margin = f"won by {ch['overs']*6 - ch['balls'][2]} ball(s) remaining"
+        winner_id, winner_name, winner_tag = inn2_batter_id, inn2_batter_name, inn2_tag
+        remaining_balls = ch['overs'] * 6 - ch['balls'][2]
+        margin = f"won by {remaining_balls} ball{'s' if remaining_balls != 1 else ''} remaining"
     elif score2 < score1:
-        winner_id, winner_name = inn1_batter_id, inn1_batter_name
-        margin = f"won by {score1 - score2} run(s)"
+        winner_id, winner_name, winner_tag = inn1_batter_id, inn1_batter_name, inn1_tag
+        run_diff = score1 - score2
+        margin = f"won by {run_diff} Run{'s' if run_diff != 1 else ''}"
     else:
-        winner_id, winner_name = None, None
+        winner_id, winner_name, winner_tag = None, None, None
         margin = "Match tied!"
 
     result_text = (
-        f"🏆 <b>MATCH OVER!</b>\n"
-        f"<blockquote>┌──────────────\n"
-        f"├ 🏏 {html.escape(inn1_batter_name)}: {score1}\n"
-        f"├ 🏏 {html.escape(inn2_batter_name)}: {score2}\n"
-        f"├ {'🤝 ' + margin if not winner_id else '🏆 ' + html.escape(winner_name) + ' ' + margin}\n"
-        f"└──────────────</blockquote>"
+        f"🏆 <b>MATCH OVER!</b>\n\n"
+        f"📊 <b>Score :</b>\n"
+        f"┌──────────────\n"
+        f"├ 🏏 {inn2_tag} : {score2} Run{'s' if score2 != 1 else ''}\n"
+        f"├ 🏏 {inn1_tag} : {score1} Run{'s' if score1 != 1 else ''}\n"
+        f"└──────────────\n\n"
+        f"{'🤝 <b>' + margin + '</b>' if not winner_id else '🏆 <b>Winner: ' + winner_tag + ' ' + margin + '</b>'}"
     )
-    try:
-        await context.bot.edit_message_text(chat_id=gid, message_id=ch["message_id"], text=result_text, parse_mode=ParseMode.HTML)
-    except Exception:
-        try:
-            await context.bot.send_message(gid, result_text, parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
+    await _chal_edit(context, gid, result_text, None)
 
     del active_challenges[gid]
+
 
 
 async def over_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -12978,7 +13027,7 @@ async def addauctionplayer_command(update: Update, context: ContextTypes.DEFAULT
     auction = active_auctions[chat.id]
     
     # Only host/auctioneer can add
-    if user.id not in [auction.host_id, auction.auctioneer_id]:
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text("🚫 Only Host/Auctioneer can add players!")
         return
     
@@ -13119,7 +13168,7 @@ async def removeauctionplayer_command(update: Update, context: ContextTypes.DEFA
     auction = active_auctions[chat.id]
     
     # Only host/auctioneer
-    if user.id not in [auction.host_id, auction.auctioneer_id]:
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text("🚫 Only Host/Auctioneer can remove players!")
         return
     
@@ -13189,9 +13238,9 @@ async def addpurse_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     auction = active_auctions[chat.id]
     
-    # Only host
-    if user.id != auction.host_id:
-        await update.message.reply_text("🚫 Only Host can modify purse!")
+    # Only auctioneer
+    if user.id != auction.auctioneer_id:
+        await update.message.reply_text("🚫 Only the Auctioneer can modify purse!")
         return
     
     if len(context.args) < 2:
@@ -13243,9 +13292,9 @@ async def removepurse_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     auction = active_auctions[chat.id]
     
-    # Only host
-    if user.id != auction.host_id:
-        await update.message.reply_text("🚫 Only Host can modify purse!")
+    # Only auctioneer
+    if user.id != auction.auctioneer_id:
+        await update.message.reply_text("🚫 Only the Auctioneer can modify purse!")
         return
     
     if len(context.args) < 2:
@@ -13393,7 +13442,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
     _best_fig = f"{_bwk}/{_br}" if _bwk > 0 else "N/A"
     
     msg = (
-        f"╭━━ 🔨 AUCTION: PLAYER UP ━━━━\n"
+        f"<blockquote>╭━━ 🔨 AUCTION: PLAYER UP ━━━━\n"
         f"┃ 👤 Player: {player_tag}\n"
         f"┃ 🪙 Base Price: {player['base_price']} 🔷\n"
         f"┣━─────────────────\n"
@@ -13416,7 +13465,7 @@ async def bring_next_player(context: ContextTypes.DEFAULT_TYPE, chat_id: int, au
         f"┃ ├ 💵 Current Bid: {player['base_price']} 🔷\n"
         f"┃ ├ 👑 Bid Leader: None\n"
         f"┃ └ ⏳ Timer: 30 Seconds\n"
-        f"╰━━━━━━━━\n"
+        f"╰━━━━━━━━</blockquote>\n"
     )
     
     # Quick bid buttons (+3, +5 top row, +10 bottom row)
@@ -21427,7 +21476,6 @@ async def unapprovegroup_command(update: Update, context: ContextTypes.DEFAULT_T
                 "• /startregistration\n"
                 "• /register\n"
                 "• /registeredlist\n"
-                "• /startauction\n"
                 "• /endauction\n"
                 "• /pauseauction\n"
                 "• /resumeauction\n"
@@ -21527,37 +21575,179 @@ async def start_auction_live_callback(update: Update, context: ContextTypes.DEFA
     await asyncio.sleep(2)
     await bring_next_player(context, chat.id, auction)
 
+def _auc_config_text(auction: "Auction", user_tag: str) -> str:
+    return (
+        f"<blockquote>🎤〔 <b>AUCTIONEER CONFIRMED!</b> 〕🎤\n\n"
+        f"✅ {user_tag} is now the auctioneer!\n\n"
+        f"─────────────────\n"
+        f"⚙️ <b>SET AUCTION CONFIG</b>\n"
+        f"Adjust with the buttons, then Proceed.\n"
+        f"─────────────────\n\n"
+        f"🪙 <b>Purse per team:</b> {auction.default_purse}\n"
+        f"👥 <b>Max players per team:</b> {auction.max_players_per_team}\n"
+        f"─────────────────</blockquote>"
+    )
+
+def _auc_config_kb(chat_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            styled_button("➖", callback_data=f"auccfg_coins_minus_{chat_id}"),
+            styled_button("🪙 Coins", callback_data="noop"),
+            styled_button("➕", callback_data=f"auccfg_coins_plus_{chat_id}"),
+        ],
+        [
+            styled_button("➖", callback_data=f"auccfg_players_minus_{chat_id}"),
+            styled_button("👥 Players", callback_data="noop"),
+            styled_button("➕", callback_data=f"auccfg_players_plus_{chat_id}"),
+        ],
+        [styled_button("✅ PROCEED AND CONTINUE", callback_data=f"auccfg_proceed_{chat_id}")]
+    ])
+
 async def become_auctioneer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🎤 Set auctioneer"""
+    """🎤 Set auctioneer, then move into purse/squad-size config step"""
     query = update.callback_query
-    await query.answer()
     
     chat = query.message.chat
     user = query.from_user
     
     if chat.id not in active_auctions:
+        await query.answer()
         return
     
     auction = active_auctions[chat.id]
+
+    if auction.auctioneer_id:
+        await query.answer("⚠️ An auctioneer has already been selected!", show_alert=True)
+        return
+
+    await query.answer("✅ You are now the Auctioneer!")
+
     auction.auctioneer_id = user.id
     auction.auctioneer_name = user.first_name
+    auction.setup_stage = "config"
     
     user_tag = get_user_tag(user)
     
     await query.message.edit_caption(
-        caption=(
-            f"🎤〔 <b>AUCTIONEER CONFIRMED!</b> 〕🎤\n\n"
-            f"✅ {user_tag} is now the auctioneer!\n\n"
-            f"📋 <b>SETUP STEPS:</b>\n\n"
-            f"<b>1️⃣ Assign Bidders:</b>\n"
-            f"   <code>/bidder [TeamName]</code>\n\n"
-            f"<b>2️⃣ Add Players to Pool:</b>\n"
-            f"   <code>/aucplayer</code>\n\n"
-            f"<b>3️⃣ Launch the Auction:</b>\n"
-            f"   <code>/startauction</code>"
-        ),
-        parse_mode=ParseMode.HTML
+        caption=_auc_config_text(auction, user_tag),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_auc_config_kb(chat.id)
     )
+
+async def auction_config_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """⚙️ Handle +/- coins/players buttons and the Proceed button of the config step"""
+    query = update.callback_query
+    user = query.from_user
+    parts = query.data.split("_")  # auccfg_<field>_<op>_<chatid>  OR  auccfg_proceed_<chatid>
+    try:
+        chat_id = int(parts[-1])
+    except (ValueError, IndexError):
+        await query.answer("❌ Invalid data.", show_alert=True)
+        return
+
+    if chat_id not in active_auctions:
+        await query.answer("❌ No active auction!", show_alert=True)
+        return
+
+    auction = active_auctions[chat_id]
+
+    if user.id != auction.auctioneer_id:
+        await query.answer("🚫 Only the Auctioneer can change this!", show_alert=True)
+        return
+
+    if parts[1] == "proceed":
+        await query.answer("➡️ Moving to bidder selection...")
+        auction.setup_stage = "bidder"
+        await query.message.edit_caption(
+            caption=(
+                f"<blockquote>👥〔 <b>SELECT BIDDERS</b> 〕👥\n\n"
+                f"🪙 Purse: <b>{auction.default_purse}</b>  |  👤 Max Players: <b>{auction.max_players_per_team}</b>\n"
+                f"─────────────────\n\n"
+                f"Reply to each team's bidder with:\n"
+                f"<code>/bidder [TeamName]</code>\n\n"
+                f"<b>Example:</b> <code>/bidder Mumbai Indians</code>\n\n"
+                f"Add at least 2 teams, then tap Proceed.\n"
+                f"─────────────────</blockquote>"
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[
+                styled_button("✅ PROCEED AND CONTINUE", callback_data=f"auccfg_bidderdone_{chat_id}")
+            ]])
+        )
+        return
+
+    if parts[1] == "bidderdone":
+        if len(auction.teams) < 2:
+            await query.answer("⚠️ Need at least 2 teams with bidders assigned!", show_alert=True)
+            return
+        await query.answer("➡️ Moving to player addition...")
+        auction.setup_stage = "player"
+        await query.message.edit_caption(
+            caption=(
+                f"<blockquote>🏏〔 <b>ADD PLAYERS FOR AUCTION</b> 〕🏏\n\n"
+                f"📊 Teams Ready: <b>{len(auction.teams)}</b>\n"
+                f"─────────────────\n\n"
+                f"Reply to each player with:\n"
+                f"<code>/aucplayer</code>\n\n"
+                f"You'll set that player's base price, then confirm Yes/No.\n"
+                f"Add all players, then tap Proceed to go live.\n"
+                f"─────────────────</blockquote>"
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[
+                styled_button("✅ PROCEED AND CONTINUE", callback_data=f"auccfg_playerdone_{chat_id}")
+            ]])
+        )
+        return
+
+    if parts[1] == "playerdone":
+        if len(auction.player_pool) == 0:
+            await query.answer("⚠️ Add at least one player with /aucplayer!", show_alert=True)
+            return
+        await query.answer("🎤 Auction going live!")
+        auction.phase = AuctionPhase.AUCTION_LIVE
+        await query.message.edit_caption(
+            caption=(
+                "<blockquote>🎤〔 <b>AUCTION IS NOW LIVE!</b> 〕🎤\n\n"
+                "─────────────────\n"
+                "  🔨 BIDDING OPEN  \n"
+                "─────────────────\n\n"
+                "🏃‍♂️ First player coming up any moment!\n"
+                "⌨️ Use <code>/bid [amount]</code> or the quick-bid buttons!\n\n"
+                "🍀 <i>May the best team win!</i></blockquote>"
+            ),
+            parse_mode=ParseMode.HTML
+        )
+        await asyncio.sleep(2)
+        await bring_next_player(context, chat_id, auction)
+        return
+
+    # +/- coins/players
+    field = parts[1]       # "coins" or "players"
+    op = parts[2]           # "minus" or "plus"
+    delta = 20 if field == "coins" else 1
+    if op == "minus":
+        delta = -delta
+
+    if field == "coins":
+        auction.default_purse = max(20, auction.default_purse + delta)
+    else:
+        auction.max_players_per_team = max(1, auction.max_players_per_team + delta)
+
+    await query.answer()
+    user_tag = get_user_tag(user)
+    try:
+        await query.message.edit_caption(
+            caption=_auc_config_text(auction, user_tag),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_auc_config_kb(chat_id)
+        )
+    except Exception:
+        pass
+
+async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Purely decorative button (e.g. the 'Coins'/'Players' label) — do nothing."""
+    await update.callback_query.answer()
 
 async def unsold_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """❌ List unsold players"""
@@ -21645,7 +21835,7 @@ async def auc_confirm_sold_callback(update: Update, context: ContextTypes.DEFAUL
         return
 
     auction = active_auctions[chat_id]
-    if user.id != auction.auctioneer_id and user.id != auction.host_id:
+    if user.id != auction.auctioneer_id:
         await query.answer("🚫 Only the Auctioneer can confirm!", show_alert=True)
         return
 
@@ -21676,7 +21866,7 @@ async def auc_reject_sold_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     auction = active_auctions[chat_id]
-    if user.id != auction.auctioneer_id and user.id != auction.host_id:
+    if user.id != auction.auctioneer_id:
         await query.answer("🚫 Only the Auctioneer can reject!", show_alert=True)
         return
 
@@ -21702,7 +21892,7 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     auction = active_auctions[chat.id]
     
-    if user.id != auction.auctioneer_id and user.id != auction.host_id:
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text(
             "🚧 <b>ACCESS DENIED!</b>\n\n"
             "Only Auctioneer/Host can pause the auction.",
@@ -21733,7 +21923,7 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     auction = active_auctions[chat.id]
     
-    if user.id != auction.auctioneer_id and user.id != auction.host_id:
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text(
             "🚧 <b>ACCESS DENIED!</b>\n\n"
             "Only Auctioneer/Host can resume the auction.",
@@ -21762,7 +21952,7 @@ async def cancelbid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     auction = active_auctions[chat.id]
     # Permission check
-    if user.id != auction.auctioneer_id and user.id != auction.host_id:
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text(
             "🚧 <b>ACCESS DENIED!</b>\n\n"
             "Only Auctioneer can cancel bids!",
@@ -21889,32 +22079,17 @@ async def auction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     host_tag = get_user_tag(user)
     
     msg = (
-        "🎪 <b>AUCTION SETUP INITIATED!</b>\n"
+        "<blockquote>🎪 <b>AUCTION SETUP INITIATED!</b>\n"
         "─────────────────\n\n"
         f"🎙 <b>Host:</b> {host_tag}\n"
         f"📍 <b>Group:</b> {chat.title}\n\n"
         "─────────────────\n"
-        "📋 <b>STEP-BY-STEP GUIDE:</b>\n\n"
-        "<b>1️⃣ ASSIGN BIDDERS</b>\n"
-        "   Reply to user with:\n"
-        "   <code>/bidder [TeamName]</code>\n\n"
-        "   <b>Example:</b>\n"
-        "   <code>/bidder Mumbai Indians</code>\n\n"
-        "<b>2️⃣ SELECT AUCTIONEER</b>\n"
-        "   Click the button below ⬇️\n\n"
-        "<b>3️⃣ ADD PLAYERS</b>\n"
-        "   Reply to user with:\n"
-        "   <code>/aucplayer</code>\n"
-        "   You'll choose base price after\n\n"
-        "<b>4️⃣ START AUCTION</b>\n"
-        "   Use: <code>/startauction</code>\n\n"
-        "─────────────────\n"
-        "💰 <b>Starting Purse:</b> 1000 per team\n"
-        "⏱ <b>Bid Timer:</b> 45 seconds\n"
-        "─────────────────"
+        "🎤 Who wants to become the <b>Auctioneer</b>?\n"
+        "Tap the button below to claim it!\n"
+        "─────────────────</blockquote>"
     )
     
-    keyboard = [[styled_button("🎤 I'll be Auctioneer", callback_data="become_auctioneer")]]
+    keyboard = [[styled_button("🎤 I want to become Auctioneer", callback_data="become_auctioneer")]]
     
     try:
         sent = await update.message.reply_animation(
@@ -21999,7 +22174,7 @@ async def bidder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Create team if not exists
     if team_name not in auction.teams:
-        auction.teams[team_name] = AuctionTeam(team_name)
+        auction.teams[team_name] = AuctionTeam(team_name, starting_purse=auction.default_purse)
     
     team = auction.teams[team_name]
     team.bidder_id = target_user.id
@@ -22008,19 +22183,59 @@ async def bidder_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_tag = get_user_tag(target_user)
     
     await update.message.reply_text(
-        f"✅ <b>BIDDER ASSIGNED!</b>\n"
+        f"<blockquote>✅ <b>BIDDER ASSIGNED!</b>\n"
         f"─────────────────\n"
         f"🏏 <b>Team:</b> {team_name}\n"
         f"👤 <b>Bidder:</b> {target_tag}\n"
-        f"💰 <b>Starting Purse:</b> 1000\n"
+        f"💰 <b>Starting Purse:</b> {auction.default_purse}\n"
         f"─────────────────\n"
         f"📊 <b>Total Teams:</b> {len(auction.teams)}\n"
-        f"─────────────────",
+        f"─────────────────</blockquote>",
         parse_mode=ParseMode.HTML
     )
 
 async def aucplayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🤝 Bulk add players to auction"""
+    
+    # 🔁 /aucplayer unsold -> re-queue ALL unsold players back into the pool for re-auction
+    if context.args and context.args[0].lower() == "unsold":
+        chat = update.effective_chat
+        user = update.effective_user
+        if chat.id not in active_auctions:
+            await update.message.reply_text(
+                "🚫 <b>NO ACTIVE AUCTION!</b>\n\nStart an auction first with /auction",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        auction = active_auctions[chat.id]
+        if user.id != auction.auctioneer_id:
+            await update.message.reply_text(
+                "🚫 <b>AUCTIONEER ONLY!</b>\n\nOnly the auctioneer can re-queue unsold players!",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        if not auction.unsold_players:
+            await update.message.reply_text(
+                "✅ <b>NO UNSOLD PLAYERS!</b>\n\nThere's nothing to re-auction right now.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        count = 0
+        for player in auction.unsold_players:
+            if isinstance(player, dict):
+                auction.player_pool.append(player)
+                count += 1
+        auction.unsold_players.clear()
+        await update.message.reply_text(
+            f"<blockquote>🔁 <b>UNSOLD PLAYERS RE-QUEUED!</b>\n"
+            f"─────────────────\n\n"
+            f"📦 <b>Added Back to Pool:</b> {count}\n"
+            f"📊 <b>Total Pool Size:</b> {len(auction.player_pool)}\n\n"
+            f"They'll come up for bidding again in order.\n"
+            f"─────────────────</blockquote>",
+            parse_mode=ParseMode.HTML
+        )
+        return
     
     # Enhanced to support username, @mention, and user_id
     if not context.args or len(context.args) < 2:
@@ -22084,11 +22299,11 @@ async def aucplayer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     auction = active_auctions[chat.id]
-    # 🎤 Only Host can add players
-    if user.id != auction.host_id:
+    # 🎤 Only Auctioneer can add players
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text(
-            "🚫 <b>HOST ONLY!</b>\n\n"
-            "Only the auction host can add players!",
+            "🚫 <b>AUCTIONEER ONLY!</b>\n\n"
+            "Only the auctioneer can add players!",
             parse_mode=ParseMode.HTML
         )
         return
@@ -23511,7 +23726,7 @@ async def auction_list_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     auction = active_auctions[chat.id]
 
-    if user.id not in [auction.auctioneer_id, auction.host_id]:
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text(
             "🚧 <b>ACCESS DENIED!</b>\n\nOnly Auctioneer/Host can use /list.",
             parse_mode=ParseMode.HTML
@@ -23537,7 +23752,7 @@ async def pauseauction_command(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
     auction = active_auctions[chat.id]
-    if user.id not in [auction.auctioneer_id, auction.host_id]:
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text(
             "🚧 <b>ACCESS DENIED!</b>\n\n"
             "Only Auctioneer/Host can pause!",
@@ -23605,7 +23820,7 @@ async def resumeauction_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     auction = active_auctions[chat.id]
-    if user.id not in [auction.auctioneer_id, auction.host_id]:
+    if user.id != auction.auctioneer_id:
         await update.message.reply_text(
             "🚧 <b>ACCESS DENIED!</b>\n\n"
             "Only Auctioneer/Host can resume!",
@@ -23666,81 +23881,6 @@ async def base_price_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"─────────────────",
         parse_mode=ParseMode.HTML
     )
-
-async def startauction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🎯 Start live auction - EPIC INTRO"""
-    chat = update.effective_chat
-    user = update.effective_user
-    
-    if chat.id not in active_auctions:
-        await update.message.reply_text(
-            "❌ <b>NO AUCTION SETUP!</b>\n\n"
-            "Use /auction to start auction setup.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    auction = active_auctions[chat.id]
-    
-    if user.id != auction.host_id:
-        await update.message.reply_text(
-            "🔒 <b>HOST ONLY!</b>\n\n"
-            "Only the host can start the auction!",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    # Validations
-    if not auction.auctioneer_id:
-        await update.message.reply_text(
-            "⚠️ <b>NO AUCTIONEER!</b>\n\n"
-            "Please select an auctioneer first!",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    if len(auction.teams) < 2:
-        await update.message.reply_text(
-            "⚠️ <b>NOT ENOUGH TEAMS!</b>\n\n"
-            "Need at least 2 teams to start!",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    if len(auction.player_pool) == 0:
-        await update.message.reply_text(
-            "⚠️ <b>NO PLAYERS!</b>\n\n"
-            "Add players first using /aucplayer!",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    
-    auction.phase = AuctionPhase.AUCTION_LIVE
-    
-    # 🎬 EPIC OPENING
-    countdown_gif = GIFS.get("auction_countdown")
-    
-    msg = (
-        "🎪 <b>AUCTION STARTING!</b>\n"
-        "─────────────────\n\n"
-        "🎬 <b>Get Ready...</b>\n\n"
-        "⏱ Starting in 3 seconds...\n\n"
-        "─────────────────"
-    )
-    
-    try:
-        await update.message.reply_animation(
-            animation=countdown_gif,
-            caption=msg,
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 22825)")
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-    
-    await asyncio.sleep(3)
-    await bring_next_player(context, chat.id, auction)
-
 
 async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """💰 Place Bid - FIXED: Proper Timer Reset"""
@@ -23840,6 +23980,14 @@ async def bid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💰 <b>INSUFFICIENT FUNDS!</b>\n\n"
                 f"Your purse: <b>{team.purse_remaining}</b>\n"
                 f"Your bid: <b>{amount}</b>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        if len(team.players) >= getattr(auction, 'max_players_per_team', 11):
+            await update.message.reply_text(
+                f"🚫 <b>SQUAD FULL!</b>\n\n"
+                f"<b>{team_name}</b> already has the max {auction.max_players_per_team} players!",
                 parse_mode=ParseMode.HTML
             )
             return
@@ -23952,6 +24100,10 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(f"💰 Insufficient purse! You have {team.purse_remaining}", show_alert=True)
             return
 
+        if len(team.players) >= getattr(auction, 'max_players_per_team', 11):
+            await query.answer(f"🚫 {team_name} squad is full ({auction.max_players_per_team})!", show_alert=True)
+            return
+
         # Place bid
         auction.current_highest_bid = amount
         auction.current_highest_bidder = team_name
@@ -23989,52 +24141,10 @@ async def quickbid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _update_auction_history_message(context, chat_id: int, auction):
-    """Edit or send the running auction history log message (sold/unsold history + live bids for current player)."""
-    live_log = getattr(auction, "live_bid_log", []) or []
-    if not auction.auction_history and not live_log:
-        return
-    lines = ["📜 <b>AUCTION HISTORY LOG</b>", "─────────────────"]
-    for idx, entry in enumerate(auction.auction_history, 1):
-        if entry["sold"]:
-            lines.append(
-                '<a href="tg://user?id=' + str(entry['player_id']) + '">' + str(entry['player_name']) + '</a>'
-                f" → <b>{entry['team']}</b> · 💰{entry['price']}"
-            )
-        else:
-            lines.append(
-                '<a href="tg://user?id=' + str(entry['player_id']) + '">' + str(entry['player_name']) + '</a>'
-                f" → ❌ <i>Unsold</i>"
-            )
-    lines.append(f"─────────────────")
-    lines.append(f"✅ Sold: <b>{sum(1 for e in auction.auction_history if e['sold'])}</b>  "
-                 f"❌ Unsold: <b>{sum(1 for e in auction.auction_history if not e['sold'])}</b>  "
-                 f"📦 Remaining: <b>{len(auction.player_pool)}</b>")
-
-    # 🔴 Live bidding section — who's bidding what, right now, for the current player
-    if live_log and auction.current_player_id:
-        lines.append("─────────────────")
-        lines.append(f"🔴 <b>LIVE — {auction.current_player_name}</b>")
-        for i, b in enumerate(live_log, 1):
-            lines.append(f"{i}. {b['bidder']} ({b['team']}) ➔ 💰{b['amount']}")
-
-    text = "\n".join(lines)
-    try:
-        if auction.history_message_id:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=auction.history_message_id,
-                text=text,
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            sent = await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
-            auction.history_message_id = sent.message_id
-            try:
-                await context.bot.pin_chat_message(chat_id, sent.message_id, disable_notification=True)
-            except Exception:
-                pass
-    except Exception as e:
-        logger.error(f"Auction history update error: {e}")
+    """🚫 REMOVED: the running auction history log message has been removed per user request
+    to keep the auction real-time and fast (no pinned/edited log message anymore).
+    Kept as a no-op so existing call sites don't need to change."""
+    return
 
 
 async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: Auction):
@@ -24054,7 +24164,7 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 _team_obj = auction.teams.get(last_team_name)
                 purse_left = _team_obj.purse_remaining if _team_obj else "?"
                 parts = [
-                    "💰 <b>NEW BID PLACED!</b>",
+                    "<blockquote>💰 <b>NEW BID PLACED!</b>",
                     "┌───────────────────",
                     f"├ 🔨Player : {p_tag}",
                     f"├ 🪙 Bid Amount : {auction.current_highest_bid} 🔷",
@@ -24064,18 +24174,18 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                     f"├ 💰 Purse Remaining ➔ {purse_left} 🔷",
                     f"├ 👑 Leader ➔ {last_bidder_tag}",
                     "└───────────────────",
-                    f"{color} {s}s Remaining (/bid amount)",
+                    f"{color} {s}s Remaining (/bid amount)</blockquote>",
                 ]
             else:
                 # No bid yet on this player — waiting for the first bid
                 parts = [
-                    "💰 <b>WAITING FOR BIDS!</b>",
+                    "<blockquote>💰 <b>WAITING FOR BIDS!</b>",
                     "┌───────────────────",
                     f"├ 🔨Player : {p_tag}",
                     f"├ 🪙 Base Price : {auction.current_base_price} 🔷",
                     "└───────────────────",
                     "👑 Leader ➔ None",
-                    f"{color} {s}s Remaining (/bid amount)",
+                    f"{color} {s}s Remaining (/bid amount)</blockquote>",
                 ]
             return "\n".join(parts)
 
@@ -24323,10 +24433,18 @@ async def bid_timer(context: ContextTypes.DEFAULT_TYPE, chat_id: int, auction: A
                 await bring_next_player(context, chat_id, auction)
 
     except asyncio.CancelledError:
-        # On cancel (new bid came in), delete stale countdown message
+        # ⚡ REAL-TIME FIX: a new bid came in — do NOT delete the old message.
+        # Just strip its buttons (so it becomes a static snapshot of that
+        # moment) and leave it in the chat. The new bid_timer task that
+        # cancelled us will send a brand-new message with fresh quick-bid
+        # buttons right away, so bidding feels instant.
         if auction.countdown_message_id:
             try:
-                await context.bot.delete_message(chat_id, auction.countdown_message_id)
+                await context.bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=auction.countdown_message_id,
+                    reply_markup=None
+                )
             except Exception:
                 pass
             auction.countdown_message_id = None
@@ -29423,11 +29541,10 @@ async def endauction_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 27743)")
         is_admin = False
     
-    is_host = (user_id == auction.host_id)
-    is_owner = (user_id == OWNER_ID)
+    is_auctioneer = (user_id == auction.auctioneer_id)
     
-    if not (is_host or is_admin or is_owner):
-        await update.message.reply_text("❌ Only host, admins, or bot owner can end the auction!")
+    if not is_auctioneer:
+        await update.message.reply_text("❌ Only the Auctioneer can conclude the auction!")
         return
     
     if auction.bid_timer_task:
@@ -29683,6 +29800,11 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             return
         
         auction = active_auctions[chat_id]
+
+        if query.from_user.id != auction.auctioneer_id:
+            await query.answer("🚫 Only the Auctioneer can conclude the auction!", show_alert=True)
+            return
+
         auction.phase = AuctionPhase.AUCTION_ENDED
         
         if auction.bid_timer_task:
@@ -34538,7 +34660,6 @@ def main():
     application.add_handler(CommandHandler("wallet", wallet_command))
     application.add_handler(CommandHandler("purse", wallet_command))  # Alias
     application.add_handler(CommandHandler("unsold", unsold_command))
-    application.add_handler(CommandHandler("startauction", startauction_command))
     
     # Auction controls
     application.add_handler(CommandHandler("endauction", endauction_command))
@@ -34677,6 +34798,8 @@ def main():
     )
     application.add_handler(CallbackQueryHandler(closereg_callback, pattern="^closereg_"))
     application.add_handler(CallbackQueryHandler(become_auctioneer_callback, pattern="^become_auctioneer$"))
+    application.add_handler(CallbackQueryHandler(auction_config_callback, pattern="^auccfg_"))
+    application.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
     application.add_handler(CallbackQueryHandler(base_price_callback, pattern="^base_"))
     application.add_handler(CallbackQueryHandler(start_auction_live_callback, pattern="^start_auction_live$"))
     

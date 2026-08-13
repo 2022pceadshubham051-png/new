@@ -17179,16 +17179,15 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
                 circle.paste(pfp, (0, 0), mask)
                 img_overlay.alpha_composite(circle, (cx - r, cy - r))
 
-            # Template layout (native 1774 x 887) — pixel-calibrated via white-circle
-            # connected-component detection on the new CRICOVERSE template:
-            # LEFT  circle (Team X cap) : cx=472,  cy=555, inner_r=142
-            # RIGHT circle (Team Y cap) : cx=1291, cy=554, inner_r=144
-            # CENTER small (Host)       : cx=886,  cy=290, inner_r=88
-            paste_circle(overlay_img, cap_x_bytes,  472, 555, 142,
+            # Template layout (native 1598 x 984) — pixel-calibrated via color-mask detection:
+            # LEFT  circle (Team X cap) : cx=359,  cy=555, inner_r=155
+            # RIGHT circle (Team Y cap) : cx=1236, cy=555, inner_r=157
+            # CENTER small (Host)       : cx=801,  cy=356, inner_r=78
+            paste_circle(overlay_img, cap_x_bytes,  359, 555, 155,
                          initials=(team_x_name or "X")[:2].upper())
-            paste_circle(overlay_img, cap_y_bytes,  1291, 554, 144,
+            paste_circle(overlay_img, cap_y_bytes,  1236, 555, 157,
                          initials=(team_y_name or "Y")[:2].upper())
-            paste_circle(overlay_img, host_bytes,   886, 290, 88,
+            paste_circle(overlay_img, host_bytes,   801, 356,  78,
                          initials=(host_name or "H")[:2].upper())
 
             # NOTE: This template has baked-in static labels ("TEAM X" / "TEAM Y" / "HOST")
@@ -18206,43 +18205,45 @@ def generate_tour_leaderboard_image(group_id: int) -> Optional[BytesIO]:
 def generate_momentum_image(match) -> Optional[BytesIO]:
     """
     🏎️ Single big speedometer-style WIN PROBABILITY gauge.
-    White background, blue (batting team) vs red (bowling team) needle arc,
-    styled like a car/bike speedometer.
+    New light UI palette, flat blue/red arcs, 16:8 (2:1) canvas.
     """
     try:
         import math
         from io import BytesIO
         from PIL import Image, ImageDraw
 
-        W, H = 2200, 1750
-        img = Image.new('RGB', (W, H), (255, 255, 255))
-        draw = ImageDraw.Draw(img)
+        SC = 2
+        W, H = 1600 * SC, 800 * SC   # 16:8 → 2:1
 
-        C_WHITE   = (255, 255, 255)
-        C_BLACK   = (18, 18, 24)
-        C_GRAY    = (110, 118, 135)
-        C_TRACK   = (225, 228, 236)
-        C_BLUE    = (30, 90, 230)     # Batting side
-        C_BLUE2   = (90, 150, 255)
-        C_RED     = (220, 35, 45)     # Bowling side
-        C_RED2    = (255, 95, 90)
+        C_BG      = (246, 248, 252)   # #F6F8FC
+        C_CARD    = (255, 255, 255)   # #FFFFFF
+        C_BORDER  = (229, 231, 235)   # #E5E7EB
+        C_MAIN    = (17, 24, 39)      # #111827
+        C_SEC     = (100, 116, 139)   # #64748B
+        C_X       = (37, 99, 235)     # #2563EB  Team X
+        C_Y       = (239, 51, 64)     # #EF3340  Team Y
+        C_GRID    = (226, 232, 240)   # #E2E8F0
+
+        img = Image.new('RGB', (W, H), C_BG)
+        draw = ImageDraw.Draw(img)
 
         tx_name = match.team_x.name[:16]
         ty_name = match.team_y.name[:16]
 
-        f_hdr  = _get_font(True,  96)
-        f_sub  = _get_font(False, 54)
-        f_med  = _get_font(True,  70)
-        f_sml  = _get_font(False, 48)
-        f_num  = _get_font(True,  190)
+        f_hdr  = _get_font(True,  40*SC)
+        f_sub  = _get_font(False, 22*SC)
+        f_med  = _get_font(True,  26*SC)
+        f_sml  = _get_font(False, 18*SC)
+        f_num  = _get_font(True,  56*SC)
 
-        # Header (no emoji)
-        _draw_text_centered(draw, "MOMENTUM DASHBOARD", W//2, 40, f_hdr, C_BLACK)
-        _draw_text_centered(draw, f"{tx_name}  vs  {ty_name}", W//2, 150, f_sub, C_GRAY)
+        # Card
+        pad = 20*SC
+        _draw_rounded_rect(draw, (pad, pad, W-pad, H-pad), radius=24*SC, fill=C_CARD, outline=C_BORDER, width=2*SC)
 
-        # ═══════════════════════════════
-        #  WIN PROBABILITY — big speedometer
-        # ═══════════════════════════════
+        # Header
+        _draw_text_centered(draw, "MOMENTUM DASHBOARD", W//2, 34*SC, f_hdr, C_MAIN)
+        _draw_text_centered(draw, f"{tx_name}  vs  {ty_name}", W//2, 84*SC, f_sub, C_SEC)
+
         def win_prob(team, opp):
             if match.innings == 1:
                 rr_t = team.score / max(team.balls / 6, 0.1)
@@ -18266,80 +18267,76 @@ def generate_momentum_image(match) -> Optional[BytesIO]:
         wp_bat  = win_prob(bat_team, bowl_team)
         wp_bowl = 100 - wp_bat
 
-        cx, cy = W // 2, 980
-        radius = 560
-        sa, ea = 180, 360   # bottom semicircle speedometer sweep
+        # Map probabilities to fixed team identity: Team X is always blue, Team Y is always red
+        wp_x = wp_bat if bat_team == match.team_x else wp_bowl
+        wp_y = 100 - wp_x
+
+        cx, cy = W // 2, int(H * 0.62)
+        radius = int(H * 0.30)
+        sa, ea = 180, 360   # bottom semicircle sweep
         span = ea - sa
 
-        # Outer dial ring (car speedometer look)
-        draw.ellipse([(cx-radius-40, cy-radius-40), (cx+radius+40, cy+radius+40)],
-                     outline=C_BLACK, width=6)
+        # Track arc (flat grid color)
+        draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)], sa, ea, fill=C_GRID, width=int(14*SC))
 
-        # Track arc
-        draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)], sa, ea, fill=C_TRACK, width=90)
-
-        # Blue half (batting team win%)
-        blue_deg = span * wp_bat / 100
+        # Blue half — flat color (Team X win%)
+        blue_deg = span * wp_x / 100
         blue_end = sa + blue_deg
-        segs = max(2, int(blue_deg // 2))
-        for si in range(segs):
-            t = si / max(segs - 1, 1)
-            rc = int(C_BLUE[0] + t*(C_BLUE2[0]-C_BLUE[0]))
-            gc = int(C_BLUE[1] + t*(C_BLUE2[1]-C_BLUE[1]))
-            bc = int(C_BLUE[2] + t*(C_BLUE2[2]-C_BLUE[2]))
-            s1 = sa + si * (blue_deg / segs)
-            s2 = sa + (si+1) * (blue_deg / segs) + 1
-            draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)], s1, s2, fill=(rc, gc, bc), width=90)
+        draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)], sa, blue_end, fill=C_X, width=int(14*SC))
 
-        # Red half (bowling team win%)
-        red_deg = span - blue_deg
-        segs = max(2, int(red_deg // 2))
-        for si in range(segs):
-            t = si / max(segs - 1, 1)
-            rc = int(C_RED2[0] + t*(C_RED[0]-C_RED2[0]))
-            gc = int(C_RED2[1] + t*(C_RED[1]-C_RED2[1]))
-            bc = int(C_RED2[2] + t*(C_RED[2]-C_RED2[2]))
-            s1 = blue_end + si * (red_deg / segs)
-            s2 = blue_end + (si+1) * (red_deg / segs) + 1
-            draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)], s1, s2, fill=(rc, gc, bc), width=90)
+        # Red half — flat color (Team Y win%)
+        draw.arc([(cx-radius, cy-radius), (cx+radius, cy+radius)], blue_end, ea, fill=C_Y, width=int(14*SC))
 
-        # Tick marks like a speedometer
+        # Tick marks
         for tick_p in range(0, 101, 10):
             ta = math.radians(sa + span * tick_p / 100)
             is_major = tick_p % 20 == 0
-            t_in  = radius + (18 if is_major else 30)
-            t_out = radius + (85 if is_major else 60)
+            t_in  = radius + (3*SC if is_major else 6*SC)
+            t_out = radius + (16*SC if is_major else 11*SC)
             tx1 = cx + int(t_in  * math.cos(ta)); ty1 = cy + int(t_in  * math.sin(ta))
             tx2 = cx + int(t_out * math.cos(ta)); ty2 = cy + int(t_out * math.sin(ta))
-            draw.line([(tx1, ty1), (tx2, ty2)], fill=C_BLACK, width=8 if is_major else 4)
+            draw.line([(tx1, ty1), (tx2, ty2)], fill=C_SEC if is_major else C_GRID, width=int(3*SC) if is_major else int(2*SC))
 
         # Needle
-        needle_angle = math.radians(sa + span * wp_bat / 100)
-        needle_len = radius - 60
+        needle_angle = math.radians(sa + span * wp_x / 100)
+        needle_len = radius - int(10*SC)
         nx = cx + int(needle_len * math.cos(needle_angle))
         ny = cy + int(needle_len * math.sin(needle_angle))
-        draw.line([(cx, cy+5), (nx+5, ny+5)], fill=(150, 150, 150), width=14)
-        draw.line([(cx, cy), (nx, ny)], fill=C_BLACK, width=16)
-        draw.ellipse([(cx-40, cy-40), (cx+40, cy+40)], fill=C_BLACK)
-        draw.ellipse([(cx-20, cy-20), (cx+20, cy+20)], fill=C_WHITE)
+        draw.line([(cx, cy), (nx, ny)], fill=C_MAIN, width=int(5*SC))
+        draw.ellipse([(cx-int(9*SC), cy-int(9*SC)), (cx+int(9*SC), cy+int(9*SC))], fill=C_MAIN)
+        draw.ellipse([(cx-int(4*SC), cy-int(4*SC)), (cx+int(4*SC), cy+int(4*SC))], fill=C_CARD)
 
-        # Title inside dial
-        _draw_text_centered(draw, "WIN PROBABILITY", cx, cy - radius - 130, f_med, C_BLACK)
+        # Title above dial
+        _draw_text_centered(draw, "WIN PROBABILITY", cx, cy - radius - int(34*SC), f_med, C_MAIN)
 
-        # Side labels + percentages
-        _draw_text_centered(draw, bat_team.name[:14], cx - radius - 60, cy + 90, f_med, C_BLUE)
-        _draw_text_centered(draw, f"{wp_bat:.0f}%", cx - radius - 60, cy + 160, f_num, C_BLUE)
+        # Divider under dial
+        div_y = cy + int(10*SC)
+        draw.line([(cx - radius - int(30*SC), div_y), (cx + radius + int(30*SC), div_y)], fill=C_BORDER, width=int(2*SC))
 
-        _draw_text_centered(draw, bowl_team.name[:14], cx + radius + 60, cy + 90, f_med, C_RED)
-        _draw_text_centered(draw, f"{wp_bowl:.0f}%", cx + radius + 60, cy + 160, f_num, C_RED)
+        # Side labels + percentages — Team X (blue) on the left, Team Y (red) on the right
+        _draw_text_centered(draw, match.team_x.name[:14], cx - radius - int(20*SC), div_y + int(14*SC), f_med, C_X)
+        _draw_text_centered(draw, f"{wp_x:.0f}%", cx - radius - int(20*SC), div_y + int(42*SC), f_num, C_X)
 
-        draw.line([(80, cy+40), (W-80, cy+40)], fill=C_TRACK, width=3)
+        _draw_text_centered(draw, match.team_y.name[:14], cx + radius + int(20*SC), div_y + int(14*SC), f_med, C_Y)
+        _draw_text_centered(draw, f"{wp_y:.0f}%", cx + radius + int(20*SC), div_y + int(42*SC), f_num, C_Y)
+
+        # Slight-edge pill
+        leader_name = match.team_x.name[:14] if wp_x >= wp_y else match.team_y.name[:14]
+        pill_txt = f"Slight edge: {leader_name}"
+        bbox = draw.textbbox((0, 0), pill_txt, font=f_sml)
+        pw, ph = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        ppad_x, ppad_y = 16*SC, 8*SC
+        pcx = cx
+        pcy = div_y + int(14*SC)
+        _draw_rounded_rect(draw, (pcx-pw//2-ppad_x, pcy-ph//2-ppad_y, pcx+pw//2+ppad_x, pcy+ph//2+ppad_y),
+                            radius=16*SC, fill=C_BG, outline=C_BORDER, width=2)
+        draw.text((pcx-pw//2, pcy-ph//2-4), pill_txt, font=f_sml, fill=C_SEC)
 
         # Footer
-        footer_y = H - 90
-        draw.line([(0, footer_y), (W, footer_y)], fill=C_BLACK, width=3)
+        footer_y = H - pad - int(30*SC)
+        draw.line([(pad+int(20*SC), footer_y), (W-pad-int(20*SC), footer_y)], fill=C_BORDER, width=2)
         _draw_text_centered(draw, f"Cricora  |  {match.group_name[:30]}  |  Ultra Analytics",
-                            W//2, footer_y + 20, f_sml, C_GRAY)
+                            W//2, footer_y + int(8*SC), f_sml, C_SEC)
 
         bio = BytesIO()
         img.save(bio, 'PNG', optimize=False)
@@ -33564,26 +33561,36 @@ def _cv_draw_panel(draw, xy, radius, fill, outline=None, width=2):
 
 
 def generate_worm_graph(match) -> Optional[BytesIO]:
-    """Clean white-background score progression card: simple red/blue lines,
-    black grid, red squares for wickets, no outer box."""
+    """Clean score progression card using the light UI palette, 16:8 (2:1) canvas."""
     try:
         import math
         SC = 2
-        W, H = 1600 * SC, 900 * SC
-        img = Image.new("RGBA", (W, H), (255, 255, 255, 255))
+        W, H = 1600 * SC, 800 * SC   # 16:8 → 2:1
+
+        C_BG      = (246, 248, 252, 255)   # #F6F8FC
+        C_CARD    = (255, 255, 255, 255)   # #FFFFFF
+        C_BORDER  = (229, 231, 235, 255)   # #E5E7EB
+        C_MAIN    = (17, 24, 39, 255)      # #111827
+        C_SEC     = (100, 116, 139, 255)   # #64748B
+        C_X       = (37, 99, 235, 255)     # #2563EB Team X
+        C_Y       = (239, 51, 64, 255)     # #EF3340 Team Y
+        C_GRID    = (226, 232, 240, 255)   # #E2E8F0
+        C_WICKET  = (239, 51, 64, 255)     # #EF3340
+        C_MILESTONE = (245, 158, 11, 255)  # #F59E0B
+
+        img = Image.new("RGBA", (W, H), C_BG)
         draw = ImageDraw.Draw(img)
 
-        C_X, C_Y = (20, 60, 200, 255), (210, 25, 35, 255)   # dark blue vs red
-        C_BLACK, C_WHITE, C_MUTED = (20, 20, 25, 255), (255, 255, 255, 255), (90, 90, 100, 255)
-        C_GRID = (0, 0, 0, 70)
-        PAD_L, PAD_R, PAD_T, PAD_B = 130*SC, 90*SC, 185*SC, 150*SC
+        pad = 16*SC
+        _draw_rounded_rect(draw, (pad, pad, W-pad, H-pad), radius=20*SC, fill=C_CARD, outline=C_BORDER, width=2*SC)
+
+        PAD_L, PAD_R, PAD_T, PAD_B = 130*SC, 90*SC, 175*SC, 120*SC
         CW, CH = W - PAD_L - PAD_R, H - PAD_T - PAD_B
 
-        f_title = _get_font(True, 54*SC)
-        f_sub = _get_font(False, 25*SC)
-        f_axis = _get_font(False, 22*SC)
-        f_bold = _get_font(True, 28*SC)
-        f_big = _get_font(True, 44*SC)
+        f_title = _get_font(True, 44*SC)
+        f_sub = _get_font(False, 22*SC)
+        f_axis = _get_font(False, 20*SC)
+        f_bold = _get_font(True, 24*SC)
 
         def innings_points(team_name):
             scores, wkts, balls = [0], [False], [0]
@@ -33603,51 +33610,121 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
         max_score = max(max(xs or [0]), max(ys or [0]), getattr(match.team_x, "score", 0), getattr(match.team_y, "score", 0), 12)
         max_score = int(math.ceil((max_score + 12) / 10.0) * 10)
 
-        # No outer box — just the title text on white
-        draw.text((82*SC, 64*SC), "CRICOVERSE GRAPH", font=f_title, fill=C_BLACK)
-        draw.text((86*SC, 126*SC), f"{match.team_x.name} vs {match.team_y.name}  |  {getattr(match, 'total_overs', 0)} overs", font=f_sub, fill=C_MUTED)
+        draw.text((70*SC, 56*SC), "CRICOVERSE GRAPH", font=f_title, fill=C_MAIN)
+        draw.text((74*SC, 108*SC), f"{match.team_x.name} vs {match.team_y.name}  |  {getattr(match, 'total_overs', 0)} overs", font=f_sub, fill=C_SEC)
 
         # Team scores banners
-        score_box_w = 310 * SC
-        for idx, (team, color, x1) in enumerate([(match.team_x, C_X, W - 725*SC), (match.team_y, C_Y, W - 390*SC)]):
-            _cv_draw_panel(draw, [x1, 66*SC, x1+score_box_w, 142*SC], 18*SC, (255, 255, 255, 255), color, 2*SC)
-            draw.text((x1+22*SC, 80*SC), _cv_safe_name(team.name, 14), font=f_axis, fill=color)
-            draw.text((x1+22*SC, 105*SC), f"{team.score}/{team.wickets} ({format_overs(team.balls)})", font=f_bold, fill=C_BLACK)
+        score_box_w = 300 * SC
+        for idx, (team, color, x1) in enumerate([(match.team_x, C_X, W - 700*SC), (match.team_y, C_Y, W - 370*SC)]):
+            _cv_draw_panel(draw, [x1, 58*SC, x1+score_box_w, 130*SC], 16*SC, C_CARD, color, 2*SC)
+            draw.text((x1+20*SC, 70*SC), _cv_safe_name(team.name, 14), font=f_axis, fill=color)
+            draw.text((x1+20*SC, 94*SC), f"{team.score}/{team.wickets} ({format_overs(team.balls)})", font=f_bold, fill=C_MAIN)
 
-        # ── DETAILED AXIS ──
+        # ── AXIS / GRID ──
         for j in range(11):
             val = int(j * max_score / 10)
             y = PAD_T + CH - int(j * CH / 10)
             draw.line([(PAD_L, y), (PAD_L+CW, y)], fill=C_GRID, width=1*SC)
-            draw.text((PAD_L-72*SC, y-13*SC), str(val), font=f_axis, fill=C_MUTED)
+            draw.text((PAD_L-68*SC, y-12*SC), str(val), font=f_axis, fill=C_SEC)
 
         for ov in range(0, getattr(match, "total_overs", 5) + 1):
             ball = ov * 6
             x = PAD_L + int(ball / max_balls * CW)
             draw.line([(x, PAD_T), (x, PAD_T+CH)], fill=C_GRID, width=1*SC)
-            draw.text((x-10*SC, PAD_T+CH+24*SC), str(ov), font=f_axis, fill=C_MUTED)
+            draw.text((x-9*SC, PAD_T+CH+20*SC), str(ov), font=f_axis, fill=C_SEC)
 
         def px(ball, score):
             return (PAD_L + int(ball / max_balls * CW), PAD_T + CH - int(score / max_score * CH))
 
-        def draw_series(scores, wkts, color, live):
-            pts = [px(i, s) for i, s in enumerate(scores)]
-            if len(pts) < 2:
-                return
+        def catmull_rom(pts, n_per_seg=10):
+            """Smooth a polyline into a natural curve (adds visual depth to the worm)."""
+            if len(pts) < 3:
+                return pts
+            p = [pts[0]] + pts + [pts[-1]]
+            out = []
+            for i in range(1, len(p) - 2):
+                p0, p1, p2, p3 = p[i-1], p[i], p[i+1], p[i+2]
+                for t_i in range(n_per_seg):
+                    t = t_i / n_per_seg
+                    t2, t3 = t*t, t*t*t
+                    x = 0.5 * ((2*p1[0]) + (-p0[0]+p2[0])*t +
+                               (2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*t2 +
+                               (-p0[0]+3*p1[0]-3*p2[0]+p3[0])*t3)
+                    y = 0.5 * ((2*p1[1]) + (-p0[1]+p2[1])*t +
+                               (2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*t2 +
+                               (-p0[1]+3*p1[1]-3*p2[1]+p3[1])*t3)
+                    out.append((x, y))
+            out.append(pts[-1])
+            return out
 
-            # Simple solid line, no gradient / multicolor / area fill
-            draw.line(pts, fill=color, width=6*SC, joint="curve")
+        def draw_series(scores, wkts, color, live):
+            raw_pts = [px(i, s) for i, s in enumerate(scores)]
+            if len(raw_pts) < 2:
+                return
+            pts = catmull_rom(raw_pts, n_per_seg=10)
+
+            # ── Depth layer 1: soft gradient area-fill under the curve ──
+            from PIL import ImageChops
+            base_y = PAD_T + CH
+            poly = [(pts[0][0], base_y)] + pts + [(pts[-1][0], base_y)]
+            grad = Image.new("RGBA", (W, H), (color[0], color[1], color[2], 255))
+            poly_mask = Image.new("L", (W, H), 0)
+            ImageDraw.Draw(poly_mask).polygon(poly, fill=255)
+            vgrad_mask = Image.new("L", (W, H), 0)
+            vdraw = ImageDraw.Draw(vgrad_mask)
+            for yy in range(PAD_T, base_y + 1):
+                t = (yy - PAD_T) / max(1, (base_y - PAD_T))
+                a = int(55 * (1 - t) ** 1.6)
+                vdraw.line([(0, yy), (W, yy)], fill=a)
+            final_mask = ImageChops.multiply(poly_mask, vgrad_mask)
+            grad.putalpha(final_mask)
+            img.paste(Image.alpha_composite(img, grad), (0, 0))
+            draw = ImageDraw.Draw(img)
+
+            # ── Depth layer 2: soft drop shadow beneath the line (single-pass composite
+            # so overlapping curve segments don't stack alpha into a harsh dark band) ──
+            shadow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            sdraw = ImageDraw.Draw(shadow_layer)
+            shadow_pts = [(x, y + 4*SC) for x, y in pts]
+            sdraw.line(shadow_pts, fill=(15, 23, 42, 255), width=int(5*SC), joint="curve")
+            r, g, b, a = shadow_layer.split()
+            a = a.point(lambda v: int(v * 0.10))
+            shadow_layer = Image.merge("RGBA", (r, g, b, a))
+            img.paste(Image.alpha_composite(img, shadow_layer), (0, 0))
+            draw = ImageDraw.Draw(img)
+
+            # ── Main line with a subtle lighter highlight on top for a "glossy" feel ──
+            draw.line(pts, fill=color, width=int(5*SC), joint="curve")
+            hi_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            hidraw = ImageDraw.Draw(hi_layer)
+            highlight = tuple(min(255, c + 55) for c in color[:3]) + (255,)
+            hidraw.line(pts, fill=highlight, width=int(2*SC), joint="curve")
+            r, g, b, a = hi_layer.split()
+            a = a.point(lambda v: int(v * 0.45))
+            hi_layer = Image.merge("RGBA", (r, g, b, a))
+            img.paste(Image.alpha_composite(img, hi_layer), (0, 0))
+            draw = ImageDraw.Draw(img)
 
             if live:
                 lx, ly = pts[-1]
-                draw.ellipse([lx-18*SC, ly-18*SC, lx+18*SC, ly+18*SC], fill=C_WHITE, outline=color, width=4*SC)
+                draw.ellipse([lx-4*SC-15*SC, ly-4*SC-15*SC, lx+4*SC+15*SC, ly+4*SC+15*SC], fill=(15, 23, 42, 35))
+                draw.ellipse([lx-15*SC, ly-15*SC, lx+15*SC, ly+15*SC], fill=C_CARD, outline=color, width=4*SC)
 
-            # Wicket markers only — plain red square, no text
-            for i, (x, y) in enumerate(pts[1:], 1):
+            prev_milestone = 0
+            for i, (x, y) in enumerate(raw_pts[1:], 1):
                 is_w = wkts[i] if i < len(wkts) else False
                 if is_w:
-                    s = 15*SC
-                    draw.rectangle([x-s, y-s, x+s, y+s], fill=(210, 25, 35, 255), outline=C_WHITE, width=2*SC)
+                    s = 13*SC
+                    draw.rectangle([x-s+3*SC, y-s+5*SC, x+s+3*SC, y+s+5*SC], fill=(15, 23, 42, 40))
+                    draw.rectangle([x-s, y-s, x+s, y+s], fill=C_WICKET, outline=C_CARD, width=2*SC)
+                    continue
+                # Milestone marker every 50 runs
+                milestone = (scores[i] // 50) * 50
+                if milestone > prev_milestone and milestone > 0:
+                    r = 9*SC
+                    draw.ellipse([x-r+3*SC, y-r+5*SC, x+r+3*SC, y+r+5*SC], fill=(15, 23, 42, 40))
+                    draw.ellipse([x-r, y-r, x+r, y+r], fill=C_MILESTONE, outline=C_CARD, width=2*SC)
+                    prev_milestone = milestone
 
         draw_series(xs, xw, C_X, getattr(match, "current_batting_team", None) == match.team_x)
         draw_series(ys, yw, C_Y, getattr(match, "current_batting_team", None) == match.team_y)
@@ -33658,14 +33735,14 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
             need = max(match.target - bat.score, 0)
             balls_left = max(getattr(match, "total_overs", 0) * 6 - bat.balls, 0)
             chase = f"CHASE: {need} needed from {balls_left} balls"
-            _cv_draw_panel(draw, [PAD_L, H-112*SC, PAD_L+520*SC, H-62*SC], 16*SC, (255, 255, 255, 255), C_BLACK, 2*SC)
-            draw.text((PAD_L+24*SC, H-99*SC), chase, font=f_bold, fill=C_BLACK)
+            _cv_draw_panel(draw, [PAD_L, H-100*SC, PAD_L+480*SC, H-56*SC], 14*SC, C_CARD, C_BORDER, 2*SC)
+            draw.text((PAD_L+20*SC, H-89*SC), chase, font=f_bold, fill=C_MAIN)
 
-        draw.text((PAD_L, H-55*SC), f"■ {match.team_x.name}", font=f_bold, fill=C_X)
-        draw.text((PAD_L+340*SC, H-55*SC), f"■ {match.team_y.name}", font=f_bold, fill=C_Y)
-        draw.text((W-82*SC, H-55*SC), "CRICOVERSE LIVE ANALYTICS", font=f_axis, fill=C_MUTED, anchor="ra")
+        draw.text((PAD_L, H-46*SC), f"■ {match.team_x.name}", font=f_bold, fill=C_X)
+        draw.text((PAD_L+320*SC, H-46*SC), f"■ {match.team_y.name}", font=f_bold, fill=C_Y)
+        draw.text((W-pad-20*SC, H-46*SC), "CRICOVERSE LIVE ANALYTICS", font=f_axis, fill=C_SEC, anchor="ra")
 
-        final = img.convert("RGB").resize((1600, 900), Image.Resampling.LANCZOS)
+        final = img.convert("RGB").resize((1600, 800), Image.Resampling.LANCZOS)
         bio = BytesIO()
         final.save(bio, "PNG", optimize=True)
         bio.seek(0)
@@ -33676,23 +33753,33 @@ def generate_worm_graph(match) -> Optional[BytesIO]:
 
 
 def generate_over_bar_chart(match) -> Optional[BytesIO]:
-    """Enhanced over-by-over card, white background, black grid, wicket count shown as stacked yellow squares."""
+    """Enhanced over-by-over card using the light UI palette, 16:8 (2:1) canvas."""
     try:
         SC = 2
-        W, H = 1500*SC, 860*SC
-        img = Image.new("RGBA", (W, H), (255, 255, 255, 255))
+        W, H = 1600*SC, 800*SC   # 16:8 → 2:1
+        img = Image.new("RGBA", (W, H), (246, 248, 252, 255))   # #F6F8FC
         draw = ImageDraw.Draw(img)
 
-        C_X, C_Y = (20, 60, 200, 255), (210, 25, 35, 255)   # dark blue vs red
-        C_GOLD, C_WHITE, C_MUTED = (235, 175, 15, 255), (255, 255, 255, 255), (90, 90, 100, 255)
-        C_BLACK = (20, 20, 25, 255)
-        PAD_L, PAD_R, PAD_T, PAD_B = 100*SC, 70*SC, 170*SC, 140*SC
-        CW, CH = W-PAD_L-PAD_R, H-PAD_T-PAD_B
-        f_title, f_sub = _get_font(True, 52*SC), _get_font(False, 25*SC)
-        f_bold, f_axis = _get_font(True, 28*SC), _get_font(False, 22*SC)
+        C_CARD    = (255, 255, 255, 255)   # #FFFFFF
+        C_BORDER  = (229, 231, 235, 255)   # #E5E7EB
+        C_MAIN    = (17, 24, 39, 255)      # #111827
+        C_SEC     = (100, 116, 139, 255)   # #64748B
+        C_X       = (37, 99, 235, 255)     # #2563EB
+        C_Y       = (239, 51, 64, 255)     # #EF3340
+        C_GRID    = (226, 232, 240, 255)   # #E2E8F0
+        C_WICKET  = (239, 51, 64, 255)     # #EF3340
+        C_MILESTONE = (245, 158, 11, 255)  # #F59E0B
 
-        draw.text((84*SC, 62*SC), "OVER BY OVER", font=f_title, fill=C_BLACK)
-        draw.text((88*SC, 124*SC), f"{match.team_x.name} {match.team_x.score}/{match.team_x.wickets}  vs  {match.team_y.name} {match.team_y.score}/{match.team_y.wickets}", font=f_sub, fill=C_MUTED)
+        pad = 16*SC
+        _draw_rounded_rect(draw, (pad, pad, W-pad, H-pad), radius=20*SC, fill=C_CARD, outline=C_BORDER, width=2*SC)
+
+        PAD_L, PAD_R, PAD_T, PAD_B = 100*SC, 70*SC, 165*SC, 110*SC
+        CW, CH = W-PAD_L-PAD_R, H-PAD_T-PAD_B
+        f_title, f_sub = _get_font(True, 40*SC), _get_font(False, 22*SC)
+        f_bold, f_axis = _get_font(True, 24*SC), _get_font(False, 20*SC)
+
+        draw.text((66*SC, 52*SC), "OVER BY OVER", font=f_title, fill=C_MAIN)
+        draw.text((70*SC, 100*SC), f"{match.team_x.name} {match.team_x.score}/{match.team_x.wickets}  vs  {match.team_y.name} {match.team_y.score}/{match.team_y.wickets}", font=f_sub, fill=C_SEC)
 
         def data(team, runs_attr, wkts_attr):
             runs = list(getattr(match, runs_attr, []))
@@ -33722,30 +33809,29 @@ def generate_over_bar_chart(match) -> Optional[BytesIO]:
         for j in range(5):
             val = int(j * max_runs / 4)
             y = PAD_T + CH - int(j * CH / 4)
-            draw.line([(PAD_L, y), (PAD_L+CW, y)], fill=(0, 0, 0, 90), width=1*SC)
-            draw.text((PAD_L-56*SC, y-12*SC), str(val), font=f_axis, fill=C_MUTED)
+            draw.line([(PAD_L, y), (PAD_L+CW, y)], fill=C_GRID, width=1*SC)
+            draw.text((PAD_L-50*SC, y-11*SC), str(val), font=f_axis, fill=C_SEC)
 
         slot = CW // n
         bw = int(slot * 0.26)
         base = PAD_T + CH
 
         def bar(x1, x2, value, wickets, color, live=False):
-            bh = max(8*SC, int(value / max_runs * CH))
+            bh = max(7*SC, int(value / max_runs * CH))
             y1, y2 = base - bh, base
-            fill = (30, 190, 120, 255) if live else color
-            draw.rounded_rectangle([x1+5*SC, y1+8*SC, x2+5*SC, y2], radius=10*SC, fill=(0,0,0,40))
-            draw.rounded_rectangle([x1, y1, x2, y2], radius=10*SC, fill=fill, outline=(0,0,0,120), width=1*SC)
+            fill = C_MILESTONE if live else color
+            draw.rounded_rectangle([x1, y1, x2, y2], radius=8*SC, fill=fill, outline=C_BORDER, width=1*SC)
             # Run number written INSIDE the bar
-            draw.text(((x1+x2)//2, y1+10*SC), str(value), font=f_bold, fill=C_WHITE, anchor="ma")
-            # Wickets: stacked yellow squares above the bar, one per wicket
-            sq = 15*SC
-            gap = 6*SC
+            draw.text(((x1+x2)//2, y1+8*SC), str(value), font=f_bold, fill=C_CARD, anchor="ma")
+            # Wickets: stacked squares above the bar, one per wicket
+            sq = 13*SC
+            gap = 5*SC
             for wi in range(wickets):
-                sy2 = y1 - 22*SC - wi*(sq*2+gap)
+                sy2 = y1 - 18*SC - wi*(sq*2+gap)
                 sy1 = sy2 - sq*2
                 sx1 = (x1+x2)//2 - sq
                 sx2 = (x1+x2)//2 + sq
-                draw.rectangle([sx1, sy1, sx2, sy2], fill=C_GOLD, outline=C_BLACK, width=1*SC)
+                draw.rectangle([sx1, sy1, sx2, sy2], fill=C_WICKET, outline=C_CARD, width=1*SC)
 
         for i in range(n):
             cx = PAD_L + i*slot + slot//2
@@ -33755,12 +33841,12 @@ def generate_over_bar_chart(match) -> Optional[BytesIO]:
             bar(cx-bw-8*SC, cx-8*SC, xr[i], xw[i], C_X, x_live)
             bar(cx+8*SC, cx+bw+8*SC, yr[i], yw[i], C_Y, y_live)
             label = f"OV {over_no}" + (" LIVE" if x_live or y_live else "")
-            draw.text((cx, base+28*SC), label, font=f_axis, fill=C_GOLD if x_live or y_live else C_MUTED, anchor="ma")
+            draw.text((cx, base+24*SC), label, font=f_axis, fill=C_MILESTONE if x_live or y_live else C_SEC, anchor="ma")
 
-        draw.text((PAD_L, H-58*SC), f"■ {match.team_x.name}", font=f_bold, fill=C_X)
-        draw.text((PAD_L+330*SC, H-58*SC), f"■ {match.team_y.name}", font=f_bold, fill=C_Y)
-        draw.text((W-80*SC, H-58*SC), "Last 8 overs | dots hidden, wickets shown as yellow squares", font=f_axis, fill=C_MUTED, anchor="ra")
-        final = img.convert("RGB").resize((1500, 860), Image.Resampling.LANCZOS)
+        draw.text((PAD_L, H-42*SC), f"■ {match.team_x.name}", font=f_bold, fill=C_X)
+        draw.text((PAD_L+300*SC, H-42*SC), f"■ {match.team_y.name}", font=f_bold, fill=C_Y)
+        draw.text((W-pad-20*SC, H-42*SC), "Last 8 overs | wickets shown as red squares", font=f_axis, fill=C_SEC, anchor="ra")
+        final = img.convert("RGB").resize((1600, 800), Image.Resampling.LANCZOS)
         bio = BytesIO(); final.save(bio, "PNG", optimize=True); bio.seek(0); return bio
     except Exception as e:
         logger.error(f"Enhanced over chart error: {e}")
@@ -33848,16 +33934,12 @@ def generate_mid_match_image(match) -> Optional[BytesIO]:
 
 async def generate_solo_top3_image(sorted_players, context=None) -> Optional[BytesIO]:
     """
-    ✅ TEMPLATE-BASED "Top Performers" card for solo matches.
-    Uses solo_top_performers_template.jpg (1774x887) — "TOP PERFORMERS FROM THE
-    FREE-FOR-ALL MATCH" card with two glass podium panels:
-      - BEST BATSMAN (left circle, blue ring)  → highest run-scorer of the match
-      - BEST BOWLER  (right circle, red ring)  → most-wickets bowler of the match
-
-    Backward-compatible entry point: still accepts `sorted_players` (runs-sorted
-    list of solo players) so existing callers don't need to change. Internally
-    it derives best batsman (sorted_players[0]) and best bowler (most wickets,
-    tie-break fewer runs conceded, among those who bowled at least one ball).
+    ✅ TEMPLATE-BASED solo podium card.
+    Uses solo_podium_template.jpg (1024x682).
+    Pastes:
+      - 1st place pfp in CENTER circle
+      - 2nd place pfp in LEFT circle
+      - 3rd place pfp in RIGHT circle
     """
     try:
         import os
@@ -33867,21 +33949,7 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
         if not sorted_players:
             return None
 
-        batsman = sorted_players[0]
-        bowled_players = [p for p in sorted_players if getattr(p, "balls_bowled", 0) > 0]
-        bowler = None
-        if bowled_players:
-            bowler = sorted(
-                bowled_players,
-                key=lambda p: (-getattr(p, "wickets", 0), getattr(p, "runs_conceded", 0))
-            )[0]
-
         TEMPLATE_CANDIDATES = [
-            "solo_top_performers_template.png",
-            "solo_top_performers_template.jpg",
-            "/home/cricoverse/solo_top_performers_template.png",
-            "/home/cricoverse/solo_top_performers_template.jpg",
-            # legacy fallback names, in case the file wasn't renamed on deploy
             "solo_podium_template.png",
             "solo_podium_template.jpg",
             "/home/cricoverse/solo_podium_template.png",
@@ -33889,7 +33957,7 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
         ]
         TEMPLATE_PATH = next((p for p in TEMPLATE_CANDIDATES if os.path.exists(p)), None)
         if TEMPLATE_PATH is None:
-            logger.error("generate_solo_top3_image: template file not found (solo_top_performers_template.png)")
+            logger.error("generate_solo_top3_image: template file not found (solo_podium_template.png)")
             return None
 
         base = Image.open(TEMPLATE_PATH).convert("RGBA")
@@ -33906,8 +33974,12 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
             except Exception:
                 return None
 
-        batsman_bytes = await get_pfp(getattr(batsman, "user_id", None))
-        bowler_bytes = await get_pfp(getattr(bowler, "user_id", None)) if bowler else None
+        top3 = sorted_players[:3]
+        pfp_bytes = []
+        for p in top3:
+            pfp_bytes.append(await get_pfp(getattr(p, "user_id", None)))
+        while len(pfp_bytes) < 3:
+            pfp_bytes.append(None)
 
         # ── Circle paste helper ──
         def paste_circle(img_overlay, avatar_bytes, cx, cy, r, initials="?"):
@@ -33942,17 +34014,20 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
             circle = circle_hq.resize((size, size), Image.Resampling.LANCZOS)
             img_overlay.alpha_composite(circle, (cx - r, cy - r))
 
-        # ── Circle positions — pixel-calibrated via ring-edge scan on the
-        #    native 1774×887 template (inner circle bounds, edge-to-edge fit) ──
-        # BEST BATSMAN (blue ring, left):  cx=646,  cy=524, r=108
-        # BEST BOWLER  (red ring, right):  cx=1115, cy=524, r=108
+        # ── Circle positions — pixel-calibrated via color-mask detection on the
+        #    native 1537×1023 template (tight fit to each colored circle) ──
+        # 1st (gold ring, centre):  cx=767,  cy=450, r=143
+        # 2nd (silver ring, left):  cx=340,  cy=541, r=125
+        # 3rd (bronze ring, right): cx=1192, cy=547, r=123
 
         def get_init(p):
             return (getattr(p, "first_name", "P") or "P")[:2].upper()
 
-        paste_circle(overlay, batsman_bytes, 646, 524, 108, get_init(batsman))       # Best Batsman
-        if bowler is not None:
-            paste_circle(overlay, bowler_bytes, 1115, 524, 108, get_init(bowler))    # Best Bowler
+        paste_circle(overlay, pfp_bytes[0], 767, 450, 143, get_init(top3[0]))   # 1st – centre gold ring
+        if len(top3) > 1:
+            paste_circle(overlay, pfp_bytes[1], 340, 541, 125, get_init(top3[1]))  # 2nd – left silver ring
+        if len(top3) > 2:
+            paste_circle(overlay, pfp_bytes[2], 1192, 547, 123, get_init(top3[2]))  # 3rd – right bronze ring
 
         final = Image.alpha_composite(base, overlay).convert("RGB")
         bio = BytesIO()
@@ -33961,7 +34036,7 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
         return bio
 
     except Exception as e:
-        logger.error(f"Solo top performers template error: {e}")
+        logger.error(f"Solo podium template error: {e}")
         return None
 
 

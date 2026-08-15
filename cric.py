@@ -171,6 +171,12 @@ TOURNAMENT_POWER_USERS: Set[Tuple[int, int]] = set()  # (user_id, group_id) pair
 CLONE_BOTS: Dict[str, Dict] = {}  # token -> clone info
 CLONE_BOTS_FILE = "clone_bots.json"  # persisted across restarts
 
+# 🤖 Self-expiry (injected into clone scripts only — parent bot leaves these as-is)
+IS_CLONE = False               # becomes True in generated clone scripts
+CLONE_EXPIRES_AT_ISO = None    # ISO timestamp the clone should shut itself down at
+CLONE_SELF_FLAGS_FILE = "clone_self_flags.json"  # persists 1d/1h reminder-sent flags across restarts
+_clone_self_flags = {"reminder_1d_sent": False, "reminder_1h_sent": False}
+
 # ═══════════════════════════════════════════════════════════════
 # FONT SUBSYSTEM WITH AUTOMATIC DOWNLOADS
 # ═══════════════════════════════════════════════════════════════
@@ -545,51 +551,37 @@ async def start_lock_cleanup_task():
         await asyncio.sleep(60)  # Check every minute
 
 # GIF URLs for match events
+# 🎬 Ball-event GIFs (dot/runs/wicket/wide) are LOCAL FILES now — drop them into
+# the "gifs" folder next to this script using these exact filenames. Same
+# pattern as MEDIA_ASSETS above: PTB loads a pathlib.Path straight off disk.
+GIFS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gifs")
+def _g(name: str) -> Path:
+    return Path(GIFS_DIR) / name
+
 GIFS = {
     MatchEvent.DOT_BALL: [
-        "CgACAgQAAyEFAATEuZi2AAIEsmlL3oS80G_hP2r73pB1Xp9fja2TAAJ2EwACARH5UrcBeu1Hx7x-NgQ"
+        _g("dot1.gif"), _g("dot2.gif"), _g("dot3.gif")
     ],
     MatchEvent.RUNS_1: [
-        "CgACAgUAAyEFAATEuZi2AAIE_mlL51w3IW0jthJmfZeMqNVpFRfUAAIiLQACeNjhVxT4d9Xn2PI-NgQ",
-        "CgACAgUAAyEFAATU3pgLAAIKkWlE9Gqtq1mAjiu926NvWRGfxQW1AAIJHAACOMrpVwhrNvXoibUAATYE",
-        "CgACAgUAAyEFAATEuZi2AAIFYmlL7mOnFTT69LGMLS9G2oA6EHJpAAJsHQACRV1hVnaw6OSdIDwQNgQ"
+        _g("one1.gif"), _g("one2.gif")
     ],
     MatchEvent.RUNS_2: [
-        "CgACAgUAAyEFAATEuZi2AAIFK2lL6X8FPyJRYp9RbF6DiAAB-RqzvAACWR0AAkVdYVY9UqOGM0nDajYE",
-        "CgACAgUAAyEFAATU3pgLAAIKi2lE9GrIvY93_Dcaiv8zaa0IbES6AALJGgACN2_pV4f4uWRTw9wxNgQ"
+        _g("two1.gif")
     ],
     MatchEvent.RUNS_3: [
-        "CgACAgUAAyEFAATEuZi2AAIFQGlL64CXO07OHbHMip1g2Lu0HFayAAJlHQACRV1hVkXx8RdRbQniNgQ",
-        "CgACAgUAAyEFAATU3pgLAAIKf2lE9Gq72p6bgh1C8K9SjTyciqXfAAI2DwACPzbQVnca7Od2bSquNgQ"
+        _g("three1.gif"), _g("three2.gif")
     ],
     MatchEvent.RUNS_4: [
-        "CgACAgUAAyEGAATYx4tPAAJIvmlMBASE6vZ-FK1_CKrtrHRpUi5WAAJSCAACD_YgVo49O55ICLAENgQ",
-        "CgACAgUAAxkBAAIKY2lNWXZwCPa1mikPTuiI-im6KsXZAALbCgAC5WCoVXTWQ_MhLqz4NgQ",
-        "CgACAgUAAyEGAATYx4tPAAJKRGlM-l-WWxsOUMrQJWlDsnrShZALAAKtDAACFqM4VMeSD_FLQu8MNgQ",
-        "CgACAgUAAyEGAAShX2HTAAIgpWlMOtRIxiwO5A91S3qnzJ3hNJpFAAJTBgACmdE5V_Z3vM_sBDZCNgQ",
-        "CgACAgUAAyEFAATYx4tPAAJDtWlLmks4fC6UZFYmqqV_i-B8_jC1AAJcFwACITAQVA4cFTAQ7BfKNgQ"
+        _g("four1.gif"), _g("four2.gif"), _g("four3.gif")
     ],
     MatchEvent.RUNS_5: [
-        "CgACAgQAAyEFAATU3pgLAAIKiGlE9GoYG_0qTVEd3Le7R6qvyWrWAAJeGwACryS5UH5WGCXTJywAATYE",
-        "CgACAgQAAyEFAATEuZi2AAIE6mlL4TanjQPWyDaNCpaXtOq-CVtOAAJ_IAACMudhUlC2yWKM8GmFNgQ",
-        "CgACAgUAAyEFAATEuZi2AAIFTWlL7Eq7OGaFKKEfosOF_jAtHWTUAALmHAAChf5gVivH4SvOeCpRNgQ"
+        _g("five1.gif"), _g("five2.gif")
     ],
     MatchEvent.RUNS_6: [
-        "CgACAgUAAyEGAAShX2HTAAIhH2lMRrNUrjRV4GW2K8booBvMtTG9AAKrCgACJXRpVOeF4ynzTcBoNgQ",
-        "CgACAgUAAyEGAATYx4tPAAJItmlMA-mbxLqNhGcc8S785y2j5BWEAAKzDQAC9WdJVnVvz6iMeR39NgQ",
-        "CgACAgUAAyEGAATYx4tPAAJHmWlL_f9GFzB3wlmreOcoJdNeQb5pAAJpAwAClZdBVj1oWzydv8lMNgQ",
-        "CgACAgQAAyEFAATEuZi2AAIE6GlL4QXc1nMUBKOdGkLrPuPPYfUPAAJ-IAACMudhUqLnowABXPhb3DYE",
-        "CgACAgUAAyEFAATU3pgLAAIKjmlE9GrcsVDgJe8ohHimK7JQf-MeAAJdFwACITAQVNF-Nok7Tly0NgQ",
-        "CgACAgUAAyEFAATYx4tPAAJDw2lLmkzfNB56Io-uMPnGQmOTuU3wAAKJAwAC0ymZV0m1AAEE0NAEjTYE",
-        "CgACAgUAAyEFAATU3pgLAAIKfGlE9GqHxSIInO0P4wSVuD5xbNiNAAJgGQACzouoVeTU9nOOeNqDNgQ"
+        _g("six1.gif"), _g("six2.gif"), _g("six3.gif")
     ],
     MatchEvent.WICKET: [
-        "CgACAgQAAyEFAATU3pgLAAIKhGlE9Go2nsCXKpBBjglIQ2I3ZObsAAKvFQACaewBUkT0IZS8qdW4NgQ",
-        "CgACAgQAAyEFAATU3pgLAAIKhWlE9GpEJp5SCDH35xUN97QPkkdSAAK1EwACMv1pUfLrRWYa9zWLNgQ",
-        "CgACAgUAAyEFAATU3pgLAAIKhmlE9GoVK8ybgnUTS502q1YMSG35AALqAwACIHhpV7c1o-HTQNSPNgQ",
-        "CgACAgQAAyEFAATU3pgLAAIKjWlE9GqL7Uad2y2fznl2ZvasOk_xAALaGQACh1UBUdFsFVeRv5qwNgQ",
-        "CgACAgUAAyEGAATYx4tPAAJHa2lL_VmXp7nhZMuNPVRgbDmv54uXAAKQCAACBRCRVj5VjvOl6j21NgQ",
-        "CgACAgUAAyEGAAShX2HTAAIh3WlM785mkSB-K9myKNbS1lfWmB6fAAKRBgAC_DYZVhtRUsAAAW_fvzYE"
+        _g("wicket1.gif"), _g("wicket2.gif"), _g("wicket3.gif")
     ],
     # 🦆 Sent in addition to the WICKET gif whenever a batsman is out on 0.
     MatchEvent.DUCK: [
@@ -609,7 +601,7 @@ GIFS = {
         "https://tenor.com/bBvYA.gif"
     ],
     MatchEvent.WIDE: [
-        "https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExbWdubjB0YmVuZnMwdXBwODg5MzZ0cjFsNWl4ZXN1MzltOW1yZng5dCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/YtI7H5jotPvh9Z09t6/giphy.gif"
+        _g("wide1.gif")
     ],
     MatchEvent.FREE_HIT: [
         "https://media1.tenor.com/m/b13Yr5x3RhQAAAAC/free-hit-cricket.gif",
@@ -3084,12 +3076,33 @@ def update_over_stats(match):
         runs_in_this_over = bat_team.score - already_accounted
         match.team_y_over_runs.append(max(0, runs_in_this_over))
 
-def get_random_gif(event: MatchEvent) -> str:
-    """Get random GIF for an event"""
+_missing_gifs_warned: Set[str] = set()
+
+def get_random_gif(event: MatchEvent):
+    """Get a random GIF for an event. Local Path entries that are missing on
+    disk are skipped (with a one-time warning) so a not-yet-uploaded file
+    can't crash the send — falls back to any other variant for that event,
+    or "" if none are usable."""
     gifs = GIFS.get(event, [])
-    if gifs:
-        return random.choice(gifs)
-    return ""
+    if not gifs:
+        return ""
+
+    usable = []
+    for g in gifs:
+        if isinstance(g, Path):
+            if g.is_file():
+                usable.append(g)
+            else:
+                key = str(g)
+                if key not in _missing_gifs_warned:
+                    _missing_gifs_warned.add(key)
+                    logger.warning(f"⚠️ GIF missing on disk for {event}: {g} — drop it into {GIFS_DIR}/")
+        else:
+            usable.append(g)  # file_id / URL string — nothing to check
+
+    if not usable:
+        return ""
+    return random.choice(usable)
 
 def get_random_commentary(event_type: str) -> str:
     """Get random commentary for an event"""
@@ -14529,11 +14542,11 @@ async def end_solo_game_logic(context, chat_id, match):
     msg += "</blockquote>"
     msg = _safe_truncate_html(msg, 1024)
 
-    # Try sending with PIL-generated top3 image as champion card
+    # Try sending with PIL-generated "Top Performers" (Best Batsman / Best Bowler) card
     try:
-        top3_bio = await generate_solo_top3_image(sorted_players, context)
-        if top3_bio:
-            await context.bot.send_photo(chat_id, photo=top3_bio, caption=msg, parse_mode=ParseMode.HTML)
+        top_perf_bio = await generate_solo_top_performers_image(winner, best_bowler, context)
+        if top_perf_bio:
+            await context.bot.send_photo(chat_id, photo=top_perf_bio, caption=msg, parse_mode=ParseMode.HTML)
             return
     except Exception as e:
         logger.error(f"Error sending solo end PIL photo: {e}")
@@ -15489,7 +15502,7 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
                 try:
                     await context.bot.send_animation(
                         user_id,
-                        animation=random.choice(GIFS[MatchEvent.WICKET]),
+                        animation=get_random_gif(MatchEvent.WICKET),
                         caption=result_msg,
                         parse_mode=ParseMode.HTML
                     )
@@ -15508,7 +15521,7 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
             try:
                 await context.bot.send_animation(
                     user_id,
-                    animation=random.choice(GIFS[MatchEvent.WICKET]),
+                    animation=get_random_gif(MatchEvent.WICKET),
                     caption=result_msg,
                     parse_mode=ParseMode.HTML
                 )
@@ -15606,19 +15619,19 @@ async def ai_bat_ball(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_bow
         try:
             # Send appropriate GIF
             if ai_bat == 0:
-                gif = random.choice(GIFS[MatchEvent.DOT_BALL])
+                gif = get_random_gif(MatchEvent.DOT_BALL)
             elif ai_bat == 1:
-                gif = random.choice(GIFS[MatchEvent.RUNS_1])
+                gif = get_random_gif(MatchEvent.RUNS_1)
             elif ai_bat == 2:
-                gif = random.choice(GIFS[MatchEvent.RUNS_2])
+                gif = get_random_gif(MatchEvent.RUNS_2)
             elif ai_bat == 3:
-                gif = random.choice(GIFS[MatchEvent.RUNS_3])
+                gif = get_random_gif(MatchEvent.RUNS_3)
             elif ai_bat == 4:
-                gif = random.choice(GIFS[MatchEvent.RUNS_4])
+                gif = get_random_gif(MatchEvent.RUNS_4)
             elif ai_bat == 5:
-                gif = random.choice(GIFS[MatchEvent.RUNS_5])
+                gif = get_random_gif(MatchEvent.RUNS_5)
             else:  # 6
-                gif = random.choice(GIFS[MatchEvent.RUNS_6])
+                gif = get_random_gif(MatchEvent.RUNS_6)
             
             await context.bot.send_animation(
                 user_id,
@@ -15708,7 +15721,7 @@ async def ai_end_match(context: ContextTypes.DEFAULT_TYPE, user_id: int, result:
         else:
             margin = match["user_score"] - match["ai_score"]
             msg += f"Victory by {margin} runs!\n"
-        victory_gif = random.choice(GIFS[MatchEvent.VICTORY]) if MatchEvent.VICTORY in GIFS else None
+        victory_gif = get_random_gif(MatchEvent.VICTORY) if MatchEvent.VICTORY in GIFS else None
     else:
         msg += "💔 <b>AI WON!</b>\n\n"
         if chasing_side == "ai":
@@ -17179,15 +17192,15 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
                 circle.paste(pfp, (0, 0), mask)
                 img_overlay.alpha_composite(circle, (cx - r, cy - r))
 
-            # Template layout (native 1598 x 984) — pixel-calibrated via color-mask detection:
-            # LEFT  circle (Team X cap) : cx=359,  cy=555, inner_r=155
-            # RIGHT circle (Team Y cap) : cx=1236, cy=555, inner_r=157
-            # CENTER small (Host)       : cx=801,  cy=356, inner_r=78
-            paste_circle(overlay_img, cap_x_bytes,  359, 555, 155,
+            # Template layout (native 1774 x 887) — pixel-calibrated via color-mask detection:
+            # LEFT  circle (Team X cap) : cx=472,  cy=554, inner_r=145
+            # RIGHT circle (Team Y cap) : cx=1291, cy=554, inner_r=145
+            # CENTER small (Host)       : cx=886,  cy=290, inner_r=85
+            paste_circle(overlay_img, cap_x_bytes,  472, 554, 145,
                          initials=(team_x_name or "X")[:2].upper())
-            paste_circle(overlay_img, cap_y_bytes,  1236, 555, 157,
+            paste_circle(overlay_img, cap_y_bytes,  1291, 554, 145,
                          initials=(team_y_name or "Y")[:2].upper())
-            paste_circle(overlay_img, host_bytes,   801, 356,  78,
+            paste_circle(overlay_img, host_bytes,   886, 290,  85,
                          initials=(host_name or "H")[:2].upper())
 
             # NOTE: This template has baked-in static labels ("TEAM X" / "TEAM Y" / "HOST")
@@ -21551,6 +21564,97 @@ async def unapprovegroup_command(update: Update, context: ContextTypes.DEFAULT_T
         f"─────────────────",
         parse_mode=ParseMode.HTML
     )
+
+
+async def groupunapprove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🔒 /groupunapprove <group_id>  → revoke a single group (same as /unapprovegroup)
+    🔒 /groupunapprove all         → revoke EVERY currently-approved group in one shot
+    """
+    user = update.effective_user
+    if user.id != OWNER_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "📋 <b>USAGE:</b>\n"
+            "<code>/groupunapprove &lt;group_id&gt;</code> → revoke one group\n"
+            "<code>/groupunapprove all</code> → revoke ALL approved groups\n\n"
+            "🔒 Revokes tournament & auction access immediately.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if context.args[0].strip().lower() == "all":
+        group_ids = list(TOURNAMENT_APPROVED_GROUPS)
+        if not group_ids:
+            await update.message.reply_text("ℹ️ No groups are currently approved.")
+            return
+
+        status_msg = await update.message.reply_text(
+            f"⏳ Revoking premium access for <b>{len(group_ids)}</b> group{'s' if len(group_ids) != 1 else ''}...",
+            parse_mode=ParseMode.HTML
+        )
+
+        conn = await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
+        c = conn.cursor()
+        c.execute('DELETE FROM tournament_groups')
+        conn.commit()
+        conn.close()
+
+        TOURNAMENT_APPROVED_GROUPS.clear()
+        save_data()
+
+        notified = 0
+        for gid in group_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=gid,
+                    text=(
+                        "🔒 <b>PREMIUM ACCESS REVOKED!</b>\n"
+                        "─────────────────\n\n"
+                        "⚠️ This group's <b>Tournament & Auction</b> access has been <b>deactivated</b> by the bot owner.\n\n"
+                        "🚫 All tournament/auction commands are now <b>locked</b> in this group.\n\n"
+                        "─────────────────\n"
+                        "📞 <b>TO RESTORE ACCESS:</b>\n\n"
+                        f"Contact Bot Owner:\n"
+                        f'<a href="tg://user?id={OWNER_ID}">🔗 Click Here to Contact Owner</a>\n\n'
+                        "─────────────────"
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+                notified += 1
+            except Exception as e:
+                logger.warning(f"Could not notify group {gid} about bulk unapproval: {e}")
+
+        try:
+            await context.bot.send_message(
+                chat_id=SUPPORT_GROUP_ID,
+                text=(
+                    "🔒 <b>ALL GROUPS UNAPPROVED!</b>\n"
+                    "─────────────────\n"
+                    f"🆔 <b>Count:</b> {len(group_ids)}\n"
+                    f"👤 <b>Revoked by:</b> {html.escape(user.first_name)}\n"
+                    f"🕐 <b>Time:</b> {datetime.now().strftime('%d %b %Y, %H:%M')}"
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.warning(f"Could not notify support group about bulk unapproval: {e}")
+
+        await status_msg.edit_text(
+            f"🔒 <b>ALL GROUPS UNAPPROVED!</b>\n"
+            f"─────────────────\n\n"
+            f"🆔 <b>Total revoked:</b> {len(group_ids)}\n"
+            f"📨 <b>Notified:</b> {notified}\n\n"
+            f"🚫 Every group's tournament & auction access is now locked.\n"
+            f"─────────────────",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # ── Single group_id path → reuse the existing single-group revoke logic ──
+    await unapprovegroup_command(update, context)
 
 
 async def start_auction_live_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -26545,8 +26649,8 @@ async def approval_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
 
             days_left = (expires_at - now).days
 
-            # ── Reminder: ≤5 days left ──
-            if 0 <= days_left <= 5:
+            # ── Reminder: exactly 1 day left ──
+            if days_left == 1:
                 if not reminder_sent:
                     c.execute("UPDATE tournament_groups SET reminder_sent = 1 WHERE group_id = ?", (group_id,))
                     conn.commit()
@@ -28528,7 +28632,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     result_msg += f"\n─────────────────\n"
                     result_msg += f"<b>YOUR INNINGS ENDED!</b>\n"
                     try:
-                        wicket_gif = random.choice(GIFS[MatchEvent.WICKET])
+                        wicket_gif = get_random_gif(MatchEvent.WICKET)
                         await update.message.reply_animation(
                             animation=wicket_gif,
                             caption=result_msg,
@@ -28556,7 +28660,7 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 try:
                     # Send wicket GIF
-                    wicket_gif = random.choice(GIFS[MatchEvent.WICKET])
+                    wicket_gif = get_random_gif(MatchEvent.WICKET)
                     await update.message.reply_animation(
                         animation=wicket_gif,
                         caption=result_msg,
@@ -28593,19 +28697,19 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         result_msg += f"<b>YOUR INNINGS ENDED!</b>\n"
                         try:
                             if num == 0:
-                                gif = random.choice(GIFS[MatchEvent.DOT_BALL])
+                                gif = get_random_gif(MatchEvent.DOT_BALL)
                             elif num == 1:
-                                gif = random.choice(GIFS[MatchEvent.RUNS_1])
+                                gif = get_random_gif(MatchEvent.RUNS_1)
                             elif num == 2:
-                                gif = random.choice(GIFS[MatchEvent.RUNS_2])
+                                gif = get_random_gif(MatchEvent.RUNS_2)
                             elif num == 3:
-                                gif = random.choice(GIFS[MatchEvent.RUNS_3])
+                                gif = get_random_gif(MatchEvent.RUNS_3)
                             elif num == 4:
-                                gif = random.choice(GIFS[MatchEvent.RUNS_4])
+                                gif = get_random_gif(MatchEvent.RUNS_4)
                             elif num == 5:
-                                gif = random.choice(GIFS[MatchEvent.RUNS_5])
+                                gif = get_random_gif(MatchEvent.RUNS_5)
                             else:
-                                gif = random.choice(GIFS[MatchEvent.RUNS_6])
+                                gif = get_random_gif(MatchEvent.RUNS_6)
                             await update.message.reply_animation(
                                 animation=gif,
                                 caption=result_msg,
@@ -28633,19 +28737,19 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         # Send appropriate GIF
                         if num == 0:
-                            gif = random.choice(GIFS[MatchEvent.DOT_BALL])
+                            gif = get_random_gif(MatchEvent.DOT_BALL)
                         elif num == 1:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_1])
+                            gif = get_random_gif(MatchEvent.RUNS_1)
                         elif num == 2:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_2])
+                            gif = get_random_gif(MatchEvent.RUNS_2)
                         elif num == 3:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_3])
+                            gif = get_random_gif(MatchEvent.RUNS_3)
                         elif num == 4:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_4])
+                            gif = get_random_gif(MatchEvent.RUNS_4)
                         elif num == 5:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_5])
+                            gif = get_random_gif(MatchEvent.RUNS_5)
                         else:  # 6
-                            gif = random.choice(GIFS[MatchEvent.RUNS_6])
+                            gif = get_random_gif(MatchEvent.RUNS_6)
                         
                         await update.message.reply_animation(
                             animation=gif,
@@ -28663,19 +28767,19 @@ async def handle_dm_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         # Send appropriate GIF
                         if num == 0:
-                            gif = random.choice(GIFS[MatchEvent.DOT_BALL])
+                            gif = get_random_gif(MatchEvent.DOT_BALL)
                         elif num == 1:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_1])
+                            gif = get_random_gif(MatchEvent.RUNS_1)
                         elif num == 2:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_2])
+                            gif = get_random_gif(MatchEvent.RUNS_2)
                         elif num == 3:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_3])
+                            gif = get_random_gif(MatchEvent.RUNS_3)
                         elif num == 4:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_4])
+                            gif = get_random_gif(MatchEvent.RUNS_4)
                         elif num == 5:
-                            gif = random.choice(GIFS[MatchEvent.RUNS_5])
+                            gif = get_random_gif(MatchEvent.RUNS_5)
                         else:  # 6
-                            gif = random.choice(GIFS[MatchEvent.RUNS_6])
+                            gif = get_random_gif(MatchEvent.RUNS_6)
                         
                         await update.message.reply_animation(
                             animation=gif,
@@ -29790,7 +29894,10 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         # Generate summary image (optional, no stats saved)
         try:
             sorted_players = sorted(match.solo_players, key=lambda x: x.runs, reverse=True)
-            await generate_solo_top3_image(sorted_players, context)
+            if sorted_players:
+                _bowled = [p for p in match.solo_players if getattr(p, "balls_bowled", 0) > 0]
+                _best_bowler = sorted(_bowled, key=lambda p: (-p.wickets, getattr(p, "runs_conceded", 0)))[0] if _bowled else None
+                await generate_solo_top_performers_image(sorted_players[0], _best_bowler, context)
 
         except Exception as e:
             logger.error(f"Error generating solo end image: {e}")
@@ -30035,50 +30142,93 @@ async def commentary_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ═══════════════════════════════════════════════════════════════
 
 async def groupapprove_tournament_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🏏 Approve group for tournament registration"""
+    """🏏 Approve group for tournament/premium features, valid for N days."""
     if update.effective_user.id not in [OWNER_ID, SECOND_APPROVER_ID]:
         await update.message.reply_text("🏏 Only organizers can approve groups for tournaments!")
         return
-    
+
+    usage_text = (
+        "🏏 Tournament & Premium Approval\n"
+        "Usage (in the group): `/groupapprove <days>`\n"
+        "Usage (in DM): `/groupapprove <group_id> <days>`\n"
+        "Example: `/groupapprove 20` → approved for 20 days"
+    )
+
     if update.effective_chat.type == "private":
-        if not context.args:
-            await update.message.reply_text(
-                "🏏 Tournament & Registration Approval\n"
-                "Usage: `/groupapprove <group_id>`\n"
-                "Example: `/groupapprove -1001234567890`",
-                parse_mode=ParseMode.MARKDOWN
-            )
+        if len(context.args) < 2:
+            await update.message.reply_text(usage_text, parse_mode=ParseMode.MARKDOWN)
             return
         try:
             group_id = int(context.args[0])
+            days = int(context.args[1])
         except Exception as e:
             logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28221)")
-            await update.message.reply_text("🏏 Invalid group ID!")
+            await update.message.reply_text("🏏 Invalid group ID or days!")
             return
     else:
+        if not context.args:
+            await update.message.reply_text(usage_text, parse_mode=ParseMode.MARKDOWN)
+            return
+        try:
+            days = int(context.args[0])
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28221)")
+            await update.message.reply_text("🏏 Invalid number of days!")
+            return
         group_id = update.effective_chat.id
-    
+
+    if days <= 0:
+        await update.message.reply_text("🏏 Days must be a positive number!")
+        return
+
     conn= await asyncio.to_thread(db_connect, TOURNAMENT_DB_PATH)
     c = conn.cursor()
-    
+
     try:
         chat = await context.bot.get_chat(group_id)
         group_name = chat.title
     except Exception as e:
         logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 28233)")
         group_name = "Unknown Group"
-    
+
+    expires_at = (datetime.now() + timedelta(days=days))
     c.execute('INSERT OR REPLACE INTO tournament_groups (group_id, group_name, approved_at, expires_at, reminder_sent) VALUES (?, ?, CURRENT_TIMESTAMP, ?, 0)', 
-              (group_id, group_name, (datetime.now() + timedelta(days=30)).isoformat()))
+              (group_id, group_name, expires_at.isoformat()))
     conn.commit()
     conn.close()
     
     TOURNAMENT_APPROVED_GROUPS.add(group_id)
-    
+
+    expiry_str = expires_at.strftime("%d %b %Y")
+
+    # ── Notify the approved group (if approving from DM, or just confirm in-group) ──
+    try:
+        sent = await context.bot.send_message(
+            chat_id=group_id,
+            text=(
+                f"🎉 <b>PREMIUM ACCESS ACTIVATED!</b>\n"
+                f"─────────────────\n\n"
+                f"✅ This group is now authorized for <b>Tournament & Auction</b> features!\n\n"
+                f"📅 <b>Valid for:</b> {days} day{'s' if days != 1 else ''} (until {expiry_str})\n\n"
+                f"🏆 Use /game → Tournament Mode to get started.\n"
+                f"⚠️ You'll get a reminder here 1 day before it expires.\n"
+                f"─────────────────"
+            ),
+            parse_mode=ParseMode.HTML
+        )
+        try:
+            await context.bot.pin_chat_message(chat_id=group_id, message_id=sent.message_id, disable_notification=False)
+        except Exception as e:
+            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 20569)")
+            pass
+    except Exception as e:
+        logger.warning(f"Could not notify group {group_id}: {e}")
+
     await update.message.reply_text(
         f"🏏 Tournament & Registration Approved!\n"
         f"Group: {group_name}\n"
-        f"ID: `{group_id}`\n\n"
+        f"ID: `{group_id}`\n"
+        f"📅 Valid for {days} day{'s' if days != 1 else ''} (until {expiry_str})\n\n"
         f"Ready for player registration!",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -32839,6 +32989,22 @@ def _generate_clone_script(token: str, clone_id: str) -> str:
         f'CLONE_BOTS_FILE = "clone_{clone_id}_clones.json"'
     )
 
+    # 🕒 Mark this script as a clone and bake in its own 15-day self-expiry
+    # timestamp + a clone-specific flags file (so 1d/1h reminders fire once).
+    clone_expires_iso = (datetime.now() + timedelta(days=15)).isoformat()
+    source = source.replace(
+        'IS_CLONE = False               # becomes True in generated clone scripts',
+        'IS_CLONE = True                # CLONE BOT → DO NOT EDIT'
+    )
+    source = source.replace(
+        'CLONE_EXPIRES_AT_ISO = None    # ISO timestamp the clone should shut itself down at',
+        f'CLONE_EXPIRES_AT_ISO = "{clone_expires_iso}"  # CLONE BOT → DO NOT EDIT'
+    )
+    source = source.replace(
+        'CLONE_SELF_FLAGS_FILE = "clone_self_flags.json"',
+        f'CLONE_SELF_FLAGS_FILE = "clone_{clone_id}_self_flags.json"'
+    )
+
     # 🔧 FIX: single-instance lock file was hardcoded to the SAME path as the
     # parent bot ("/tmp/cricoverse_bot.lock"). Since the clone is a full
     # source copy, it tried to grab the same lock, always found it already
@@ -32887,7 +33053,7 @@ async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /clone <bot_token>
     Owner only → Generates a full copy of this bot with the given token,
-    runs it as a separate process with its own databases. Valid for 1 month.
+    runs it as a separate process with its own databases. Valid for 15 days.
     """
     user = update.effective_user
     if user.id != OWNER_ID:
@@ -32910,7 +33076,7 @@ async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"─────────────────\n\n"
             f"<b>Usage:</b> <code>/clone [bot_token]</code>\n\n"
             f"Creates a 100% identical copy of CricoVerse running under a different bot token.\n"
-            f"Each clone has its own database and runs for <b>1 month</b>.\n\n"
+            f"Each clone has its own database and runs for <b>15 days</b>.\n\n"
             f"📊 <b>Active clones: {active_count}</b>\n"
         )
         if lines:
@@ -33019,8 +33185,8 @@ async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    expires_at = (datetime.now() + timedelta(days=30)).isoformat()
-    expiry_date = (datetime.now() + timedelta(days=30)).strftime("%d %b %Y")
+    expires_at = (datetime.now() + timedelta(days=15)).isoformat()
+    expiry_date = (datetime.now() + timedelta(days=15)).strftime("%d %b %Y")
 
     CLONE_BOTS[token] = {
         "clone_id": clone_id,
@@ -33041,7 +33207,7 @@ async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 <b>PID:</b> <code>{proc.pid}</code>\n"
         f"📅 <b>Valid until:</b> {expiry_date}\n\n"
         f"✅ Running as a separate process with its own database.\n"
-        f"⚠️ Auto-shutdown in 1 month. Reminder sent 1 day before.\n"
+        f"⚠️ Auto-shutdown in 15 days. Warnings sent (and pinned) in its groups 1 day and 1 hour before.\n"
         f"─────────────────",
         parse_mode=ParseMode.HTML
     )
@@ -33115,7 +33281,7 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
 
                 for gid in info.get("groups", []):
                     try:
-                        await context.bot.send_message(
+                        _warn_sent = await context.bot.send_message(
                             chat_id=gid,
                             text=(
                                 f"⚠️ <b>BOT GOING OFFLINE IN 1 DAY!</b>\n"
@@ -33126,6 +33292,11 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                             ),
                             parse_mode=ParseMode.HTML
                         )
+                        try:
+                            await context.bot.pin_chat_message(chat_id=gid, message_id=_warn_sent.message_id, disable_notification=False)
+                        except Exception as e:
+                            logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 30817)")
+                            pass
                     except Exception as e:
                         logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 30817)")
                         pass
@@ -33174,7 +33345,7 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_message(
                         chat_id=OWNER_ID,
-                        text=f"🛑 Clone @{bot_username} (PID {pid}) auto-stopped → 1 month expired.",
+                        text=f"🛑 Clone @{bot_username} (PID {pid}) auto-stopped → 15-day trial expired.",
                         parse_mode=ParseMode.HTML
                     )
                 except Exception as e:
@@ -33193,6 +33364,99 @@ async def clone_expiry_checker_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Clone expiry checker error: {e}")
 
 
+def _load_clone_self_flags():
+    """Load persisted 1d/1h reminder flags (clone-only) so restarts don't re-spam."""
+    global _clone_self_flags
+    try:
+        if os.path.exists(CLONE_SELF_FLAGS_FILE):
+            with open(CLONE_SELF_FLAGS_FILE, "r", encoding="utf-8") as f:
+                _clone_self_flags.update(json.load(f))
+    except Exception as e:
+        logger.error(f"Failed to load clone self flags: {e}")
+
+
+def _save_clone_self_flags():
+    try:
+        with open(CLONE_SELF_FLAGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_clone_self_flags, f)
+    except Exception as e:
+        logger.error(f"Failed to save clone self flags: {e}")
+
+
+async def clone_self_expiry_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    🤖 CLONE-ONLY job (no-op on the parent bot). Runs every few minutes inside
+    a clone process. Sends + pins a "clone hat rha hai" warning in every group
+    that has ever used this clone bot (registered_groups), once 1 day before
+    expiry and again 1 hour before expiry, then shuts the clone down for good
+    once CLONE_EXPIRES_AT_ISO is reached.
+    """
+    if not IS_CLONE or not CLONE_EXPIRES_AT_ISO:
+        return
+
+    try:
+        expires_at = datetime.fromisoformat(CLONE_EXPIRES_AT_ISO)
+    except Exception as e:
+        logger.error(f"Bad CLONE_EXPIRES_AT_ISO: {e}")
+        return
+
+    now = datetime.now()
+    seconds_left = (expires_at - now).total_seconds()
+    expiry_str = expires_at.strftime("%d %b %Y, %I:%M %p")
+
+    async def _warn_all_groups(lead_text: str):
+        text = (
+            f"⚠️ <b>THIS CLONE BOT IS SHUTTING DOWN {lead_text}!</b>\n"
+            f"─────────────────\n"
+            f"This bot's 15-day trial ends on <b>{expiry_str}</b>.\n"
+            f"After that it will stop responding in this group.\n"
+            f"Contact the owner if you'd like it renewed.\n"
+            f"─────────────────"
+        )
+        for gid in list(registered_groups.keys()):
+            try:
+                sent = await context.bot.send_message(chat_id=gid, text=text, parse_mode=ParseMode.HTML)
+                try:
+                    await context.bot.pin_chat_message(chat_id=gid, message_id=sent.message_id, disable_notification=False)
+                except Exception as e:
+                    logger.debug(f"Could not pin clone expiry warning in {gid}: {e}")
+            except Exception as e:
+                logger.debug(f"Could not send clone expiry warning to {gid}: {e}")
+
+    # ── Already expired → shut this clone process down for good ──
+    if seconds_left <= 0:
+        try:
+            for gid in list(registered_groups.keys()):
+                try:
+                    await context.bot.send_message(
+                        chat_id=gid,
+                        text=(
+                            f"🛑 <b>THIS CLONE BOT HAS GONE OFFLINE</b>\n"
+                            f"─────────────────\n"
+                            f"Its 15-day trial has ended.\n"
+                            f"Contact the owner to get it renewed.\n"
+                            f"─────────────────"
+                        ),
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not send clone offline notice to {gid}: {e}")
+        finally:
+            logger.info("🛑 Clone reached expiry — shutting down process now.")
+            os._exit(0)
+        return
+
+    # ── 1 day before ──
+    if seconds_left <= 86400 and not _clone_self_flags.get("reminder_1d_sent"):
+        _clone_self_flags["reminder_1d_sent"] = True
+        _save_clone_self_flags()
+        await _warn_all_groups("IN 1 DAY")
+
+    # ── 1 hour before ──
+    if seconds_left <= 3600 and not _clone_self_flags.get("reminder_1h_sent"):
+        _clone_self_flags["reminder_1h_sent"] = True
+        _save_clone_self_flags()
+        await _warn_all_groups("IN 1 HOUR")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -34040,6 +34304,96 @@ async def generate_solo_top3_image(sorted_players, context=None) -> Optional[Byt
         return None
 
 
+async def generate_solo_top_performers_image(best_batsman, best_bowler, context=None) -> Optional[BytesIO]:
+    """
+    ✅ TEMPLATE-BASED "Top Performers" card for solo game end.
+    Uses solo_top_performers_template.png (native 1774x887).
+    Pastes:
+      - Best Batsman pfp in the LEFT circle
+      - Best Bowler pfp in the RIGHT circle
+    """
+    try:
+        import os
+        from PIL import Image, ImageDraw, ImageFont, ImageOps
+        from io import BytesIO
+
+        if best_batsman is None:
+            return None
+
+        TEMPLATE_CANDIDATES = [
+            "solo_top_performers_template.png",
+            "solo_top_performers_template.jpg",
+            "/home/cricoverse/solo_top_performers_template.png",
+            "/home/cricoverse/solo_top_performers_template.jpg",
+        ]
+        TEMPLATE_PATH = next((p for p in TEMPLATE_CANDIDATES if os.path.exists(p)), None)
+        if TEMPLATE_PATH is None:
+            logger.error("generate_solo_top_performers_image: template file not found (solo_top_performers_template.png)")
+            return None
+
+        base = Image.open(TEMPLATE_PATH).convert("RGBA")
+        W, H = base.size
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+
+        async def get_pfp(uid):
+            if context is None or uid is None:
+                return None
+            try:
+                return await fetch_user_avatar_bytes(context, uid)
+            except Exception:
+                return None
+
+        bat_bytes = await get_pfp(getattr(best_batsman, "user_id", None))
+        bowl_bytes = await get_pfp(getattr(best_bowler, "user_id", None)) if best_bowler else None
+
+        def paste_circle(img_overlay, avatar_bytes, cx, cy, r, initials="?"):
+            size = r * 2
+            hq_size = size * 3
+            pfp = Image.new("RGBA", (hq_size, hq_size), (80, 80, 80, 200))
+            if avatar_bytes:
+                try:
+                    src = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
+                    src = ImageOps.fit(src, (hq_size, hq_size), method=Image.Resampling.LANCZOS)
+                    pfp = src
+                except Exception:
+                    pass
+            else:
+                d = ImageDraw.Draw(pfp)
+                d.ellipse([0, 0, hq_size-1, hq_size-1], fill=(30, 30, 80, 255))
+                try:
+                    fi = ImageFont.truetype("Roboto-Bold.ttf", hq_size // 3)
+                except Exception:
+                    fi = ImageFont.load_default(size=hq_size // 3)
+                ib = d.textbbox((0, 0), initials[:2], font=fi)
+                d.text(((hq_size-(ib[2]-ib[0]))//2, (hq_size-(ib[3]-ib[1]))//2),
+                       initials[:2], font=fi, fill=(255, 255, 255, 255))
+            mask = Image.new("L", (hq_size, hq_size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, hq_size-1, hq_size-1), fill=255)
+            circle_hq = Image.new("RGBA", (hq_size, hq_size), (0, 0, 0, 0))
+            circle_hq.paste(pfp, (0, 0), mask)
+            circle = circle_hq.resize((size, size), Image.Resampling.LANCZOS)
+            img_overlay.alpha_composite(circle, (cx - r, cy - r))
+
+        def get_init(p):
+            return (getattr(p, "first_name", "P") or "P")[:2].upper()
+
+        # Template layout (native 1774 x 887) — pixel-calibrated via color-mask detection:
+        # LEFT  circle (Best Batsman) : cx=647,  cy=522, r=100
+        # RIGHT circle (Best Bowler)  : cx=1116, cy=524, r=100
+        paste_circle(overlay, bat_bytes, 647, 522, 100, get_init(best_batsman))
+        if best_bowler is not None:
+            paste_circle(overlay, bowl_bytes, 1116, 524, 100, get_init(best_bowler))
+
+        final = Image.alpha_composite(base, overlay).convert("RGB")
+        bio = BytesIO()
+        final.save(bio, "JPEG", quality=97)
+        bio.seek(0)
+        return bio
+
+    except Exception as e:
+        logger.error(f"Solo top performers template error: {e}")
+        return None
+
 
 def generate_newspaper_image(match, winner: "Team", loser: "Team", top_scorer_name: str,
                                top_scorer_runs: int, mom_name: str, margin: str) -> Optional[BytesIO]:
@@ -34590,6 +34944,11 @@ def main():
         application.job_queue.run_repeating(
             clone_expiry_checker_job, interval=86400, first=120
         )
+        # 🤖 Clone self-expiry (1 day / 1 hour warnings + auto shutdown) —
+        # a no-op on the parent bot, only active inside generated clones.
+        application.job_queue.run_repeating(
+            clone_self_expiry_job, interval=300, first=30
+        )
         application.job_queue.run_repeating(
             resumable_cleanup_job, interval=1800, first=60
         )
@@ -34725,6 +35084,7 @@ def main():
     application.add_handler(CallbackQueryHandler(gcsettings_callback, pattern="^gcs_"))
     application.add_handler(CommandHandler("unapprove", unapprove_command))
     application.add_handler(CommandHandler("unapprovegroup", unapprovegroup_command))
+    application.add_handler(CommandHandler("groupunapprove", groupunapprove_command))
     application.add_handler(CommandHandler("auction", auction_command))
 
     # Tournament Registration
@@ -34928,6 +35288,7 @@ def main():
     init_tournament_db()
     load_tournament_data()
     _load_clone_bots_meta()  # Restore clone bot tracking from disk
+    _load_clone_self_flags()  # Restore 1d/1h reminder flags (clone-only)
     _load_resumable_index()  # Restore /regame resumable-match tracking from disk
     
     logger.info("Cricoverse bot starting...")

@@ -560,28 +560,28 @@ def _g(name: str) -> Path:
 
 GIFS = {
     MatchEvent.DOT_BALL: [
-        _g("dot1.gif"), _g("dot2.gif"), _g("dot3.gif")
+        _g("dot1.mp4"), _g("dot2.mp4"), _g("dot3.mp4")
     ],
     MatchEvent.RUNS_1: [
-        _g("one1.gif"), _g("one2.gif")
+        _g("one1.mp4"), _g("one2.mp4")
     ],
     MatchEvent.RUNS_2: [
-        _g("two1.gif")
+        _g("two1.mp4")
     ],
     MatchEvent.RUNS_3: [
-        _g("three1.gif"), _g("three2.gif")
+        _g("three1.mp4"), _g("three2.mp4")
     ],
     MatchEvent.RUNS_4: [
-        _g("four1.gif"), _g("four2.gif"), _g("four3.gif")
+        _g("four1.mp4"), _g("four2.mp4"), _g("four3.mp4")
     ],
     MatchEvent.RUNS_5: [
-        _g("five1.gif"), _g("five2.gif")
+        _g("five1.mp4"), _g("five2.mp4")
     ],
     MatchEvent.RUNS_6: [
-        _g("six1.gif"), _g("six2.gif"), _g("six3.gif")
+        _g("six1.mp4"), _g("six2.mp4"), _g("six3.mp4")
     ],
     MatchEvent.WICKET: [
-        _g("wicket1.gif"), _g("wicket2.gif"), _g("wicket3.gif")
+        _g("wicket1.mp4"), _g("wicket2.mp4"), _g("wicket3.mp4")
     ],
     # 🦆 Sent in addition to the WICKET gif whenever a batsman is out on 0.
     MatchEvent.DUCK: [
@@ -601,7 +601,7 @@ GIFS = {
         "https://tenor.com/bBvYA.gif"
     ],
     MatchEvent.WIDE: [
-        _g("wide1.gif")
+        _g("wide1.mp4")
     ],
     MatchEvent.FREE_HIT: [
         "https://media1.tenor.com/m/b13Yr5x3RhQAAAAC/free-hit-cricket.gif",

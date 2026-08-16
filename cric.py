@@ -110,7 +110,29 @@ async def _safe_send_photo(self, *args, **kwargs):
             parse_mode=kwargs.get("parse_mode"),
             reply_markup=kwargs.get("reply_markup"),
         )
-    return await _orig_send_photo(self, *args, **kwargs)
+
+    # ── ⚡ SPEED FIX: same file_id caching as send_animation below, so
+    # repeated local images (jerseys, templates, etc.) aren't re-uploaded
+    # from disk every single time. ──
+    cache_key = None
+    if isinstance(photo, Path):
+        cache_key = str(photo)
+        cached_id = _photo_file_id_cache.get(cache_key)
+        if cached_id:
+            if "photo" in kwargs:
+                kwargs["photo"] = cached_id
+            else:
+                args = (args[0], cached_id) + args[2:]
+            photo = cached_id
+
+    result = await _orig_send_photo(self, *args, **kwargs)
+
+    if cache_key and getattr(result, "photo", None):
+        _photo_file_id_cache[cache_key] = result.photo[-1].file_id
+
+    return result
+
+_photo_file_id_cache: dict = {}
 
 async def _safe_send_animation(self, *args, **kwargs):
     animation = kwargs.get("animation", args[1] if len(args) >= 2 else None)
@@ -122,7 +144,30 @@ async def _safe_send_animation(self, *args, **kwargs):
             parse_mode=kwargs.get("parse_mode"),
             reply_markup=kwargs.get("reply_markup"),
         )
-    return await _orig_send_animation(self, *args, **kwargs)
+
+    # ── ⚡ SPEED FIX: cache Telegram's file_id after the first upload of a
+    # local Path so every later send re-uses that file_id instead of
+    # re-uploading the same bytes from disk (was causing multi-second
+    # delays on every ball once gifs became a few MB each). ──
+    cache_key = None
+    if isinstance(animation, Path):
+        cache_key = str(animation)
+        cached_id = _animation_file_id_cache.get(cache_key)
+        if cached_id:
+            if "animation" in kwargs:
+                kwargs["animation"] = cached_id
+            else:
+                args = (args[0], cached_id) + args[2:]
+            animation = cached_id
+
+    result = await _orig_send_animation(self, *args, **kwargs)
+
+    if cache_key and getattr(result, "animation", None):
+        _animation_file_id_cache[cache_key] = result.animation.file_id
+
+    return result
+
+_animation_file_id_cache: dict = {}
 
 _telegram_module.Bot.send_photo = _safe_send_photo
 _telegram_module.Bot.send_animation = _safe_send_animation
@@ -17441,8 +17486,7 @@ async def send_photo_generation_status(update: Update, title: str = "", detail: 
         gif_path = _resolve_asset_path(CARD_GENERATION_GIF_FILENAME)
         if not gif_path:
             return None
-        with open(gif_path, "rb") as f:
-            return await update.message.reply_animation(animation=f)
+        return await update.message.reply_animation(animation=Path(gif_path))
     except Exception:
         return None
 

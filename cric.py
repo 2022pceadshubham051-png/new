@@ -185,7 +185,8 @@ BOT_TOKEN = "8428604292:AAFkxmwj0_2wRm5DcsG6Kdw6p93ydzh3-cM"
 _global_bot = None
 OWNER_ID = 8644197194  # Replace with your Telegram user ID
 SECOND_APPROVER_ID = 7343683772 
-SUPPORT_GROUP_ID = -5126977365  # Replace with your support group ID
+SUPPORT_GROUP_ID = -5126977365  # Default/fallback — overridden at runtime by /setsupport (persisted below)
+SUPPORT_GROUP_FILE = "support_group.json"  # persists the /setsupport value across restarts; clone-specific per bot instance
 
 auction_locks = defaultdict(asyncio.Lock)
 
@@ -1549,6 +1550,14 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS achievements (user_id INTEGER PRIMARY KEY, data TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS fantasy_stats (user_id INTEGER PRIMARY KEY, data TEXT)''')
 
+    # 👑 Powered users (broadcast/groupapprove access) — persisted so the owner
+    # doesn't have to re-grant power to the same trusted people after every
+    # bot restart. Loaded into the in-memory POWERED_USERS set at startup.
+    c.execute('''CREATE TABLE IF NOT EXISTS powered_users (
+        user_id INTEGER PRIMARY KEY,
+        granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+
     # 🔧 LIGHTWEIGHT OVER-CHECKPOINT: tiny per-match snapshot written after
     # every completed over (NOT a full stats commit). If the server crashes
     # mid-match, the match can recover from the last checkpointed over
@@ -1639,6 +1648,9 @@ def init_db():
         ("solo_best_bowling_wickets", "INTEGER DEFAULT 0"),
         ("solo_best_bowling_runs", "INTEGER DEFAULT 0"),
         ("solo_matches_bowled", "INTEGER DEFAULT 0"),
+        ("bowling_strike_count", "INTEGER DEFAULT 0"),
+        ("bowling_ban_until", "TEXT DEFAULT ''"),
+        ("bowling_ban_total_count", "INTEGER DEFAULT 0"),
     ]:
         try:
             c.execute(f"ALTER TABLE user_stats ADD COLUMN {col_name} {col_def}")
@@ -1717,6 +1729,207 @@ def init_db():
         print(f"  - {table[0]}")
     
     conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 🚫 BOWLING-TIMEOUT BAN SYSTEM
+# ------------------------------------------------------------------------
+# CONTINUOUS strike counter: increments every time a player gets disqualified
+# for a bowling timeout in a match (2 timeouts within one over/spell = 1
+# "strike"). The counter RESETS to 0 the moment that same player completes
+# a match having bowled WITHOUT being disqualified (see
+# reset_bowling_strike_on_clean_match()). Escalation only fires on the
+# CURRENT continuous streak, not lifetime total.
+#
+# Escalation table (continuous strikes -> ban duration):
+#   2 -> 6 hours     3 -> 1 day     5 -> 3 days     7 -> 7 days
+# A ban only BLOCKS starting/joining NEW matches (and being /add-ed by
+# someone else). It never touches a match the player is already inside.
+# ══════════════════════════════════════════════════════════════════════
+
+BOWLING_BAN_ESCALATION = {
+    2: timedelta(hours=6),
+    3: timedelta(days=1),
+    5: timedelta(days=3),
+    7: timedelta(days=7),
+}
+
+def _bowling_ban_duration_for_strike(strike_count: int) -> Optional[timedelta]:
+    """Returns the ban duration to apply for this exact strike count, or None if this
+    strike count isn't an escalation trigger point."""
+    return BOWLING_BAN_ESCALATION.get(strike_count)
+
+def record_bowling_timeout_strike(user_id: int) -> Optional[dict]:
+    """
+    Call this exactly when a player is disqualified for a bowling timeout
+    (2 timeouts in one spell) in a live match. Increments their CONTINUOUS
+    strike counter and applies a ban if this strike count is an escalation
+    trigger. Returns a dict {strike_count, ban_until, ban_label} if a NEW
+    ban was just applied, else None.
+    """
+    try:
+        conn = db_connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT bowling_strike_count, bowling_ban_total_count FROM user_stats WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        current_strikes = (row[0] or 0) if row else 0
+        total_bans = (row[1] or 0) if row else 0
+        new_strikes = current_strikes + 1
+
+        duration = _bowling_ban_duration_for_strike(new_strikes)
+        result = None
+        if duration:
+            ban_until = datetime.now() + duration
+            total_bans += 1
+            c.execute(
+                "UPDATE user_stats SET bowling_strike_count=?, bowling_ban_until=?, bowling_ban_total_count=? WHERE user_id=?",
+                (new_strikes, ban_until.isoformat(), total_bans, user_id)
+            )
+            if c.rowcount == 0:
+                c.execute(
+                    "INSERT INTO user_stats (user_id, bowling_strike_count, bowling_ban_until, bowling_ban_total_count) VALUES (?, ?, ?, ?)",
+                    (user_id, new_strikes, ban_until.isoformat(), total_bans)
+                )
+            result = {"strike_count": new_strikes, "ban_until": ban_until, "duration": duration}
+        else:
+            c.execute("UPDATE user_stats SET bowling_strike_count=? WHERE user_id=?", (new_strikes, user_id))
+            if c.rowcount == 0:
+                c.execute("INSERT INTO user_stats (user_id, bowling_strike_count) VALUES (?, ?)", (user_id, new_strikes))
+        conn.commit()
+        conn.close()
+        return result
+    except Exception as e:
+        logger.error(f"record_bowling_timeout_strike failed for {user_id}: {e}")
+        return None
+
+def reset_bowling_strike_on_clean_match(user_id: int):
+    """Call when a player finishes a match having bowled at least one legal ball
+    WITHOUT being disqualified for a bowling timeout — breaks the continuous streak."""
+    try:
+        conn = db_connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE user_stats SET bowling_strike_count=0 WHERE user_id=?", (user_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"reset_bowling_strike_on_clean_match failed for {user_id}: {e}")
+
+def get_bowling_ban_remaining(user_id: int) -> Optional[timedelta]:
+    """Returns remaining ban duration if the player is currently banned from
+    starting/joining new matches, else None. Auto-clears an expired ban."""
+    try:
+        conn = db_connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT bowling_ban_until FROM user_stats WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        if not row or not row[0]:
+            conn.close()
+            return None
+        ban_until = datetime.fromisoformat(row[0])
+        now = datetime.now()
+        if ban_until <= now:
+            c.execute("UPDATE user_stats SET bowling_ban_until='' WHERE user_id=?", (user_id,))
+            conn.commit()
+            conn.close()
+            return None
+        conn.close()
+        return ban_until - now
+    except Exception as e:
+        logger.error(f"get_bowling_ban_remaining failed for {user_id}: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 🆕 "Start the main bot first" gate
+#
+# A player is considered "known to Cricoverse" once they exist in
+# user_data (this now happens on /start in the DM). Since main bot + all
+# clones share one database, a player only ever needs to do this ONCE —
+# after that they're recognized everywhere (main community or any clone).
+#
+# Any join flow (team join, solo join, mid-game /join) should call
+# player_is_known()/require_started_main_bot() BEFORE silently registering
+# someone, so brand-new players are pointed at @cricoverse_bot with an
+# inline button instead of being auto-created with no DM link to the bot
+# (which used to break DMs like the "bowl" prompt for that player).
+# ─────────────────────────────────────────────────────────────────────────
+MAIN_BOT_USERNAME = "cricoverse_bot"
+
+
+def player_is_known(user_id: int) -> bool:
+    """True if this user already exists in the shared user_data store —
+    i.e. they've started the bot (main or any clone, since it's one DB)."""
+    return user_id in user_data
+
+
+def _start_main_bot_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        styled_button("🚀 Start Cricoverse Bot", url=f"https://t.me/{MAIN_BOT_USERNAME}?start=start")
+    ]])
+
+
+async def require_started_main_bot(update: Update, user, use_callback: bool = False) -> bool:
+    """Gate for join flows. If the player hasn't started @cricoverse_bot yet,
+    tells them to do so (with an inline button) and returns False so the
+    caller can stop the join. Returns True if the player is already known."""
+    if player_is_known(user.id):
+        return True
+
+    text = (
+        "🚀 <b>One quick step first!</b>\n"
+        f"─────────────────\n"
+        f"👋 Looks like you're new to <b>Cricoverse</b>!\n"
+        f"Please start the main bot @{MAIN_BOT_USERNAME} first, then come back and join.\n"
+        f"<i>You only need to do this once — it works everywhere, main bot or any clone!</i>"
+    )
+    markup = _start_main_bot_markup()
+
+    try:
+        if use_callback and update.callback_query:
+            await update.callback_query.answer(
+                f"👋 Please start @{MAIN_BOT_USERNAME} first, then join!", show_alert=True
+            )
+            try:
+                await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            except Exception:
+                pass
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"require_started_main_bot prompt failed: {e}")
+
+    return False
+
+def _format_ban_remaining(delta: timedelta) -> str:
+    total_secs = int(delta.total_seconds())
+    days, rem = divmod(total_secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    parts = []
+    if days: parts.append(f"{days}d")
+    if hours: parts.append(f"{hours}h")
+    if minutes and not days: parts.append(f"{minutes}m")
+    return " ".join(parts) if parts else "a few minutes"
+
+async def _dm_bowling_ban_notice(context: ContextTypes.DEFAULT_TYPE, user_id: int, strike_count: int, ban_until: datetime, duration: timedelta):
+    """DM the player when a new bowling-timeout ban is applied."""
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🚫 <b>Match Ban Applied</b>\n\n"
+                f"You've been disqualified for a bowling timeout <b>{strike_count} times in a row</b> "
+                "(not bowling / going offline during your over).\n\n"
+                f"⏳ <b>Ban duration:</b> {_format_ban_remaining(duration)}\n"
+                f"🔓 <b>Lifts at:</b> {ban_until.strftime('%d %b %Y, %I:%M %p')}\n\n"
+                "During this ban you can't join or start a new match, and no one can add you to one. "
+                "Any match you're already in is unaffected.\n\n"
+                "ℹ️ Play a full match bowling your overs to reset your strike streak."
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass  # user may have blocked the bot / not started a DM
 
 
 def init_tournament_db():
@@ -2053,6 +2266,19 @@ def load_data():
     
     # Initialize DB (also runs column migrations on existing DBs — safe to call every time)
     init_db()
+
+    # 👑 Load persisted powered users so the owner doesn't have to re-grant
+    # power after every restart.
+    try:
+        _conn = db_connect(DB_FILE)
+        _c = _conn.cursor()
+        _c.execute("SELECT user_id FROM powered_users")
+        for (uid,) in _c.fetchall():
+            POWERED_USERS.add(uid)
+        _conn.close()
+        logger.info(f"✅ Loaded {len(POWERED_USERS)} powered users")
+    except Exception as e:
+        logger.error(f"Error loading powered users: {e}")
 
     data_loaded_from_sql = False
     
@@ -3780,6 +4006,60 @@ async def set_edit_team_callback(update: Update, context: ContextTypes.DEFAULT_T
     # UI Update Karo
     await update_team_edit_message(context, chat.id, match)
 
+def _load_support_group():
+    """Load a persisted /setsupport value on startup, overriding the hardcoded default."""
+    global SUPPORT_GROUP_ID
+    try:
+        if os.path.exists(SUPPORT_GROUP_FILE):
+            with open(SUPPORT_GROUP_FILE, "r") as f:
+                data = json.load(f)
+            if data.get("group_id"):
+                SUPPORT_GROUP_ID = int(data["group_id"])
+                logger.info(f"✅ Loaded support group from file: {SUPPORT_GROUP_ID}")
+    except Exception as e:
+        logger.error(f"Failed to load support group file: {e}")
+
+def _save_support_group(group_id: int):
+    """Persist the current support group so it survives restarts."""
+    try:
+        with open(SUPPORT_GROUP_FILE, "w") as f:
+            json.dump({"group_id": group_id}, f)
+    except Exception as e:
+        logger.error(f"Failed to save support group file: {e}")
+
+
+async def setsupport_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🛠 /setsupport — Owner-only. Run inside the group you want to designate as
+    THIS bot instance's support group. All admin notifications (new group
+    added, bot started, bug reports, etc.) will be sent there from now on.
+    Persisted to disk so it survives restarts — each clone bot has its own
+    independent support group (separate SUPPORT_GROUP_FILE per clone).
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if user.id != OWNER_ID:
+        await update.message.reply_text("❌ Only the bot owner can use this command!")
+        return
+
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("⚠️ Run /setsupport inside the group you want to set as the support group.")
+        return
+
+    global SUPPORT_GROUP_ID
+    SUPPORT_GROUP_ID = chat.id
+    _save_support_group(chat.id)
+
+    await update.message.reply_text(
+        f"✅ <b>Support group set!</b>\n\n"
+        f"👥 <b>Group:</b> {html.escape(chat.title or 'This group')}\n"
+        f"🆔 <b>ID:</b> <code>{chat.id}</code>\n\n"
+        f"All bot notifications (new group added, bot startup, bug reports, etc.) will now be sent here.",
+        parse_mode=ParseMode.HTML
+    )
+
+
 async def notify_support_group(context: ContextTypes.DEFAULT_TYPE, message: str):
     """Send notification to support group"""
     try:
@@ -4260,6 +4540,20 @@ async def handle_timeout_penalties(context: ContextTypes.DEFAULT_TYPE, group_id:
             msg = f"🚫 <b>DISQUALIFIED!</b> {bowler.first_name} timed out 2 times!\n"
             msg += "⚠️ <b>The over will RESTART with a new bowler.</b>"
             await context.bot.send_message(group_id, msg, parse_mode=ParseMode.HTML)
+
+            # 🚫 Bowling-timeout ban tracking: mark this player as having failed to
+            # bowl in this match (continuous streak), and apply/escalate a ban if due.
+            try:
+                match._bowling_timeout_offenders = getattr(match, '_bowling_timeout_offenders', set())
+                match._bowling_timeout_offenders.add(bowler.user_id)
+                ban_result = record_bowling_timeout_strike(bowler.user_id)
+                if ban_result:
+                    await _dm_bowling_ban_notice(
+                        context, bowler.user_id,
+                        ban_result["strike_count"], ban_result["ban_until"], ban_result["duration"]
+                    )
+            except Exception as e:
+                logger.error(f"bowling-timeout strike tracking failed: {e}")
             
             # Reset Balls for this over (Over restart logic)
             # Example: If balls were 3.2 (20 balls), reset to 3.0 (18 balls)
@@ -7343,8 +7637,9 @@ async def team_start_now_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("⚠️ No active joining lobby!", show_alert=True)
         return
 
-    if not await _is_host_or_admin(context, chat_id, match, query.from_user.id):
-        await query.answer("🚫 Only the host or a group admin can force-start!", show_alert=True)
+    # 🔒 HOST-ONLY: force-start restricted to the match host (no group-admin bypass)
+    if query.from_user.id != match.host_id:
+        await query.answer("🚫 Only the host can force-start!", show_alert=True)
         return
 
     total_players = len(match.team_x.players) + len(match.team_y.players)
@@ -7388,8 +7683,9 @@ async def team_start_confirm_callback(update: Update, context: ContextTypes.DEFA
             pass
         return
 
-    if not await _is_host_or_admin(context, chat_id, match, query.from_user.id):
-        await query.answer("🚫 Only the host or a group admin can confirm this!", show_alert=True)
+    # 🔒 HOST-ONLY: no group-admin bypass
+    if query.from_user.id != match.host_id:
+        await query.answer("🚫 Only the host can confirm this!", show_alert=True)
         return
 
     if choice == "team_start_confirm_no":
@@ -7526,6 +7822,22 @@ async def team_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if match.phase != GamePhase.TEAM_JOINING:
         await query.answer("⚠️ Joining phase has ended!", show_alert=True)
+        return
+
+    # 🚫 Bowling-timeout ban check (repeated bowling timeouts) — only blocks
+    # NEW joins, never affects a match the player is already inside.
+    if query.data in ("join_team_x", "join_team_y"):
+        ban_left = get_bowling_ban_remaining(user.id)
+        if ban_left:
+            await query.answer(
+                f"🚫 Banned from joining matches for repeated bowling timeouts. Time left: {_format_ban_remaining(ban_left)}",
+                show_alert=True
+            )
+            return
+
+    # 🆕 New players must start @cricoverse_bot first (shared DB across main + clones)
+    if query.data in ("join_team_x", "join_team_y") and not player_is_known(user.id):
+        await require_started_main_bot(update, user, use_callback=True)
         return
 
     # Initialize User Data
@@ -8613,6 +8925,19 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No match is currently in progress to join.")
         return
 
+    # 🆕 New players must start @cricoverse_bot first (shared DB across main + clones)
+    if not await require_started_main_bot(update, user, use_callback=False):
+        return
+
+    ban_left = get_bowling_ban_remaining(user.id)
+    if ban_left:
+        await update.message.reply_text(
+            f"🚫 You're banned from joining matches for repeated bowling timeouts.\n"
+            f"⏳ Time left: <b>{_format_ban_remaining(ban_left)}</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     # Already playing?
     if match.game_mode == "TEAM":
         if match.team_x.get_player(user.id) or match.team_y.get_player(user.id):
@@ -8843,12 +9168,19 @@ async def add_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     skipped_users = []
     failed_users = []
     not_started_users = []
+    banned_users = []
     
     for target_user in target_users:
         try:
             # Check duplicate
             if match.team_x.get_player(target_user.id) or match.team_y.get_player(target_user.id):
                 skipped_users.append(target_user.first_name)
+                continue
+
+            # 🚫 Bowling-timeout ban check — banned players can't be added by anyone
+            ban_left = get_bowling_ban_remaining(target_user.id)
+            if ban_left:
+                banned_users.append(f"{target_user.first_name} ({_format_ban_remaining(ban_left)} left)")
                 continue
             
             # ✅ Check if player has started the bot
@@ -8899,6 +9231,12 @@ async def add_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         msg += f"❌ <b>Failed ({len(failed_users)}):</b>\n"
         for name in failed_users:
             msg += f"  • {name} (Error fetching user)\n"
+        msg += "\n"
+
+    if banned_users:
+        msg += f"🚫 <b>Banned, can't add ({len(banned_users)}):</b>\n"
+        for name in banned_users:
+            msg += f"  • {name} — repeated bowling timeouts\n"
         msg += "\n"
     
     if not_started_users:
@@ -14216,9 +14554,9 @@ async def solo_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # --- ACTION: START GAME ---
     if query.data == "solo_start_game":
-        # 1. Check Permissions (Host OR group admin)
-        if not await _is_host_or_admin(context, chat.id, match, user.id):
-            await query.answer("⚠️ Only the Host or a group admin can start the match!", show_alert=True)
+        # 1. Check Permissions (Host-only, no group-admin bypass)
+        if user.id != match.host_id:
+            await query.answer("⚠️ Only the Host can start the match!", show_alert=True)
             return
 
         # 2. Check Player Count
@@ -14248,8 +14586,8 @@ async def solo_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # --- ACTION: CONFIRM START GAME (Yes/No) ---
     if query.data in ("solo_start_confirm_yes", "solo_start_confirm_no"):
-        if not await _is_host_or_admin(context, chat.id, match, user.id):
-            await query.answer("🚫 Only the Host or a group admin can confirm this!", show_alert=True)
+        if user.id != match.host_id:
+            await query.answer("🚫 Only the Host can confirm this!", show_alert=True)
             return
 
         if query.data == "solo_start_confirm_no":
@@ -14287,6 +14625,18 @@ async def solo_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # --- ACTION: JOIN ---
     if query.data == "solo_join":
+        # 🆕 New players must start @cricoverse_bot first (shared DB across main + clones)
+        if not player_is_known(user.id):
+            await require_started_main_bot(update, user, use_callback=True)
+            return
+        # 🚫 Bowling-timeout ban check
+        ban_left = get_bowling_ban_remaining(user.id)
+        if ban_left:
+            await query.answer(
+                f"🚫 Banned from joining matches for repeated bowling timeouts. Time left: {_format_ban_remaining(ban_left)}",
+                show_alert=True
+            )
+            return
         # Check duplicate
         for p in match.solo_players:
             if p.user_id == user.id:
@@ -17174,15 +17524,27 @@ async def generate_players_squad_image(match, context=None) -> Optional[BytesIO]
         from PIL import Image, ImageDraw, ImageFont, ImageOps
         from io import BytesIO
 
+        # 🔧 FIX: relative "players_template.png" only resolved if the bot's
+        # CURRENT WORKING DIRECTORY happened to match cric.py's folder (e.g.
+        # if run via systemd/cron/a different launch dir, this silently failed
+        # and /players fell back to text-only, no photo). Now also checks the
+        # SCRIPT'S OWN directory explicitly, which is where the user keeps it.
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
         TEMPLATE_CANDIDATES = [
             "players_template.png",
             "players_template.jpg",
+            os.path.join(_script_dir, "players_template.png"),
+            os.path.join(_script_dir, "players_template.jpg"),
             "/home/cricoverse/players_template.png",
             "/home/cricoverse/players_template.jpg",
         ]
         TEMPLATE_PATH = next((p for p in TEMPLATE_CANDIDATES if os.path.exists(p)), None)
         if TEMPLATE_PATH is None:
-            logger.error("generate_players_squad_image: template file not found (players_template.png)")
+            logger.error(
+                f"generate_players_squad_image: template file not found. "
+                f"Checked: {TEMPLATE_CANDIDATES}. Make sure players_template.png "
+                f"is placed in the same folder as cric.py ({_script_dir})."
+            )
             return None
 
         base = Image.open(TEMPLATE_PATH).convert("RGBA")
@@ -19111,6 +19473,17 @@ async def send_match_summary(context: ContextTypes.DEFAULT_TYPE, group_id: int, 
 async def update_player_stats_after_match(match: Match, winner: Team, loser: Team):
     """Update global player statistics after match → writes BOTH flat + team/solo dicts."""
     all_players = match.batting_first.players + match.bowling_first.players
+
+    # 🚫 Bowling-timeout ban: any player who bowled at least one legal ball in this
+    # match AND was never flagged as a bowling-timeout offender gets their
+    # continuous strike streak reset — a clean match breaks the streak.
+    try:
+        offenders = getattr(match, '_bowling_timeout_offenders', set())
+        for player in all_players:
+            if getattr(player, 'balls_bowled', 0) > 0 and player.user_id not in offenders:
+                reset_bowling_strike_on_clean_match(player.user_id)
+    except Exception as e:
+        logger.error(f"bowling-strike reset pass failed: {e}")
 
     for player in all_players:
         user_id = player.user_id
@@ -25261,6 +25634,16 @@ async def power_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_user_id = int(context.args[0])
         POWERED_USERS.add(target_user_id)
+
+        # 💾 Persist so it survives restarts
+        try:
+            _conn = db_connect(DB_FILE)
+            _c = _conn.cursor()
+            _c.execute("INSERT OR IGNORE INTO powered_users (user_id) VALUES (?)", (target_user_id,))
+            _conn.commit()
+            _conn.close()
+        except Exception as e:
+            logger.error(f"Failed to persist powered user {target_user_id}: {e}")
         
         await update.message.reply_text(
             f"✅ *Power Granted!*\n\n"
@@ -25294,6 +25677,17 @@ async def rmpower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_user_id = int(context.args[0])
         if target_user_id in POWERED_USERS:
             POWERED_USERS.remove(target_user_id)
+
+            # 💾 Remove from persisted store too
+            try:
+                _conn = db_connect(DB_FILE)
+                _c = _conn.cursor()
+                _c.execute("DELETE FROM powered_users WHERE user_id=?", (target_user_id,))
+                _conn.commit()
+                _conn.close()
+            except Exception as e:
+                logger.error(f"Failed to un-persist powered user {target_user_id}: {e}")
+
             await update.message.reply_text(
                 f"✅ *Power Removed!*\n\n"
                 f"User ID: `{target_user_id}`\n"
@@ -25770,6 +26164,12 @@ def _to_buf(img):
     buf = BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
+    # 🔧 FIX: a raw BytesIO has no filename. Telegram's upload can silently
+    # reject/mis-handle a photo with no name+extension, which made
+    # _render_chart_for_page's caller quietly fail and fall back to the
+    # static leaderboard.jpg every time — i.e. the /botstats charts never
+    # actually appeared to update. Naming the buffer fixes the upload.
+    buf.name = "chart.png"
     return buf
 
 
@@ -27302,18 +27702,11 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No active match to end!")
         return
 
-    try:
-        member = await update.effective_chat.get_member(user_id)
-        is_admin = member.status in ["creator", "administrator"]
-    except Exception as e:
-        logger.exception(f"Unhandled exception (auto-fixed bare except, orig line 25371)")
-        is_admin = False
-
-    is_host = (user_id == match.host_id)
-    is_owner = (user_id == OWNER_ID)
-
-    if not (is_host or is_admin or is_owner):
-        await update.message.reply_text("❌ Only host, admins, or bot owner can end the match!")
+    # 🔒 HOST-ONLY: /endmatch restricted strictly to the match host — no admin
+    # or owner bypass, so no one else can force-end a match to protect their
+    # own stats or dodge a bad situation.
+    if user_id != match.host_id:
+        await update.message.reply_text("❌ Only the match host can end the match!")
         return
 
     # ── Solo mode ──
@@ -29764,6 +30157,11 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         if not match:
             await query.edit_message_text("❌ No active match found.")
             return
+
+        # 🔒 HOST-ONLY (no admin/owner bypass)
+        if user_id != match.host_id:
+            await query.answer("❌ Only the match host can end the match!", show_alert=True)
+            return
         
         # 💾 RESUME SNAPSHOT: save BEFORE mutating phase/state, so /regame
         # restores the exact in-progress state. Only for mid-game force-stops
@@ -29848,6 +30246,11 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             return
         
         match = active_matches[chat_id]
+
+        # 🔒 HOST-ONLY (no admin/owner bypass)
+        if user_id != match.host_id:
+            await query.answer("❌ Only the match host can end the match!", show_alert=True)
+            return
         
         # 💾 RESUME SNAPSHOT: before state mutation, mid-game force-stop only.
         resume_code = save_match_for_resume(match, chat_id, match.group_name, match.host_id)
@@ -29904,6 +30307,11 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             return
         
         match = active_matches[chat_id]
+
+        # 🔒 HOST-ONLY (no admin/owner bypass)
+        if user_id != match.host_id:
+            await query.answer("❌ Only the match host can end the match!", show_alert=True)
+            return
         
         # 💾 RESUME SNAPSHOT: before state mutation, mid-game force-stop only.
         resume_code = save_match_for_resume(match, chat_id, match.group_name, match.host_id)
@@ -33017,15 +33425,17 @@ def _generate_clone_script(token: str, clone_id: str) -> str:
         f'BOT_TOKEN = "{token}"  # CLONE BOT → DO NOT EDIT'
     )
 
-    # Replace DB paths with clone-specific ones
-    source = source.replace(
-        f'DB_PATH = "resume1.db"',
-        f'DB_PATH = "clone_{clone_id}_main.db"'
-    )
-    source = source.replace(
-        f'TOURNAMENT_DB_PATH = "tournament.db"',
-        f'TOURNAMENT_DB_PATH = "clone_{clone_id}_tournament.db"'
-    )
+    # 🔧 CHANGED: clones now share the SAME database as the main Cricoverse
+    # bot (resume1.db / tournament.db) instead of getting their own
+    # clone_{clone_id}_*.db files. This means a player's stats, career,
+    # jersey, achievements etc. carry over identically whether they play in
+    # the main bot's community or in any clone's community — one shared
+    # player base across main + all clones.
+    # (Deliberately NOT touching DB_PATH/TOURNAMENT_DB_PATH here anymore —
+    # leaving them as-is in the copied source means every clone process
+    # opens the exact same DB_PATH = "resume1.db" / TOURNAMENT_DB_PATH =
+    # "tournament.db" files that the main bot uses, as long as the clone
+    # runs from the same working directory as the main bot.)
 
     # Replace clone bots file so sub-clones don't share parent's file
     source = source.replace(
@@ -33049,6 +33459,13 @@ def _generate_clone_script(token: str, clone_id: str) -> str:
         f'CLONE_SELF_FLAGS_FILE = "clone_{clone_id}_self_flags.json"'
     )
 
+    # 🆕 Give each clone its own independent /setsupport file, so a clone's
+    # support group is separate from the parent bot's and from other clones.
+    source = source.replace(
+        'SUPPORT_GROUP_FILE = "support_group.json"',
+        f'SUPPORT_GROUP_FILE = "clone_{clone_id}_support_group.json"'
+    )
+
     # 🔧 FIX: single-instance lock file was hardcoded to the SAME path as the
     # parent bot ("/tmp/cricoverse_bot.lock"). Since the clone is a full
     # source copy, it tried to grab the same lock, always found it already
@@ -33057,6 +33474,20 @@ def _generate_clone_script(token: str, clone_id: str) -> str:
     source = source.replace(
         '_lock_file_path = "/tmp/cricoverse_bot.lock"',
         f'_lock_file_path = "/tmp/cricoverse_bot_clone_{clone_id}.lock"'
+    )
+
+    # 🔧 FIX: pin DB_PATH/TOURNAMENT_DB_PATH to the MAIN bot's absolute
+    # location so the shared database keeps working even if the clone
+    # process ever ends up launched with a different working directory
+    # (e.g. after a host restart or a manual relaunch of the clone script).
+    _main_dir = os.path.dirname(os.path.abspath(__file__)).replace("\\", "\\\\")
+    source = source.replace(
+        'DB_PATH = "resume1.db"',
+        f'DB_PATH = os.path.join(r"{_main_dir}", "resume1.db")  # CLONE BOT → shared with main bot, DO NOT EDIT'
+    )
+    source = source.replace(
+        'TOURNAMENT_DB_PATH = "tournament.db"',
+        f'TOURNAMENT_DB_PATH = os.path.join(r"{_main_dir}", "tournament.db")  # CLONE BOT → shared with main bot, DO NOT EDIT'
     )
 
     # 🔧 FIX: clone inherits the parent's PORT env var and tried to bind the
@@ -34646,6 +35077,15 @@ async def game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_group_ban(update, context):
             return
 
+        ban_left = get_bowling_ban_remaining(user.id)
+        if ban_left:
+            await update.message.reply_text(
+                f"🚫 You're banned from starting/joining matches for repeated bowling timeouts.\n"
+                f"⏳ Time left: <b>{_format_ban_remaining(ban_left)}</b>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
         if chat.type == "private":
             await _send_user_notice(
                 update,
@@ -34875,6 +35315,32 @@ async def setup_public_bot_commands(application: Application):
     except Exception as e:
         logger.warning(f"Could not set public bot commands: {e}")
 
+    # 🆕 Load persisted support-group override (if /setsupport was used before)
+    _load_support_group()
+
+    # 🆕 Startup notification — fires whenever this process boots (main bot
+    # OR a clone), so the owner always knows a bot instance just came online.
+    try:
+        me = await application.bot.get_me()
+        bot_kind = "🧬 Clone Bot" if IS_CLONE else "🤖 Main Bot"
+        expiry_line = f"\n⏳ <b>Clone expires:</b> {CLONE_EXPIRES_AT_ISO}" if IS_CLONE and CLONE_EXPIRES_AT_ISO else ""
+        await application.bot.send_message(
+            chat_id=SUPPORT_GROUP_ID,
+            text=(
+                f"✅ <b>BOT STARTED</b>\n"
+                f"─────────────────\n"
+                f"{bot_kind}\n"
+                f"👤 <b>Username:</b> @{me.username}\n"
+                f"🆔 <b>Bot ID:</b> <code>{me.id}</code>\n"
+                f"🕒 <b>Started at:</b> {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
+                f"{expiry_line}\n"
+                f"─────────────────"
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.warning(f"Could not send bot-started notification: {e}")
+
 
 async def ccc_weekly_dm_job(context: ContextTypes.DEFAULT_TYPE):
     """🏅 Weekly CCC Ranking DM — sends CCC rankings to all players via DM.
@@ -35035,6 +35501,7 @@ def main():
     application.add_handler(CommandHandler("game", game_command))
     application.add_handler(CommandHandler("extend", extend_command))
     application.add_handler(CommandHandler("endmatch", endmatch_command))
+    application.add_handler(CommandHandler("setsupport", setsupport_command))
     application.add_handler(CommandHandler("regame", regame_command))
     application.add_handler(CommandHandler("refresh", refresh_command))
     application.add_handler(CommandHandler("timeout", timeout_command))

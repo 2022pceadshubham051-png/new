@@ -26306,6 +26306,19 @@ def _fetch_botstats_data():
             match_type_breakdown[mtype or "UNKNOWN"] = cnt
     except Exception:
         pass
+    # 🔧 FIX: match_history can be empty (e.g. legacy-imported totals, or a
+    # fresh DB) even though user_stats already carries real lifetime counts —
+    # same situation that forces db_matches to fall back below. Without this,
+    # the pie chart / Solo-Team-Other line showed "No data" even when the
+    # headline "Matches: N" total was clearly non-zero. Fall back to the
+    # per-user aggregate columns so the split reflects reality.
+    if not match_type_breakdown:
+        fb_team = _safe_scalar('SELECT SUM(COALESCE(team_matches_played,0)) FROM user_stats')
+        fb_solo = _safe_scalar('SELECT SUM(COALESCE(solo_matches_played,0)) FROM user_stats')
+        # team_matches_played is summed per-player (2x per match), so halve it
+        fb_team = fb_team // 2 if fb_team > 1 else fb_team
+        if fb_team or fb_solo:
+            match_type_breakdown = {"TEAM": fb_team, "SOLO": fb_solo}
 
     # ── Time-windowed match activity (today / 7d / 30d) ──
     matches_today = _safe_scalar(
@@ -26317,6 +26330,9 @@ def _fetch_botstats_data():
     matches_30d = _safe_scalar(
         "SELECT COUNT(*) FROM match_history WHERE match_date >= datetime('now', '-30 days')"
     )
+    # Earliest tracked match timestamp — used as a fallback denominator for
+    # "Avg/day" when there's been no activity in the last 30 days at all.
+    first_match_date = _safe_scalar("SELECT MIN(match_date) FROM match_history", default=None)
 
     # ── Top 5 most active groups (by match count) ──
     top_groups = []
@@ -26342,25 +26358,28 @@ def _fetch_botstats_data():
     except Exception:
         pass
 
-    # ── Daily breakdown: new users per day (last 7 days), from `users` table ──
+    # ── Daily breakdown: new users per day (last 14 days) ──
+    # 🔧 FIX: the `users` SQL table is just (user_id, data BLOB) — it never
+    # had a started_at/joined_at/etc column, so the old PRAGMA-based lookup
+    # here always found nothing and this line stayed flat 0 forever. The
+    # real per-user "first started the bot" timestamp lives in the in-memory
+    # user_data dict (already loaded at startup), so build the daily counts
+    # from there instead.
     daily_new_users = []
     try:
-        # Prefer the `users` table's own timestamp column if it has one; fall back gracefully.
-        c.execute("PRAGMA table_info(users)")
-        user_cols = [row[1] for row in c.fetchall()]
-        ts_col = None
-        for cand in ("started_at", "joined_at", "created_at", "date_added", "timestamp"):
-            if cand in user_cols:
-                ts_col = cand
-                break
-        if ts_col:
-            c.execute(f"""
-                SELECT date({ts_col}) AS d, COUNT(*) AS cnt
-                FROM users
-                WHERE {ts_col} >= datetime('now', '-13 days')
-                GROUP BY d ORDER BY d ASC
-            """)
-            daily_new_users = c.fetchall()
+        _new_user_day_counts: Dict[str, int] = defaultdict(int)
+        _cutoff = datetime.now() - timedelta(days=13)
+        for _uid, _udata in user_data.items():
+            _raw = _udata.get("started_at") if isinstance(_udata, dict) else None
+            if not _raw:
+                continue
+            try:
+                _dt = datetime.fromisoformat(_raw)
+            except Exception:
+                continue
+            if _dt >= _cutoff:
+                _new_user_day_counts[_dt.date().isoformat()] += 1
+        daily_new_users = sorted(_new_user_day_counts.items())
     except Exception:
         pass
 
@@ -26426,6 +26445,7 @@ def _fetch_botstats_data():
         "ai_players": ai_players, "ai_total": ai_total, "ai_wins": ai_wins,
         "match_type_breakdown": match_type_breakdown,
         "matches_today": matches_today, "matches_7d": matches_7d, "matches_30d": matches_30d,
+        "first_match_date": first_match_date,
         "top_groups": top_groups, "top_players": top_players,
         "daily_matches": daily_matches, "daily_new_users": daily_new_users, "daily_runs": daily_runs,
         "table_counts": table_counts,
@@ -26760,7 +26780,24 @@ def _build_botstats_pages(data: dict) -> list:
     other_matches = sum(v for k, v in mtb.items() if k not in ("SOLO", "TEAM"))
 
     days_running = max(1, uptime_secs // 86400) if uptime_secs else 1
-    avg_matches_per_day = round(total_matches / days_running, 1) if days_running else total_matches
+    # 🔧 FIX: was total_matches / days_running, where days_running is BOT
+    # PROCESS UPTIME — after any restart within 24h this floors to 1 day,
+    # so avg/day showed the entire lifetime total (e.g. "3002.0") instead of
+    # a real daily rate. Prefer a real recent rate (last 30 days); if there's
+    # genuinely no tracked activity in that window, use the actual span since
+    # the first tracked match instead of process uptime; only fall back to
+    # uptime as an absolute last resort (fresh DB, no history at all yet).
+    if data.get("matches_30d"):
+        avg_matches_per_day = round(data["matches_30d"] / 30, 1)
+    elif data.get("first_match_date"):
+        try:
+            _first_dt = datetime.fromisoformat(str(data["first_match_date"]).replace("Z", ""))
+            _span_days = max(1, (datetime.now() - _first_dt).days)
+            avg_matches_per_day = round(total_matches / _span_days, 1)
+        except Exception:
+            avg_matches_per_day = round(total_matches / days_running, 1) if days_running else total_matches
+    else:
+        avg_matches_per_day = round(total_matches / days_running, 1) if days_running else total_matches
 
     pages = []
 

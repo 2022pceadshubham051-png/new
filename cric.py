@@ -1651,6 +1651,9 @@ def init_db():
         ("bowling_strike_count", "INTEGER DEFAULT 0"),
         ("bowling_ban_until", "TEXT DEFAULT ''"),
         ("bowling_ban_total_count", "INTEGER DEFAULT 0"),
+        ("endmatch_strike_count", "INTEGER DEFAULT 0"),
+        ("endmatch_ban_until", "TEXT DEFAULT ''"),
+        ("endmatch_ban_total_count", "INTEGER DEFAULT 0"),
     ]:
         try:
             c.execute(f"ALTER TABLE user_stats ADD COLUMN {col_name} {col_def}")
@@ -1926,6 +1929,162 @@ async def _dm_bowling_ban_notice(context: ContextTypes.DEFAULT_TYPE, user_id: in
                 "Any match you're already in is unaffected.\n\n"
                 "ℹ️ Play a full match bowling your overs to reset your strike streak."
             ),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass  # user may have blocked the bot / not started a DM
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 🚫 ENDMATCH (INCOMPLETE GAME) STRIKE SYSTEM
+# ------------------------------------------------------------------------
+# CONTINUOUS strike counter: increments every time a match HOST force-ends
+# a match with /endmatch (or /endsolo) BEFORE it completes naturally (i.e.
+# stats are NOT saved). The counter RESETS to 0 the moment that same host
+# completes a match naturally (stats saved — see reset point in
+# update_player_stats_after_match / save_solo_match_stats). Escalation only
+# fires on the CURRENT continuous streak, not lifetime total.
+#
+# Escalation table (continuous strikes -> ban duration):
+#   3 -> 12 hours   5 -> 1 day   7 -> 3 days   10 -> 7 days   15 -> 15 days
+# A ban only BLOCKS starting/joining NEW matches. It never touches a match
+# the player is already inside.
+# ══════════════════════════════════════════════════════════════════════
+
+ENDMATCH_BAN_ESCALATION = {
+    3: timedelta(hours=12),
+    5: timedelta(days=1),
+    7: timedelta(days=3),
+    10: timedelta(days=7),
+    15: timedelta(days=15),
+}
+
+def _endmatch_ban_duration_for_strike(strike_count: int) -> Optional[timedelta]:
+    """Returns the ban duration for this exact strike count, or None if this
+    strike count isn't an escalation trigger point."""
+    return ENDMATCH_BAN_ESCALATION.get(strike_count)
+
+def record_endmatch_strike(user_id: int) -> Optional[dict]:
+    """
+    Call this exactly when a match HOST force-ends a match via /endmatch or
+    /endsolo BEFORE it completes (no stats saved). Increments their
+    CONTINUOUS strike counter and applies/escalates a ban if this strike
+    count is an escalation trigger. Returns a dict {strike_count, ban_until,
+    duration} if a NEW ban was just applied, else None.
+    """
+    try:
+        conn = db_connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT endmatch_strike_count, endmatch_ban_total_count FROM user_stats WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        current_strikes = (row[0] or 0) if row else 0
+        total_bans = (row[1] or 0) if row else 0
+        new_strikes = current_strikes + 1
+
+        duration = _endmatch_ban_duration_for_strike(new_strikes)
+        result = None
+        if duration:
+            ban_until = datetime.now() + duration
+            total_bans += 1
+            c.execute(
+                "UPDATE user_stats SET endmatch_strike_count=?, endmatch_ban_until=?, endmatch_ban_total_count=? WHERE user_id=?",
+                (new_strikes, ban_until.isoformat(), total_bans, user_id)
+            )
+            if c.rowcount == 0:
+                c.execute(
+                    "INSERT INTO user_stats (user_id, endmatch_strike_count, endmatch_ban_until, endmatch_ban_total_count) VALUES (?, ?, ?, ?)",
+                    (user_id, new_strikes, ban_until.isoformat(), total_bans)
+                )
+            result = {"strike_count": new_strikes, "ban_until": ban_until, "duration": duration}
+        else:
+            c.execute("UPDATE user_stats SET endmatch_strike_count=? WHERE user_id=?", (new_strikes, user_id))
+            if c.rowcount == 0:
+                c.execute("INSERT INTO user_stats (user_id, endmatch_strike_count) VALUES (?, ?)", (user_id, new_strikes))
+        conn.commit()
+        conn.close()
+        return result
+    except Exception as e:
+        logger.error(f"record_endmatch_strike failed for {user_id}: {e}")
+        return None
+
+def reset_endmatch_strike_on_clean_match(user_id: int):
+    """Call when a match HOSTED by this user completes naturally (stats saved)
+    — breaks the continuous incomplete-game streak."""
+    try:
+        conn = db_connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE user_stats SET endmatch_strike_count=0 WHERE user_id=?", (user_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"reset_endmatch_strike_on_clean_match failed for {user_id}: {e}")
+
+def get_endmatch_strike_count(user_id: int) -> int:
+    """Current continuous incomplete-game strike count for this user."""
+    try:
+        conn = db_connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT endmatch_strike_count FROM user_stats WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        conn.close()
+        return (row[0] or 0) if row else 0
+    except Exception as e:
+        logger.error(f"get_endmatch_strike_count failed for {user_id}: {e}")
+        return 0
+
+def get_endmatch_ban_remaining(user_id: int) -> Optional[timedelta]:
+    """Returns remaining ban duration if this user is currently banned from
+    starting/joining new matches due to endmatch strikes, else None.
+    Auto-clears an expired ban."""
+    try:
+        conn = db_connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT endmatch_ban_until FROM user_stats WHERE user_id=?", (user_id,))
+        row = c.fetchone()
+        if not row or not row[0]:
+            conn.close()
+            return None
+        ban_until = datetime.fromisoformat(row[0])
+        now = datetime.now()
+        if ban_until <= now:
+            c.execute("UPDATE user_stats SET endmatch_ban_until='' WHERE user_id=?", (user_id,))
+            conn.commit()
+            conn.close()
+            return None
+        conn.close()
+        return ban_until - now
+    except Exception as e:
+        logger.error(f"get_endmatch_ban_remaining failed for {user_id}: {e}")
+        return None
+
+async def _dm_endmatch_strike_notice(context: ContextTypes.DEFAULT_TYPE, user_id: int, strike_count: int,
+                                      ban_until: Optional[datetime] = None, duration: Optional[timedelta] = None):
+    """DM the host every time an endmatch strike is recorded. If a ban was just
+    applied (strike_count hit an escalation point), includes the ban details."""
+    try:
+        lines = [
+            "⚠️ <b>Match Ended Early — Strike Recorded</b>",
+            "─────────────────",
+            f"You force-ended a match with <code>/endmatch</code> before it finished "
+            f"(stats not saved). This is strike <b>#{strike_count}</b> in a row.",
+        ]
+        if duration and ban_until:
+            lines += [
+                "",
+                "🚫 <b>Ban Applied</b>",
+                f"⏳ Duration: {_format_ban_remaining(duration)}",
+                f"🔓 Lifts at: {ban_until.strftime('%d %b %Y, %I:%M %p')}",
+                "",
+                "During this ban you can't start or join a new match, and no one can add you to one. "
+                "Any match you're already in is unaffected.",
+            ]
+        lines += [
+            "",
+            "ℹ️ Play a match to full completion (without /endmatch) to reset your strike streak.",
+        ]
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="<blockquote>" + "\n".join(lines) + "</blockquote>",
             parse_mode=ParseMode.HTML
         )
     except Exception:
@@ -2569,6 +2728,9 @@ def touch_jersey_activity(user_ids) -> None:
         # Clear any pending inactivity warning since they've played again
         if user_data[uid].get("jersey_warned_at"):
             user_data[uid]["jersey_warned_at"] = None
+        # 🏏 Clear the bring-back DM flag too — they're active again
+        if user_data[uid].get("bring_back_dm_sent"):
+            user_data[uid]["bring_back_dm_sent"] = None
         changed = True
     if changed:
         save_data()
@@ -8132,6 +8294,7 @@ async def _chal_edit(context: ContextTypes.DEFAULT_TYPE, gid: int, text: str, re
     ch = active_challenges.get(gid)
     if not ch or not ch.get("message_id"):
         return
+    ch["last_activity"] = datetime.now().isoformat()  # ⏱️ any state transition counts as activity
     try:
         if ch.get("is_photo"):
             await context.bot.edit_message_caption(
@@ -8145,6 +8308,52 @@ async def _chal_edit(context: ContextTypes.DEFAULT_TYPE, gid: int, text: str, re
             )
     except Exception as e:
         logger.error(f"Challenge message edit error: {e}")
+
+
+CHALLENGE_INACTIVITY_TIMEOUT = timedelta(minutes=5)
+
+async def challenge_inactivity_job(context: ContextTypes.DEFAULT_TYPE):
+    """⏱️ Runs every minute. Auto-ends any /challenge that's had no activity
+    (no button tap / state change) for 5+ minutes — edits the message to show
+    it timed out and clears the active_challenges slot so /challenge can be
+    used again in that group."""
+    now = datetime.now()
+    for gid in list(active_challenges.keys()):
+        ch = active_challenges.get(gid)
+        if not ch:
+            continue
+        last_raw = ch.get("last_activity")
+        try:
+            last_activity = datetime.fromisoformat(last_raw) if last_raw else now
+        except Exception:
+            last_activity = now
+        if now - last_activity < CHALLENGE_INACTIVITY_TIMEOUT:
+            continue
+
+        timeout_text = (
+            "⏱️ <b>CHALLENGE TIMED OUT!</b>\n"
+            "<blockquote>┌──────────────\n"
+            "├ ⚠️ No activity for 5 minutes.\n"
+            "├ ❌ This challenge has been cancelled.\n"
+            "├ 👉 Use /challenge to start a new one.\n"
+            "└──────────────</blockquote>"
+        )
+        try:
+            if ch.get("message_id"):
+                if ch.get("is_photo"):
+                    await context.bot.edit_message_caption(
+                        chat_id=gid, message_id=ch["message_id"], caption=timeout_text,
+                        reply_markup=None, parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await context.bot.edit_message_text(
+                        chat_id=gid, message_id=ch["message_id"], text=timeout_text,
+                        reply_markup=None, parse_mode=ParseMode.HTML
+                    )
+        except Exception as e:
+            logger.debug(f"Challenge timeout edit failed (gid={gid}): {e}")
+        finally:
+            active_challenges.pop(gid, None)
 
 
 async def challenge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8185,6 +8394,7 @@ async def challenge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "innings": 1, "score": {1: 0, 2: 0}, "balls": {1: 0, 2: 0},
         "target": None, "pending_bowl_num": None,
         "prev_bat_num": None, "prev_bowl_num": None,
+        "last_activity": datetime.now().isoformat(),  # ⏱️ used by challenge_inactivity_job (5 min auto-timeout)
     }
 
     challenger_tag = _chal_player_tag(user.id, user.first_name)
@@ -11618,6 +11828,36 @@ async def global_user_ban_enforcer(update: Update, context: ContextTypes.DEFAULT
     if not user or user.id == OWNER_ID:
         return
 
+    # 🚫 ENDMATCH-STRIKE BAN: only blocks STARTING/JOINING new matches
+    # (/game command and join_team_x / join_team_y / solo_join buttons).
+    # Does not touch matches the player is already inside, and doesn't
+    # silence any other command the way a full ban does.
+    em_ban_left = get_endmatch_ban_remaining(user.id)
+    if em_ban_left:
+        if update.callback_query and update.callback_query.data in ("join_team_x", "join_team_y", "solo_join"):
+            try:
+                await update.callback_query.answer(
+                    f"🚫 Banned from starting/joining matches for repeated early /endmatch use. Time left: {_format_ban_remaining(em_ban_left)}",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            raise ApplicationHandlerStop
+        msg_em = update.effective_message
+        if msg_em and msg_em.text and msg_em.text.startswith("/"):
+            cmd_em = msg_em.text[1:].split()[0].split("@")[0].lower() if len(msg_em.text) > 1 else ""
+            if cmd_em == "game":
+                try:
+                    await msg_em.reply_text(
+                        "<blockquote>🚫 <b>Match-Start Banned</b>\n"
+                        f"You can't start or join a new match for another <b>{_format_ban_remaining(em_ban_left)}</b> "
+                        "(repeated early /endmatch use).</blockquote>",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+                raise ApplicationHandlerStop
+
     ban_info = banned_users.get(user.id)
     if not ban_info:
         return
@@ -11754,6 +11994,14 @@ async def save_solo_match_stats(match):
         touch_jersey_activity(list(match.solo_players.keys()))
     except Exception as jersey_err:
         logger.error(f"Jersey activity touch error: {jersey_err}")
+
+    # 🚫 Endmatch strike reset: this solo match completed naturally (stats
+    # saved), so break the host's continuous "incomplete game" strike streak.
+    try:
+        if getattr(match, 'host_id', None):
+            reset_endmatch_strike_on_clean_match(match.host_id)
+    except Exception as e:
+        logger.error(f"endmatch-strike reset (solo) failed: {e}")
 
 async def bangroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -19485,6 +19733,14 @@ async def update_player_stats_after_match(match: Match, winner: Team, loser: Tea
     except Exception as e:
         logger.error(f"bowling-strike reset pass failed: {e}")
 
+    # 🚫 Endmatch strike reset: this match completed naturally (stats saved),
+    # so break the host's continuous "incomplete game" strike streak.
+    try:
+        if getattr(match, 'host_id', None):
+            reset_endmatch_strike_on_clean_match(match.host_id)
+    except Exception as e:
+        logger.error(f"endmatch-strike reset failed: {e}")
+
     for player in all_players:
         user_id = player.user_id
         init_player_stats(user_id)          # ensures all keys exist
@@ -20767,6 +21023,54 @@ async def jersey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<i>This will show up on your profile & squad lineups.</i>",
         parse_mode=ParseMode.HTML
     )
+
+
+BRING_BACK_MIN_DAYS = 5
+BRING_BACK_MAX_DAYS = 7
+
+async def bring_back_inactivity_job(context: ContextTypes.DEFAULT_TYPE):
+    """🏏 Runs every 6 hours. DMs a gentle "come back and play" nudge to any
+    known player who hasn't played a match in 5-7 days. Sent exactly ONCE per
+    inactive streak — touch_jersey_activity() clears the flag the moment they
+    play again, so they become eligible for a fresh nudge next time they go
+    quiet. Uses the same jersey_last_active timestamp that's already touched
+    on every match completion (team + solo), so no new tracking is needed."""
+    now = datetime.now()
+    changed = False
+
+    for uid, data in list(user_data.items()):
+        if data.get("bring_back_dm_sent"):
+            continue  # already nudged for this inactivity streak
+
+        last_active_raw = data.get("jersey_last_active") or data.get("started_at")
+        if not last_active_raw:
+            continue  # never played / never started — nothing to nudge about
+        try:
+            last_active = datetime.fromisoformat(last_active_raw)
+        except Exception:
+            continue
+
+        days_inactive = (now - last_active).days
+        if BRING_BACK_MIN_DAYS <= days_inactive <= BRING_BACK_MAX_DAYS:
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        "<blockquote>🏏 <b>Tera CricoVerse squad tujhe miss kar raha hai!</b>\n"
+                        f"─────────────────\n"
+                        f"You've been away for {days_inactive} days. Jump back into a group and "
+                        "smash a few sixes — your squad's waiting!\n"
+                        "<i>Use /game in any group to get back in the action.</i></blockquote>"
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass  # user may have blocked the bot / never started a DM
+            data["bring_back_dm_sent"] = now.isoformat()
+            changed = True
+
+    if changed:
+        save_data()
 
 
 async def jersey_inactivity_job(context: ContextTypes.DEFAULT_TYPE):
@@ -29725,7 +30029,32 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                 )
             except Exception as e:
                 logger.error(f"Failed to send new group notification: {e}")
-                
+
+            # 🎉 Welcome message IN the group itself, thanking whoever added the bot
+            welcome_caption = (
+                "<blockquote>🏏 <b>Thanks for adding me, CricoVerse is ready to play!</b>\n"
+                f"─────────────────\n"
+                f"🙌 Added by: {html.escape(added_by.first_name)}\n"
+                f"🎮 Type /game to start a match right here.\n"
+                f"❓ Type /help to see everything I can do.\n"
+                f"└──────────────</blockquote>"
+            )
+            try:
+                welcome_photo = MEDIA_ASSETS["welcome"]
+                if welcome_photo:
+                    await context.bot.send_photo(
+                        chat_id=chat.id,
+                        photo=welcome_photo,
+                        caption=welcome_caption,
+                        parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=chat.id, text=welcome_caption, parse_mode=ParseMode.HTML
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send in-group welcome message: {e}")
+
     except Exception as e:
         logger.error(f"Error in handle_my_chat_member: {e}")
 
@@ -30221,7 +30550,17 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             del active_matches[group_id]
         if group_id in processing_commands:
             del processing_commands[group_id]
-        
+
+        # 🚫 ENDMATCH STRIKE: host force-ended without completing the match
+        try:
+            _em_result = record_endmatch_strike(user_id)
+            if _em_result:
+                await _dm_endmatch_strike_notice(context, user_id, _em_result["strike_count"], _em_result["ban_until"], _em_result["duration"])
+            else:
+                await _dm_endmatch_strike_notice(context, user_id, get_endmatch_strike_count(user_id))
+        except Exception as e:
+            logger.error(f"endmatch strike tracking failed: {e}")
+
         await query.edit_message_text(
             "╭━━ 🛑 MATCH ENDED ━━━━━\n"
             "┃ ⚠ Match was forcefully stopped!\n"
@@ -30277,6 +30616,16 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
         except: pass
         
         del active_matches[chat_id]
+
+        # 🚫 ENDMATCH STRIKE: host force-ended without completing the match
+        try:
+            _em_result = record_endmatch_strike(user_id)
+            if _em_result:
+                await _dm_endmatch_strike_notice(context, user_id, _em_result["strike_count"], _em_result["ban_until"], _em_result["duration"])
+            else:
+                await _dm_endmatch_strike_notice(context, user_id, get_endmatch_strike_count(user_id))
+        except Exception as e:
+            logger.error(f"endmatch strike tracking failed: {e}")
 
         # 🎬 DONE MESSAGE (removed animation URL fetch that fails on some servers)
         extra = f"\n🔑 Resume within 12h: /regame {resume_code}" if resume_code else ""
@@ -30359,7 +30708,17 @@ async def end_confirmation_callback(update: Update, context: ContextTypes.DEFAUL
             del active_matches[chat_id]
         if chat_id in processing_commands:
             del processing_commands[chat_id]
-        
+
+        # 🚫 ENDMATCH STRIKE: host force-ended without completing the match
+        try:
+            _em_result = record_endmatch_strike(user_id)
+            if _em_result:
+                await _dm_endmatch_strike_notice(context, user_id, _em_result["strike_count"], _em_result["ban_until"], _em_result["duration"])
+            else:
+                await _dm_endmatch_strike_notice(context, user_id, get_endmatch_strike_count(user_id))
+        except Exception as e:
+            logger.error(f"endmatch strike tracking failed: {e}")
+
         await query.edit_message_text(
             "🏁 <b>SOLO MATCH ENDED!</b>\n\n"
             "⚠️ Match was forcefully stopped.\n"
@@ -35461,6 +35820,16 @@ def main():
         )
         application.job_queue.run_repeating(
             resumable_cleanup_job, interval=1800, first=60
+        )
+
+        # ⚔️ Challenge-mode 5-min inactivity auto-timeout — checked every 60s
+        application.job_queue.run_repeating(
+            challenge_inactivity_job, interval=60, first=60
+        )
+
+        # 🏏 Bring-back DM for players inactive 5-7 days — runs every 6 hours
+        application.job_queue.run_repeating(
+            bring_back_inactivity_job, interval=21600, first=200
         )
 
         # Registration expiry + daily reminder checker - runs every hour
